@@ -317,6 +317,40 @@ config HIDDEN_PROMPT_DEFAULT
 	})
 }
 
+func TestResolveLegacyDefconfigAndAllNoConfigOptions(t *testing.T) {
+	fixture := `
+config DEFCONFIG_LIST
+	string
+	option defconfig_list
+	default "configs/fallback"
+
+config ENABLED_BY_ALLNOCONFIG
+	bool "Enable in allnoconfig"
+	option allnoconfig_y
+	default n
+
+config DEFAULT_ON
+	bool "Default on"
+	default y
+`
+	ordinary := mustResolveConfigWithOptions(t, fixture, nil, ResolveConfigOptions{})
+	if got := ordinary.Value("CONFIG_DEFCONFIG_LIST"); got != `"configs/fallback"` {
+		t.Errorf("default config value = %q, want source default", got)
+	}
+	if ordinary.ShouldWrite("CONFIG_DEFCONFIG_LIST") {
+		t.Error("default config path was written to .config")
+	}
+	allNoConfig := mustResolveConfigWithOptions(t, fixture, nil, ResolveConfigOptions{AllNoConfig: true})
+	wantConfigValues(t, allNoConfig, map[string]string{
+		"CONFIG_ENABLED_BY_ALLNOCONFIG": "y",
+		"CONFIG_DEFAULT_ON":             "n",
+	})
+	explicit := mustResolveConfigWithOptions(t, fixture, map[string]string{"CONFIG_ENABLED_BY_ALLNOCONFIG": "n"}, ResolveConfigOptions{AllNoConfig: true})
+	if got := explicit.Value("CONFIG_ENABLED_BY_ALLNOCONFIG"); got != "n" {
+		t.Errorf("explicit n in allnoconfig = %q, want n", got)
+	}
+}
+
 func TestResolveConfigSelectBypassesTargetDepends(t *testing.T) {
 	fixture := `
 mainmenu "Test"
@@ -1061,6 +1095,45 @@ endchoice
 	})
 }
 
+func TestResolveConfigTristateChoiceVisibilityAndModules(t *testing.T) {
+	const source = `
+config MODULES
+	bool "Modules"
+	option modules
+
+config RAPIDIO
+	tristate "RapidIO"
+
+choice
+	prompt "Enumeration method"
+	depends on RAPIDIO
+	default BASIC
+
+config BASIC
+	tristate "Basic"
+
+config OTHER
+	tristate "Other"
+endchoice
+`
+	for _, test := range []struct {
+		name string
+		raw  map[string]string
+		want map[string]string
+	}{
+		{"hidden choice", map[string]string{"CONFIG_RAPIDIO": "n"}, map[string]string{"CONFIG_BASIC": "n", "CONFIG_OTHER": "n"}},
+		{"built in default", map[string]string{"CONFIG_RAPIDIO": "y"}, map[string]string{"CONFIG_BASIC": "y", "CONFIG_OTHER": "n"}},
+		{"multiple modules with module gate", map[string]string{"CONFIG_MODULES": "y", "CONFIG_RAPIDIO": "m", "CONFIG_BASIC": "m", "CONFIG_OTHER": "m"}, map[string]string{"CONFIG_BASIC": "m", "CONFIG_OTHER": "m"}},
+		{"multiple modules with built in gate", map[string]string{"CONFIG_MODULES": "y", "CONFIG_RAPIDIO": "y", "CONFIG_BASIC": "m", "CONFIG_OTHER": "m"}, map[string]string{"CONFIG_BASIC": "m", "CONFIG_OTHER": "m"}},
+		{"built in excludes modules", map[string]string{"CONFIG_MODULES": "y", "CONFIG_RAPIDIO": "y", "CONFIG_BASIC": "y", "CONFIG_OTHER": "m"}, map[string]string{"CONFIG_BASIC": "y", "CONFIG_OTHER": "n"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolved := mustResolveConfig(t, source, test.raw)
+			wantConfigValues(t, resolved, test.want)
+		})
+	}
+}
+
 func TestResolveConfigChoiceMemberDependsOnHiddenDefBoolGate(t *testing.T) {
 	resolved := mustResolveConfig(t, `
 mainmenu "Test"
@@ -1196,6 +1269,194 @@ config MODE_VALUE
 		"CONFIG_MODE_B":      "n",
 		"CONFIG_MODE_VALUE":  "1",
 	})
+}
+
+func TestResolveConfigSelectedSourceChoiceDialectPromptlessScalar(t *testing.T) {
+	const fixture = `
+config HAVE_A
+	bool "A available"
+
+choice
+
+config MODE_A
+	bool "Mode A"
+	depends on HAVE_A
+
+config MODE_B
+	bool "Mode B"
+
+endchoice
+
+config MODE_VALUE
+	int
+	default 1 if MODE_A
+	default 2 if MODE_B
+`
+	for _, tc := range []struct {
+		name   string
+		source string
+		raw    map[string]string
+		want   map[string]string
+	}{
+		{"older parent remains off", legacyChoiceSymbolSource, map[string]string{"CONFIG_HAVE_A": "y"}, map[string]string{"CONFIG_MODE_A": "n", "CONFIG_MODE_B": "n", "CONFIG_MODE_VALUE": "0"}},
+		{"newer member chooses first", memberChoiceSymbolSource, map[string]string{"CONFIG_HAVE_A": "y"}, map[string]string{"CONFIG_MODE_A": "y", "CONFIG_MODE_B": "n", "CONFIG_MODE_VALUE": "1"}},
+		{"newer member respects hidden prompt", memberChoiceSymbolSource, map[string]string{"CONFIG_HAVE_A": "n", "CONFIG_MODE_A": "y"}, map[string]string{"CONFIG_MODE_A": "n", "CONFIG_MODE_B": "y", "CONFIG_MODE_VALUE": "2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tree, err := Parse(context.Background(), strings.NewReader(fixture), "Kconfig", Options{})
+			if err != nil {
+				t.Fatalf("Parse() failed: %v", err)
+			}
+			dialect, err := DetectChoiceDialect([]byte(tc.source))
+			if err != nil {
+				t.Fatalf("selected scripts/kconfig/symbol.c failed: %v", err)
+			}
+			if err := tree.SetChoiceDialect(dialect); err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := tree.ResolveConfig(tc.raw)
+			if err != nil {
+				t.Fatalf("ResolveConfig() failed: %v", err)
+			}
+			wantConfigValues(t, resolved, tc.want)
+		})
+	}
+}
+
+func TestResolveConfigLegacyChoiceSuppressesModMemberPromptWhenParentYes(t *testing.T) {
+	const fixture = `
+config MODULES
+	bool "Modules"
+	option modules
+
+config GATE
+	tristate "Module gate"
+
+choice
+	prompt "Backend"
+	default NEEDS_MOD
+
+config NEEDS_MOD
+	tristate "Requires module gate"
+	depends on GATE
+
+config ALWAYS
+	tristate "Available built in"
+endchoice
+
+config BACKEND_VALUE
+	int
+	default 1 if NEEDS_MOD
+	default 2 if ALWAYS
+`
+	for _, tc := range []struct {
+		name   string
+		source string
+		want   map[string]string
+	}{
+		{"parent suppresses mod member", legacyChoiceSymbolSource, map[string]string{"CONFIG_NEEDS_MOD": "n", "CONFIG_ALWAYS": "y", "CONFIG_BACKEND_VALUE": "2"}},
+		{"member retains mod member", memberChoiceSymbolSource, map[string]string{"CONFIG_NEEDS_MOD": "y", "CONFIG_ALWAYS": "n", "CONFIG_BACKEND_VALUE": "1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tree, err := Parse(context.Background(), strings.NewReader(fixture), "Kconfig", Options{})
+			if err != nil {
+				t.Fatalf("Parse() failed: %v", err)
+			}
+			dialect, err := DetectChoiceDialect([]byte(tc.source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tree.SetChoiceDialect(dialect); err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := tree.ResolveConfig(map[string]string{"CONFIG_MODULES": "y", "CONFIG_GATE": "m"})
+			if err != nil {
+				t.Fatalf("ResolveConfig() failed: %v", err)
+			}
+			wantConfigValues(t, resolved, tc.want)
+		})
+	}
+}
+
+func TestResolveConfigSourceChoiceDialectKeepsHiddenPromptDisabled(t *testing.T) {
+	const fixture = `
+config GATE
+	bool "Gate"
+
+choice
+	prompt "Mode"
+	depends on GATE
+
+config MODE_A
+	bool "A"
+
+config MODE_B
+	bool "B"
+endchoice
+`
+	for _, dialect := range []ChoiceDialect{ChoiceDialectParent, ChoiceDialectMember} {
+		tree, err := Parse(context.Background(), strings.NewReader(fixture), "Kconfig", Options{})
+		if err != nil {
+			t.Fatalf("Parse() failed: %v", err)
+		}
+		if err := tree.SetChoiceDialect(dialect); err != nil {
+			t.Fatal(err)
+		}
+		resolved, err := tree.ResolveConfig(map[string]string{"CONFIG_MODE_A": "y"})
+		if err != nil {
+			t.Fatalf("ResolveConfig() failed: %v", err)
+		}
+		wantConfigValues(t, resolved, map[string]string{"CONFIG_MODE_A": "n", "CONFIG_MODE_B": "n"})
+	}
+}
+
+func TestResolveConfigParentChoiceFallbackUsesFirstVisibleDespiteRawNo(t *testing.T) {
+	const fixture = `
+choice
+	prompt "Mode"
+
+config MODE_A
+	bool "A"
+
+config MODE_B
+	bool "B"
+endchoice
+`
+	for _, tc := range []struct {
+		name     string
+		dialect  ChoiceDialect
+		raw      map[string]string
+		defaults bool
+		wantA    string
+		wantB    string
+	}{
+		{"parent rejects raw n as a fallback veto", ChoiceDialectParent, map[string]string{"CONFIG_MODE_A": "n"}, false, "y", "n"},
+		{"parent ignores two raw n values for fallback", ChoiceDialectParent, map[string]string{"CONFIG_MODE_A": "n", "CONFIG_MODE_B": "n"}, false, "y", "n"},
+		{"member retains raw n preference", ChoiceDialectMember, map[string]string{"CONFIG_MODE_A": "n"}, false, "n", "y"},
+		{"parent explicit default still precedes fallback", ChoiceDialectParent, map[string]string{"CONFIG_MODE_A": "n"}, true, "n", "y"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := fixture
+			if tc.defaults {
+				source = strings.Replace(source, "\tprompt \"Mode\"\n", "\tprompt \"Mode\"\n\tdefault MODE_B\n", 1)
+			}
+			tree, err := Parse(context.Background(), strings.NewReader(source), "Kconfig", Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tree.SetChoiceDialect(tc.dialect); err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := tree.ResolveConfig(tc.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantConfigValues(t, resolved, map[string]string{
+				"CONFIG_MODE_A": tc.wantA,
+				"CONFIG_MODE_B": tc.wantB,
+			})
+		})
+	}
 }
 
 func TestResolveConfigScalarDefaultFromChoice(t *testing.T) {

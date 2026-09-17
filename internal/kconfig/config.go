@@ -275,7 +275,7 @@ func (r *configResolver) result() *ResolvedConfig {
 	for _, sym := range r.tree.definedSymbols() {
 		key := "CONFIG_" + sym.Name
 		effective[key] = r.values[sym]
-		if r.written[sym] {
+		if r.written[sym] && !sym.NoWrite {
 			written[key] = true
 		}
 	}
@@ -297,8 +297,13 @@ func (r *configResolver) baseTri(sym *Symbol) triValue {
 			return minResolvedTri(r.rawTri[sym], visible)
 		}
 	}
-	if r.allNoConfig && r.promptVisibility(sym) != triN {
-		return triN
+	if r.allNoConfig {
+		if visible := r.promptVisibility(sym); visible != triN {
+			if sym.AllNoConfigY {
+				return minResolvedTri(triY, visible)
+			}
+			return triN
+		}
 	}
 	return r.defaultTri(sym)
 }
@@ -310,13 +315,46 @@ func (r *configResolver) visibleUserValue(sym *Symbol) bool {
 func (r *configResolver) applyChoiceSemantics(choices []*Symbol) bool {
 	changed := false
 	for _, choice := range choices {
-		selected := r.choiceSelection(choice)
+		visibility := r.promptVisibility(choice)
+		moduleMode := choice.Type == SymbolTristate && r.modulesEnabled() && visibility != triN
+		if moduleMode && visibility == triY {
+			for _, member := range choice.ChoiceMembers {
+				if r.rawSet[member] && r.rawTri[member] == triY && r.promptVisibility(member) != triN {
+					moduleMode = false
+					break
+				}
+			}
+			if moduleMode {
+				moduleMode = false
+				for _, member := range choice.ChoiceMembers {
+					if r.rawSet[member] && r.rawTri[member] == triM && r.promptVisibility(member) != triN {
+						moduleMode = true
+						break
+					}
+				}
+			}
+		}
+		// The parent-symbol implementation calls sym_calc_choice only when
+		// that choice reaches yes. The menu implementation is called for
+		// members even when a choice has no prompt of its own. A present
+		// but invisible choice prompt still gates its members.
+		canChoose := visibility != triN ||
+			(r.tree.choiceDialect == ChoiceDialectMember && !choiceHasPrompt(choice))
+		var selected *Symbol
+		if canChoose && !moduleMode {
+			selected = r.choiceSelection(choice)
+		}
 		for _, member := range choice.ChoiceMembers {
 			if member.Type != SymbolBool && member.Type != SymbolTristate {
 				continue
 			}
 			next := triN
-			if member == selected {
+			if moduleMode && member.Type == SymbolTristate && r.rawSet[member] {
+				next = minResolvedTri(r.rawTri[member], r.promptVisibility(member))
+				if next == triY {
+					next = triM
+				}
+			} else if member == selected {
 				next = triY
 			}
 			write := next != triN
@@ -329,6 +367,15 @@ func (r *configResolver) applyChoiceSemantics(choices []*Symbol) bool {
 		}
 	}
 	return changed
+}
+
+func choiceHasPrompt(choice *Symbol) bool {
+	for _, prop := range choice.Properties {
+		if prop.Type == PropertyPrompt || prop.Type == PropertyMenu {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *configResolver) choiceSelection(choice *Symbol) *Symbol {
@@ -351,6 +398,16 @@ func (r *configResolver) choiceSelection(choice *Symbol) *Symbol {
 	if def := r.choiceDefault(choice, visible); def != nil {
 		return def
 	}
+	// The parent-symbol dialect's sym_choice_default() falls back to the
+	// first visible member, even if an imported config marked it n. The
+	// member dialect retains the selected member's raw-value preference.
+	if r.tree.choiceDialect == ChoiceDialectParent {
+		for _, member := range choice.ChoiceMembers {
+			if visible[member] {
+				return member
+			}
+		}
+	}
 
 	for _, member := range choice.ChoiceMembers {
 		if visible[member] && !r.rawSet[member] {
@@ -371,7 +428,16 @@ func (r *configResolver) choiceMemberVisible(member *Symbol) bool {
 	if member == nil {
 		return false
 	}
-	return r.evalDepExprDefault(member.DirDep, triY) != triN
+	// Both selected symbol.c implementations calculate member visibility
+	// from prompts. The parser has folded menu and member dependencies into
+	// each prompt. The parent dialect's sym_calc_visibility additionally
+	// disables a tristate member's mod prompt while the choice is yes;
+	// choiceSelection is called only for that parent state.
+	visible := r.promptVisibility(member)
+	if r.tree.choiceDialect == ChoiceDialectParent && member.Type == SymbolTristate && visible == triM {
+		return false
+	}
+	return visible != triN
 }
 
 func (r *configResolver) choiceDefault(choice *Symbol, visible map[*Symbol]bool) *Symbol {
@@ -386,7 +452,10 @@ func (r *configResolver) choiceDefault(choice *Symbol, visible map[*Symbol]bool)
 		if member == nil {
 			continue
 		}
-		if r.rawSet[member] && r.rawTri[member] == triN {
+		// The menu dialect vetoes an explicit n on its default member;
+		// the parent dialect's sym_choice_default() selects that visible
+		// member without consulting its user value.
+		if r.tree.choiceDialect == ChoiceDialectMember && r.rawSet[member] && r.rawTri[member] == triN {
 			continue
 		}
 		if !visible[member] {

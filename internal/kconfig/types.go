@@ -78,9 +78,11 @@ type Tree struct {
 	Sources     []Source
 	Diagnostics []Diagnostic
 
-	constSymbols map[string]*Symbol
-	anonID       int
-	modulesSym   *Symbol
+	constSymbols  map[string]*Symbol
+	anonID        int
+	modulesSym    *Symbol
+	defconfigSym  *Symbol
+	choiceDialect ChoiceDialect
 }
 
 type Source struct {
@@ -93,6 +95,8 @@ type Symbol struct {
 	Type          SymbolType
 	Const         bool
 	Transitional  bool
+	NoWrite       bool
+	AllNoConfigY  bool
 	Menus         []*Menu
 	Properties    []*Property
 	Choice        *Symbol
@@ -126,8 +130,9 @@ type Menu struct {
 
 func newTree() *Tree {
 	t := &Tree{
-		Symbols:      map[string]*Symbol{},
-		constSymbols: map[string]*Symbol{},
+		Symbols:       map[string]*Symbol{},
+		constSymbols:  map[string]*Symbol{},
+		choiceDialect: ChoiceDialectMember,
 	}
 	t.Root = &Menu{Type: MenuRoot}
 	t.symbol("y", true).Type = SymbolTristate
@@ -155,7 +160,7 @@ func (t *Tree) symbol(name string, constant bool) *Symbol {
 
 func (t *Tree) anonymousSymbol(pos Position) *Symbol {
 	t.anonID++
-	return &Symbol{Name: fmt.Sprintf("<choice@%s:%d:%d>", pos.Filename, pos.Line, t.anonID), Type: SymbolBool}
+	return &Symbol{Name: fmt.Sprintf("<choice@%s:%d:%d>", pos.Filename, pos.Line, t.anonID), Type: SymbolUnknown}
 }
 
 func (m *Menu) addChild(child *Menu) {
