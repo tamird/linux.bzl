@@ -75,6 +75,25 @@ func TestPkgConfigShimReportsUnavailablePackageLikePkgConfig(t *testing.T) {
 	}
 }
 
+func TestPkgConfigShimExistsUsesDeclaredPackages(t *testing.T) {
+	manifest := testPkgConfigManifest(t)
+	for _, tc := range []struct {
+		name string
+		want int
+	}{
+		{name: "libcrypto", want: 0},
+		{name: "liboptional", want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			status := run([]string{"-manifest", manifest, "--", "--exists", tc.name}, &stdout, &stderr)
+			if status != tc.want || stdout.Len() != 0 {
+				t.Fatalf("declared package %q: status %d stdout %q, want status %d and no text", tc.name, status, stdout.String(), tc.want)
+			}
+		})
+	}
+}
+
 func TestPkgConfigShimRejectsMalformedManifestAndQueries(t *testing.T) {
 	valid := testPkgConfigManifest(t)
 	tests := map[string]struct {
