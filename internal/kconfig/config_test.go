@@ -7,6 +7,35 @@ import (
 	"testing"
 )
 
+func TestResolveConfigScalarBooleanExpressions(t *testing.T) {
+	// expr_calc_value(E_SYMBOL) reads curr.tri. sym_calc_value initializes
+	// scalar symbols from symbol_empty (no), and scalar assignments update
+	// only curr.val. Nonempty strings and nonzero numbers are not booleans.
+	for _, test := range []struct{ expression, want string }{
+		{"0", "n"}, {"1", "n"}, {"0x10", "n"},
+		{`""`, "n"}, {`"text"`, "n"},
+		{"TEXT", "n"}, {"NUMBER", "n"}, {"HEX", "n"},
+		{"y", "y"}, {`"y"`, "y"},
+		{`TEXT = "text"`, "y"}, {"NUMBER = 1", "y"}, {"HEX = 0x10", "y"},
+	} {
+		t.Run(test.expression, func(t *testing.T) {
+			resolved := mustResolveConfig(t, `
+config TEXT
+	string
+	default "text"
+config NUMBER
+	int
+	default 1
+config HEX
+	hex
+	default 0x10
+config RESULT
+	def_bool `+test.expression+"\n", nil)
+			wantConfigValues(t, resolved, map[string]string{"CONFIG_RESULT": test.want})
+		})
+	}
+}
+
 func TestResolveConfigTransitiveSelect(t *testing.T) {
 	resolved := mustResolveConfig(t, `
 mainmenu "Test"

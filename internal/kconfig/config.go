@@ -748,10 +748,11 @@ func (r *configResolver) evalSymbol(sym *Symbol, gateModConst bool) (triValue, b
 			}
 			return value, true
 		}
-		if sym.Name == "" {
-			return triN, true
-		}
-		return triY, true
+		// Native Kconfig stores scalar values separately from curr.tri.
+		// https://github.com/gregkh/linux/blob/1797d8bf8d0c2e74defad605d14e3553d43a3caf/scripts/kconfig/expr.c#L1001
+		// https://github.com/gregkh/linux/blob/1797d8bf8d0c2e74defad605d14e3553d43a3caf/scripts/kconfig/symbol.c#L348
+		// Only the distinguished y/m/n constants have a tristate value.
+		return triN, true
 	}
 	if len(sym.Menus) == 0 {
 		return triN, true
@@ -759,16 +760,8 @@ func (r *configResolver) evalSymbol(sym *Symbol, gateModConst bool) (triValue, b
 	switch sym.Type {
 	case SymbolBool, SymbolTristate:
 		return r.effective[sym], true
-	case SymbolString:
-		if r.values[sym] == "" || r.values[sym] == `""` {
-			return triN, true
-		}
-		return triY, true
-	case SymbolInt, SymbolHex, SymbolUnknown:
-		if parseConfigInt(r.values[sym]) == 0 {
-			return triN, true
-		}
-		return triY, true
+	case SymbolString, SymbolInt, SymbolHex, SymbolUnknown:
+		return triN, true
 	default:
 		return triN, false
 	}
