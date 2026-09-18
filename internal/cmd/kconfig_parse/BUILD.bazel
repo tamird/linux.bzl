@@ -24,6 +24,8 @@ go_library(
         "frontier_virtual_file_view.go",
         "graph_guard_round.go",
         "main.go",
+        "native_config.go",
+        "native_config_run.go",
         "path_set.go",
         "profiling.go",
     ],
@@ -33,6 +35,7 @@ go_library(
         "//internal/kconfig",
         "//internal/pkgconfigmanifest",
         "//internal/toolaction",
+        "//internal/toolsetpath",
     ],
 )
 
@@ -82,6 +85,7 @@ go_test(
         "frontier_virtual_file_view_test.go",
         "graph_guard_round_test.go",
         "main_test.go",
+        "native_config_test.go",
         "path_set_test.go",
         "profile_binary_test.go",
         "profile_test.go",

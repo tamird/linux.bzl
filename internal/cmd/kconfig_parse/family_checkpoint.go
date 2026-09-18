@@ -186,6 +186,9 @@ func linuxFamilyCheckpointBindings(opts linuxKbuildProbeOptions, scopes *kconfig
 	if opts.familyVariantOptions == nil {
 		return kconfig.ActionPlanCheckpointBindings{}, fmt.Errorf("checkpoint requires a family variant")
 	}
+	if err := opts.nativeConfig.verify(opts.tree, resolved); err != nil {
+		return kconfig.ActionPlanCheckpointBindings{}, err
+	}
 	current := cloneResolvedConfig(resolved)
 	if err := normalizeResolvedConfigValues(current, func(value string) (string, error) {
 		return scopes.ImportToolsetPathCapabilities(value, func(value string) (string, error) { return value, nil })
@@ -220,7 +223,7 @@ func linuxFamilyCheckpointBindings(opts linuxKbuildProbeOptions, scopes *kconfig
 	}
 	bindings, err := kconfig.NewActionPlanCheckpointBindings(opts.familyVariantOptions.Variant, artifacts,
 		map[string]string{"target": opts.targetFacts.ToolsetIdentity(), "host": opts.hostFacts.ToolsetIdentity()},
-		resolvedConfigObjectTreeContents(opts.tree, resolved), current, opts.tree.ChoiceDialect(), metadataOptions, manifestIdentity)
+		opts.nativeConfig.files, current, opts.tree.ChoiceDialect(), metadataOptions, manifestIdentity)
 	bindings.VirtualSourceRoots = virtual
 	return bindings, err
 }

@@ -198,11 +198,6 @@ func TestFamilyExecutionGuardsRejectEveryVariantOutputField(t *testing.T) {
 	}{
 		{"arch", func(v *familyPlanVariantRequest) { v.arch = "arch" }},
 		{"snapshot", func(v *familyPlanVariantRequest) { v.snapshot = "snapshot" }},
-		{"config", func(v *familyPlanVariantRequest) { v.resolved.config = "config" }},
-		{"auto.conf", func(v *familyPlanVariantRequest) { v.resolved.autoConf = "auto.conf" }},
-		{"auto.conf.cmd", func(v *familyPlanVariantRequest) { v.resolved.autoConfCmd = "auto.conf.cmd" }},
-		{"autoconf.h", func(v *familyPlanVariantRequest) { v.resolved.autoconf = "autoconf.h" }},
-		{"rustc_cfg", func(v *familyPlanVariantRequest) { v.resolved.rustcCfg = "rustc_cfg" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			variants := []familyPlanVariantRequest{{name: "base"}}

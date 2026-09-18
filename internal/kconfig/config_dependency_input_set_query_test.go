@@ -200,7 +200,7 @@ func TestConfigDependencyInputSetQueryIsSnapshotScopedAndLazy(t *testing.T) {
 	if _, err := newConfigDependencyInputSetQuery(plan).stagesConfig(root); err == nil {
 		t.Fatal("missing provenance accepted")
 	}
-	plan.Sources = append(plan.Sources, ActionPlanSource{ID: "src-99999999", Namespace: "config", Path: "auto.conf"})
+	plan.Sources = append(plan.Sources, ActionPlanSource{ID: "src-99999999", Namespace: "config", Path: "include/config/auto.conf"})
 	if staged, err := newConfigDependencyInputSetQuery(plan).stagesConfig(root); err != nil || !staged {
 		t.Fatalf("fresh query retained a previous snapshot error: %v, %v", staged, err)
 	}
@@ -211,7 +211,7 @@ func configDependencyInputSetQueryTestPlan() *ActionPlan {
 		inputSetStore: newPlanningActionPlanInputSetStore(),
 		Sources: []ActionPlanSource{
 			{ID: "src-00000001", Namespace: "kernel", Path: "ordinary.h"},
-			{ID: "src-00000002", Namespace: "config", Path: "autoconf.h"},
+			{ID: "src-00000002", Namespace: "config", Path: "include/generated/autoconf.h"},
 			{ID: "src-00000003", Namespace: "capsule", Path: "capsule/include/generated/autoconf.h"},
 		},
 		Nodes: []ActionPlanNode{

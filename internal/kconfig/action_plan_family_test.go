@@ -58,7 +58,7 @@ func familyTestSnapshot(t *testing.T, sourceOrdinal int, artifactPath string, co
 		},
 		Sources: []ActionPlanSource{
 			{ID: kernelSourceID, Namespace: "kernel", Path: "drivers/example.c"},
-			{ID: configSourceID, Namespace: "config", Path: "autoconf.h"},
+			{ID: configSourceID, Namespace: "config", Path: "include/generated/autoconf.h"},
 		},
 		Recipes: map[string]ActionRecipe{recipeID: recipe},
 		Nodes:   []ActionPlanNode{node},
@@ -136,7 +136,7 @@ func familyTestChainSnapshot(t *testing.T, salt, artifactPath string) ActionPlan
 		},
 		Sources: []ActionPlanSource{
 			{ID: "src-00000001", Namespace: "kernel", Path: "drivers/example.c"},
-			{ID: "src-00000002", Namespace: "config", Path: "autoconf.h"},
+			{ID: "src-00000002", Namespace: "config", Path: "include/generated/autoconf.h"},
 		},
 		Recipes: map[string]ActionRecipe{producerRecipeID: producerRecipe, consumerRecipeID: consumerRecipe},
 		Nodes: []ActionPlanNode{
@@ -463,7 +463,7 @@ func familyTestPrepCopyCompileSnapshot(t *testing.T, config map[string]string, p
 			"target": "sha256-" + strings.Repeat("1", 64),
 		},
 		Sources: []ActionPlanSource{
-			{ID: "src-00000001", Namespace: "config", Path: "autoconf.h"},
+			{ID: "src-00000001", Namespace: "config", Path: "include/generated/autoconf.h"},
 			{ID: "src-00000002", Namespace: "kernel", Path: "drivers/example.c"},
 		},
 		Recipes: map[string]ActionRecipe{copyRecipeID: copyRecipe, compileRecipeID: compileRecipe},
@@ -2932,30 +2932,30 @@ func familyCanonicalFallbackOpaqueSnapshot(t *testing.T, config map[string]strin
 		Recipes:  map[string]ActionRecipe{copyRecipeID: copyRecipe},
 		Products: []ActionPlanProduct{{Name: "image", Tree: "objects", Path: LinuxKernelTreeRootMarker}},
 	}
-	producerIDs := make([]string, 0, len(resolvedConfigProjections()))
-	for index, projection := range resolvedConfigProjections() {
+	producerIDs := make([]string, 0, len(recognizedConfigDocuments()))
+	for index, projection := range recognizedConfigDocuments() {
 		sourceID := "src-" + planOrdinal(index+1)
 		producerID := "config-projection-" + planOrdinal(index)
 		plan.Sources = append(plan.Sources, ActionPlanSource{
-			ID: sourceID, Namespace: "config", Path: projection.input,
+			ID: sourceID, Namespace: "config", Path: projection,
 		})
 		plan.Nodes = append(plan.Nodes, ActionPlanNode{
 			ID: producerID, Stage: "prep", Kind: "copy", Recipe: copyRecipeID,
 			Tool: "actionfile", Product: "sdk",
 			Sources: []ActionPlanSourceEdge{{Role: "input", SourceID: sourceID}},
-			Outputs: []ActionPlanOutput{{Tree: "prep", Path: projection.output}},
+			Outputs: []ActionPlanOutput{{Tree: "prep", Path: projection}},
 		})
 		producerIDs = append(producerIDs, producerID)
 		binding := "config:" + planOrdinal(index)
 		consumerRecipe.Inputs = append(consumerRecipe.Inputs, binding)
-		consumerRecipe.WorkingInputs["input:"+binding] = projection.output
+		consumerRecipe.WorkingInputs["input:"+binding] = projection
 	}
 	consumerRecipeID, err := consumerRecipe.ID()
 	if err != nil {
 		t.Fatal(err)
 	}
 	plan.Recipes[consumerRecipeID] = consumerRecipe
-	kernelSourceID := "src-" + planOrdinal(len(resolvedConfigProjections())+1)
+	kernelSourceID := "src-" + planOrdinal(len(recognizedConfigDocuments())+1)
 	plan.Sources = append(plan.Sources, ActionPlanSource{
 		ID: kernelSourceID, Namespace: "kernel", Path: "drivers/opaque.c",
 	})
@@ -3033,10 +3033,10 @@ func TestActionPlanFamilyStagesFullConfigForOpaquePrepReader(t *testing.T) {
 			t.Fatal(err)
 		}
 		recipe := family.Recipes[node.Recipe]
-		if got, want := len(node.Sources), len(ResolvedConfigProjectionOutputs()); got != want {
+		if got, want := len(node.Sources), len(recognizedConfigDocuments()); got != want {
 			t.Fatalf("variant %s ambient config sources = %d, want %d", variant, got, want)
 		}
-		if got, want := len(recipe.WorkingInputs), len(ResolvedConfigProjectionOutputs()); got != want {
+		if got, want := len(recipe.WorkingInputs), len(recognizedConfigDocuments()); got != want {
 			t.Fatalf("variant %s ambient config working inputs = %d, want %d", variant, got, want)
 		}
 		seenPaths := map[string]bool{}
@@ -3056,7 +3056,7 @@ func TestActionPlanFamilyStagesFullConfigForOpaquePrepReader(t *testing.T) {
 			}
 			seenPaths[pathname] = true
 		}
-		for _, projection := range ResolvedConfigProjectionOutputs() {
+		for _, projection := range recognizedConfigDocuments() {
 			if !seenPaths[projection] {
 				t.Errorf("variant %s did not stage full-config projection %q", variant, projection)
 			}
@@ -3091,10 +3091,10 @@ func TestActionPlanFamilyStagesFullConfigForEveryOpaqueSharedRecipeConsumer(t *t
 			t.Fatalf("opaque consumers do not share their localized recipe: %s != %s", node.Recipe, recipeID)
 		}
 		recipe := family.Recipes[node.Recipe]
-		if got, want := len(node.Sources), len(ResolvedConfigProjectionOutputs()); got != want {
+		if got, want := len(node.Sources), len(recognizedConfigDocuments()); got != want {
 			t.Fatalf("opaque consumer %s ambient sources = %d, want %d", node.ID, got, want)
 		}
-		if got, want := len(recipe.WorkingInputs), len(ResolvedConfigProjectionOutputs()); got != want {
+		if got, want := len(recipe.WorkingInputs), len(recognizedConfigDocuments()); got != want {
 			t.Fatalf("opaque consumer %s working inputs = %d, want %d", node.ID, got, want)
 		}
 		for ordinal, edge := range node.Sources {
@@ -3157,13 +3157,13 @@ func TestActionPlanFamilyOpaqueCanonicalFallbackInputsUseFullCapsuleProducers(t 
 			t.Fatalf("variant %s capsule = %#v, want exact full config", variant, got)
 		}
 		recipe := family.Recipes[node.Recipe]
-		if got, want := len(node.Inputs), len(ResolvedConfigProjectionOutputs()); got != want {
+		if got, want := len(node.Inputs), len(recognizedConfigDocuments()); got != want {
 			t.Fatalf("variant %s fallback inputs = %d, want %d", variant, got, want)
 		}
 		if got, want := len(node.Sources), 1; got != want {
 			t.Fatalf("variant %s sources = %d, want only the kernel source", variant, got)
 		}
-		if got, want := len(recipe.WorkingInputs), len(ResolvedConfigProjectionOutputs()); got != want {
+		if got, want := len(recipe.WorkingInputs), len(recognizedConfigDocuments()); got != want {
 			t.Fatalf("variant %s fallback working inputs = %d, want %d", variant, got, want)
 		}
 		seen := map[string]bool{}
@@ -3191,7 +3191,7 @@ func TestActionPlanFamilyOpaqueCanonicalFallbackInputsUseFullCapsuleProducers(t 
 			}
 			seen[projection] = true
 		}
-		for _, projection := range ResolvedConfigProjectionOutputs() {
+		for _, projection := range recognizedConfigDocuments() {
 			if !seen[projection] {
 				t.Errorf("variant %s did not stage full-capsule producer projection %q", variant, projection)
 			}
@@ -5041,7 +5041,7 @@ func TestActionPlanFamilyForcedDirectPrepConfigConsumerIsOpaqueEverywhere(t *tes
 		for _, pathname := range recipe.WorkingInputs {
 			staged[canonicalKbuildRulePath(pathname)] = true
 		}
-		for _, projection := range ResolvedConfigProjectionOutputs() {
+		for _, projection := range recognizedConfigDocuments() {
 			if !staged[canonicalKbuildRulePath(projection)] {
 				t.Errorf("forced opaque prep consumer %s did not stage %q", node.ID, projection)
 			}
@@ -5156,12 +5156,12 @@ func familyBenchmarkSnapshotMode(tb testing.TB, config map[string]string, compil
 	compileInputs := []string(nil)
 	workingInputs := map[string]string(nil)
 	if mode == "explicit-precise" {
-		compileInputs = make([]string, len(resolvedConfigProjections()))
-		workingInputs = make(map[string]string, len(resolvedConfigProjections()))
-		for index, projection := range resolvedConfigProjections() {
+		compileInputs = make([]string, len(recognizedConfigDocuments()))
+		workingInputs = make(map[string]string, len(recognizedConfigDocuments()))
+		for index, projection := range recognizedConfigDocuments() {
 			binding := "config:" + planOrdinal(index)
 			compileInputs[index] = binding
-			workingInputs["input:"+binding] = projection.output
+			workingInputs["input:"+binding] = projection
 		}
 	}
 	compileRecipe := ActionRecipe{
@@ -5184,20 +5184,20 @@ func familyBenchmarkSnapshotMode(tb testing.TB, config map[string]string, compil
 		Recipes:  map[string]ActionRecipe{copyRecipeID: copyRecipe, compileRecipeID: compileRecipe},
 		Products: []ActionPlanProduct{{Name: "image", Tree: "objects", Path: LinuxKernelTreeRootMarker}},
 	}
-	projectionProducerIDs := make([]string, 0, len(resolvedConfigProjections()))
-	for index, projection := range resolvedConfigProjections() {
+	projectionProducerIDs := make([]string, 0, len(recognizedConfigDocuments()))
+	for index, projection := range recognizedConfigDocuments() {
 		sourceID := "src-" + planOrdinal(index+1)
 		producerID := "config-projection-" + planOrdinal(index)
-		plan.Sources = append(plan.Sources, ActionPlanSource{ID: sourceID, Namespace: "config", Path: projection.input})
+		plan.Sources = append(plan.Sources, ActionPlanSource{ID: sourceID, Namespace: "config", Path: projection})
 		plan.Nodes = append(plan.Nodes, ActionPlanNode{
 			ID: producerID, Stage: "prep", Kind: "copy", Recipe: copyRecipeID, Tool: "actionfile", Product: "sdk",
 			Sources: []ActionPlanSourceEdge{{Role: "input", SourceID: sourceID}},
-			Outputs: []ActionPlanOutput{{Tree: "prep", Path: projection.output}},
+			Outputs: []ActionPlanOutput{{Tree: "prep", Path: projection}},
 		})
 		projectionProducerIDs = append(projectionProducerIDs, producerID)
 	}
 	for index := 0; index < compileCount; index++ {
-		sourceID := "src-" + planOrdinal(len(resolvedConfigProjections())+index+1)
+		sourceID := "src-" + planOrdinal(len(recognizedConfigDocuments())+index+1)
 		plan.Sources = append(plan.Sources, ActionPlanSource{
 			ID: sourceID, Namespace: "kernel", Path: fmt.Sprintf("drivers/bench/file_%04d.c", index),
 		})
@@ -5290,7 +5290,7 @@ func BenchmarkBuildActionPlanFamilyCrossConfig(b *testing.B) {
 			sharedCompiles++
 		}
 	}
-	variantNodes := variantCount * (compileCount + len(resolvedConfigProjections()))
+	variantNodes := variantCount * (compileCount + len(recognizedConfigDocuments()))
 	b.ReportMetric(float64(variantNodes), "variant-nodes/op")
 	b.ReportMetric(float64(len(family.Nodes)), "unique-nodes/op")
 	b.ReportMetric(float64(variantNodes-len(family.Nodes)), "reused-instances/op")
@@ -5325,7 +5325,7 @@ func BenchmarkBuildActionPlanFamilyPriorTreeScale(b *testing.B) {
 				}
 			}
 			b.StopTimer()
-			b.ReportMetric(float64(variantCount*(compileCount+len(resolvedConfigProjections()))), "variant-nodes/op")
+			b.ReportMetric(float64(variantCount*(compileCount+len(recognizedConfigDocuments()))), "variant-nodes/op")
 			b.ReportMetric(float64(len(family.Nodes)), "unique-nodes/op")
 		})
 	}

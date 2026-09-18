@@ -901,9 +901,9 @@ func (b *compactKbuildRulePlanBuilder) compactKbuildConfigProjectionBaselineInpu
 ) (compactKbuildRuleInput, bool, error) {
 	stage := b.planContext().Stage
 	inputPath := ""
-	for _, projection := range resolvedConfigProjections() {
-		if projection.output == pathname {
-			inputPath = projection.input
+	for _, projection := range b.metadata.configProjectionPaths {
+		if projection == pathname {
+			inputPath = projection
 			break
 		}
 	}
@@ -1593,7 +1593,7 @@ func (b *compactKbuildRulePlanBuilder) compactKbuildWorkingTreeClosureInputsFrom
 	// pretarget stage, so existingInput is allowed to peel its one-file copy to
 	// the immutable config source. A preconfigured object tree exposes the same
 	// logical path directly through the selected profile's source namespace.
-	for _, pathname := range ResolvedConfigProjectionOutputs() {
+	for _, pathname := range b.metadata.configProjectionPaths {
 		if visibleByPath[pathname] {
 			continue
 		}

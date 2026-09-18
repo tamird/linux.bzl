@@ -352,11 +352,11 @@ func TestActionPlanFamilyPersistentInputsPruneNormalCmdAndFixdepAmbientConfig(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	configID, err := ensureActionPlanSource(plan, "config", "autoconf.h")
+	configID, err := ensureActionPlanSource(plan, "config", "include/generated/autoconf.h")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ambientID, err := ensureActionPlanSource(plan, "config", "auto.conf.cmd")
+	ambientID, err := ensureActionPlanSource(plan, "config", "include/config/auto.conf.cmd")
 	if err != nil {
 		t.Fatal(err)
 	}

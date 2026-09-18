@@ -5683,12 +5683,12 @@ func configDependencyProjectionMention(value string) (string, bool) {
 			offset = index + 1
 		}
 	}
-	for _, projection := range resolvedConfigProjections() {
-		for _, candidate := range []string{projection.output, "${tree:prep}/" + projection.output,
-			"${tree:host}/" + projection.output, "${tree:bootstrap}/" + projection.output,
-			"${tree:prehost}/" + projection.output} {
+	for _, projection := range recognizedConfigDocuments() {
+		for _, candidate := range []string{projection, "${tree:prep}/" + projection,
+			"${tree:host}/" + projection, "${tree:bootstrap}/" + projection,
+			"${tree:prehost}/" + projection} {
 			if value == candidate || containsPath(value, candidate) {
-				return projection.output, true
+				return projection, true
 			}
 		}
 	}
@@ -5848,8 +5848,8 @@ func actionPlanGeneratedConfigDependencyPaths(plan *ActionPlan) map[string]bool 
 			generated[canonicalKbuildRulePath(output.Path)] = true
 		}
 	}
-	for _, projection := range resolvedConfigProjections() {
-		delete(generated, projection.output)
+	for _, pathname := range actionPlanConfigProjectionPaths(plan) {
+		delete(generated, pathname)
 	}
 	return generated
 }
@@ -5979,15 +5979,15 @@ func configDependencyResolvedProjectionSource(source ActionPlanSource) (string, 
 	if sourcePath == "" || sourcePath != source.Path {
 		return "", false
 	}
-	for _, projection := range resolvedConfigProjections() {
+	for _, projection := range recognizedConfigDocuments() {
 		switch source.Namespace {
 		case "config":
-			if sourcePath == projection.input {
-				return projection.output, true
+			if sourcePath == projection {
+				return projection, true
 			}
 		case "capsule":
-			if strings.HasSuffix(sourcePath, "/"+projection.output) {
-				return projection.output, true
+			if strings.HasSuffix(sourcePath, "/"+projection) {
+				return projection, true
 			}
 		}
 	}
@@ -8670,8 +8670,8 @@ func configDependencyCompletedCompilerCandidateForNode(
 }
 
 func configDependencyCompletedResolvedProjection(pathname string) bool {
-	for _, projection := range resolvedConfigProjections() {
-		if pathname == projection.output {
+	for _, projection := range recognizedConfigDocuments() {
+		if pathname == projection {
 			return true
 		}
 	}
@@ -10305,7 +10305,7 @@ func buildActionPlanConfigDependencyAnalysisWithObservations(
 	return analysis, nil
 }
 
-// ConfigCapsule is one content-addressed six-file resolved-config projection.
+// ConfigCapsule is one content-addressed native config projection.
 // Files are keyed by their logical object-tree path.
 type ConfigCapsule struct {
 	ID    string
@@ -10390,7 +10390,7 @@ func filterConfigProjection(pathname, contents string, selected map[string]bool)
 
 func configCapsuleID(files map[string]string) string {
 	hash := sha256.New()
-	for _, pathname := range ResolvedConfigProjectionOutputs() {
+	for _, pathname := range slices.Sorted(maps.Keys(files)) {
 		contents := files[pathname]
 		fmt.Fprintf(hash, "%08x:%s%016x:", len(pathname), pathname, len(contents))
 		hash.Write([]byte(contents))
@@ -10407,29 +10407,35 @@ func RenderConfigCapsule(full map[string]string, dependencies ConfigDependencySe
 	if err != nil {
 		return ConfigCapsule{}, err
 	}
-	for _, pathname := range ResolvedConfigProjectionOutputs() {
-		if _, ok := full[pathname]; !ok {
-			return ConfigCapsule{}, fmt.Errorf("resolved config projection %q is missing", pathname)
-		}
+	if _, err := NativeConfigProjectionPaths(full); err != nil {
+		return ConfigCapsule{}, err
 	}
-	files := make(map[string]string, len(resolvedConfigProjections()))
+	files := map[string]string{}
 	if set.Opaque {
-		for _, pathname := range ResolvedConfigProjectionOutputs() {
-			files[pathname] = full[pathname]
-		}
+		files = maps.Clone(full)
 	} else {
 		selected := configCapsuleSelectedSymbols(set)
-		files[".config"] = filterConfigProjection(".config", full[".config"], selected)
-		files["include/config/auto.conf"] = filterConfigProjection(
-			"include/config/auto.conf", full["include/config/auto.conf"], selected,
-		)
-		files["include/config/auto.conf.cmd"] = full["include/config/auto.conf.cmd"]
-		files["include/generated/autoconf.h"] = filterConfigProjection(
-			"include/generated/autoconf.h", full["include/generated/autoconf.h"], selected,
-		)
-		files["include/generated/rustc_cfg"] = filterConfigProjection(
-			"include/generated/rustc_cfg", full["include/generated/rustc_cfg"], selected,
-		)
+		for _, document := range recognizedConfigDocuments() {
+			contents, present := full[document]
+			if !present {
+				continue
+			}
+			if document != "include/config/auto.conf.cmd" {
+				contents = filterConfigProjection(document, contents, selected)
+			}
+			files[document] = contents
+		}
+		// Native conf and fixdep have changed marker naming across kernels.
+		// Preserve exact demanded paths and their presence, without reconstructing
+		// a naming convention or coupling unrelated symbols to every action.
+		for _, pathname := range set.ObjectPaths {
+			if _, document := files[pathname]; document {
+				continue
+			}
+			if contents, present := full[pathname]; present {
+				files[pathname] = contents
+			}
+		}
 	}
 	return ConfigCapsule{ID: configCapsuleID(files), Files: files}, nil
 }

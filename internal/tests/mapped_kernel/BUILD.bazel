@@ -1,6 +1,5 @@
 load("@rules_go//go:def.bzl", "go_test")
 load("//internal:linux_modules.bzl", "linux_cc_module")
-load("//internal:linux_source_runfiles.bzl", "linux_source_runfiles")
 load("//internal:mapped_kernel.bzl", "linux_mapped_kernel_family", "linux_mapped_kernel_variant", "linux_test_kernel_projection")
 load("//internal/tests/optional_definedness:fixture.bzl", "compiler_optional_definedness_fixture")
 load(":compiler_intrinsic_measurement.bzl", "compiler_intrinsic_measurement")
@@ -28,25 +27,13 @@ compiler_intrinsic_measurement(
     kernel = ":family_smoke",
 )
 
-linux_source_runfiles(
-    name = "source_runfiles",
-    source_files = glob(
-        ["**"],
-        exclude = ["BUILD.bazel"],
-    ),
-    source_root = "Kconfig",
-)
-
 linux_mapped_kernel_family(
     name = "analysis_smoke",
     config = "config",
-    kbuild = "Kbuild",
-    source_files = glob(
-        ["**"],
-        exclude = ["BUILD.bazel"],
-    ),
-    source_root = "Kconfig",
-    source_runfiles = ":source_runfiles",
+    kbuild = "@mapped_kernel_source//:Kbuild",
+    source_files = ["@mapped_kernel_source//:all_files"],
+    source_root = "@mapped_kernel_source//:Kconfig",
+    source_runfiles = "@mapped_kernel_source//:source_runfiles",
     version = "6.18.0",
     visibility = ["//internal/tests:__pkg__"],
 )
@@ -54,17 +41,14 @@ linux_mapped_kernel_family(
 linux_mapped_kernel_family(
     name = "family_smoke",
     config = "config",
-    kbuild = "Kbuild",
+    kbuild = "@mapped_kernel_source//:Kbuild",
     overlays = {
         "irrelevant": "irrelevant.config",
         "relevant": "relevant.config",
     },
-    source_files = glob(
-        ["**"],
-        exclude = ["BUILD.bazel"],
-    ),
-    source_root = "Kconfig",
-    source_runfiles = ":source_runfiles",
+    source_files = ["@mapped_kernel_source//:all_files"],
+    source_root = "@mapped_kernel_source//:Kconfig",
+    source_runfiles = "@mapped_kernel_source//:source_runfiles",
     version = "6.18.0",
     visibility = ["//internal/tests:__pkg__"],
 )
@@ -98,6 +82,12 @@ filegroup(
     name = "family_smoke_base_image",
     srcs = [":family_smoke"],
     output_group = "image",
+)
+
+filegroup(
+    name = "family_smoke_native_configs",
+    srcs = [":family_smoke"],
+    output_group = "native_config",
 )
 
 filegroup(
@@ -197,6 +187,7 @@ go_test(
         "executed_helper_test.go",
         "family_intrinsic_test.go",
         "family_numeric_header_test.go",
+        "family_native_config_guard_test.go",
         "family_optional_definedness_test.go",
         "family_reuse_test.go",
         "source_paths_test.go",
@@ -207,6 +198,7 @@ go_test(
         ":family_smoke_base_config",
         ":family_smoke_base_execution_config",
         ":family_smoke_base_image",
+        ":family_smoke_native_configs",
         ":family_smoke_base_objects",
         ":family_smoke_compiler_guards",
         ":family_smoke_initial_snapshots",
@@ -228,6 +220,7 @@ go_test(
         "FAMILY_SMOKE_BASE_CONFIG": "$(rlocationpath :family_smoke_base_config)",
         "FAMILY_SMOKE_BASE_EXECUTION_CONFIG": "$(rlocationpath :family_smoke_base_execution_config)",
         "FAMILY_SMOKE_BASE_IMAGE": "$(rlocationpath :family_smoke_base_image)",
+        "FAMILY_SMOKE_NATIVE_CONFIGS": "$(rlocationpaths :family_smoke_native_configs)",
         "FAMILY_SMOKE_BASE_OBJECTS": "$(rlocationpath :family_smoke_base_objects)",
         "FAMILY_SMOKE_COMPILER_GUARDS": "$(rlocationpaths :family_smoke_compiler_guards)",
         "FAMILY_SMOKE_INITIAL_SNAPSHOTS": "$(rlocationpaths :family_smoke_initial_snapshots)",

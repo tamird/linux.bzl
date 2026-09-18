@@ -455,11 +455,10 @@ func canonicalActionPlanSnapshot(plan *ActionPlan, dependencies map[string]Confi
 		}
 		snapshot.ConfigDependencies[node.ID] = canonical
 	}
-	for _, pathname := range ResolvedConfigProjectionOutputs() {
-		if _, ok := snapshot.ConfigFiles[pathname]; !ok {
-			return ActionPlanSnapshot{}, fmt.Errorf("action plan snapshot is missing resolved config projection %q", pathname)
-		}
+	if _, err := NativeConfigProjectionPaths(snapshot.ConfigFiles); err != nil {
+		return ActionPlanSnapshot{}, err
 	}
+
 	sort.Slice(snapshot.Sources, func(i, j int) bool { return snapshot.Sources[i].ID < snapshot.Sources[j].ID })
 	sort.Slice(snapshot.Nodes, func(i, j int) bool { return snapshot.Nodes[i].ID < snapshot.Nodes[j].ID })
 	sort.Slice(snapshot.Products, func(i, j int) bool { return snapshot.Products[i].Name < snapshot.Products[j].Name })
@@ -942,14 +941,17 @@ func (s ActionPlanSnapshot) validateWithStats(stats *actionPlanValidationStats) 
 			return fmt.Errorf("snapshot node %s config dependencies are not canonical", node.ID)
 		}
 	}
-	for _, pathname := range ResolvedConfigProjectionOutputs() {
-		if _, ok := s.ConfigFiles[pathname]; !ok {
-			return fmt.Errorf("snapshot is missing resolved config projection %q", pathname)
+	if _, err := NativeConfigProjectionPaths(s.ConfigFiles); err != nil {
+		return err
+	}
+	for _, source := range s.Sources {
+		if source.Namespace == "config" {
+			if _, exists := s.ConfigFiles[source.Path]; !exists {
+				return fmt.Errorf("snapshot config source %q is absent from native projection", source.Path)
+			}
 		}
 	}
-	if len(s.ConfigFiles) != len(ResolvedConfigProjectionOutputs()) {
-		return fmt.Errorf("snapshot has %d resolved config projections, want %d", len(s.ConfigFiles), len(ResolvedConfigProjectionOutputs()))
-	}
+
 	return nil
 }
 
@@ -1003,8 +1005,8 @@ func compressCanonicalActionPlanSnapshot(data []byte, limit int64) ([]byte, erro
 }
 
 // WriteActionPlanSnapshot publishes a bounded, canonical, lossless variant
-// plan as deterministic gzip. configFiles are keyed by
-// ResolvedConfigProjectionOutputs paths.
+// plan as deterministic gzip. configFiles contain the selected native
+// configuration artifacts, keyed by their object-tree paths.
 func WriteActionPlanSnapshot(output string, plan *ActionPlan, dependencies map[string]ConfigDependencySet, configFiles map[string]string) error {
 	snapshot, err := canonicalActionPlanSnapshot(plan, dependencies, configFiles)
 	if err != nil {
@@ -1945,16 +1947,11 @@ func familyConfigCapsuleCacheKey(dependencies ConfigDependencySet) string {
 	if dependencies.Opaque {
 		return "opaque"
 	}
-	return "symbols\x00" + strings.Join(dependencies.Symbols, "\x00")
+	return "symbols\x00" + strings.Join(dependencies.Symbols, "\x00") + "\x00paths\x00" + strings.Join(dependencies.ObjectPaths, "\x00")
 }
 
 func configSourceCapsulePath(sourcePath string) (string, bool) {
-	for _, projection := range resolvedConfigProjections() {
-		if projection.input == sourcePath {
-			return projection.output, true
-		}
-	}
-	return "", false
+	return sourcePath, nativeConfigArtifactPath(sourcePath)
 }
 
 func familyConfigSourceUsage(plan *ActionPlan, sources map[string]ActionPlanSource) (map[string]bool, error) {
@@ -3472,7 +3469,7 @@ func buildValidatedActionPlanFamilyWithStats(
 			for pathname := range projected {
 				staged[pathname] = true
 			}
-			for _, projection := range ResolvedConfigProjectionOutputs() {
+			for _, projection := range slices.Sorted(maps.Keys(capsule.Files)) {
 				if staged[canonicalKbuildRulePath(projection)] {
 					continue
 				}
@@ -4457,13 +4454,8 @@ func (f *ActionPlanFamily) validateRepresentation(stats *actionPlanFamilyValidat
 		if err := validatePlanDigest("config capsule ID", digest); err != nil {
 			return err
 		}
-		if len(files) != len(ResolvedConfigProjectionOutputs()) {
-			return fmt.Errorf("config capsule %s has %d projections, want %d", digest, len(files), len(ResolvedConfigProjectionOutputs()))
-		}
-		for _, pathname := range ResolvedConfigProjectionOutputs() {
-			if _, ok := files[pathname]; !ok {
-				return fmt.Errorf("config capsule %s is missing %q", digest, pathname)
-			}
+		if _, err := NativeConfigProjectionPaths(files); err != nil {
+			return fmt.Errorf("config capsule %s: %w", digest, err)
 		}
 		if actual := configCapsuleID(files); actual != digest {
 			return fmt.Errorf("config capsule ID %s does not match canonical content %s", digest, actual)

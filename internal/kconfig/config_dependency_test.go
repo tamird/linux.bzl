@@ -6494,7 +6494,7 @@ func TestAnalyzeActionPlanNodeConfigDependenciesRecognizesConfigProvenanceForSta
 		"-include", "${source:working-closure:00000001}",
 		"-c", "drivers/example/driver.c",
 	}, nil)
-	configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "autoconf.h"}
+	configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "include/generated/autoconf.h"}
 	plan.Sources = append(plan.Sources, configSource)
 	node.Sources = append(node.Sources, ActionPlanSourceEdge{Role: "working-closure", SourceID: configSource.ID})
 	plan.Nodes[0] = node
@@ -6578,7 +6578,7 @@ func TestAnalyzeActionPlanNodeConfigDependenciesRejectsPositionalConfigSourceBin
 		"${source:working-closure:00000001}",
 		"-c", "drivers/example/driver.c",
 	}, nil)
-	configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "autoconf.h"}
+	configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "include/generated/autoconf.h"}
 	plan.Sources = append(plan.Sources, configSource)
 	node.Sources = append(node.Sources, ActionPlanSourceEdge{Role: "working-closure", SourceID: configSource.ID})
 	plan.Nodes[0] = node
@@ -6622,7 +6622,7 @@ func TestAnalyzeActionPlanNodeConfigDependenciesRejectsForcedNonAutoconfConfigSo
 		"-include", "${source:working-closure:00000001}",
 		"-c", "drivers/example/driver.c",
 	}, nil)
-	configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "auto.conf"}
+	configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "include/config/auto.conf"}
 	plan.Sources = append(plan.Sources, configSource)
 	node.Sources = append(node.Sources, ActionPlanSourceEdge{Role: "working-closure", SourceID: configSource.ID})
 	plan.Nodes[0] = node
@@ -6692,7 +6692,7 @@ func TestAnalyzeActionPlanNodeConfigDependenciesRejectsConfigSourceOutsideCompil
 			plan, node := configDependencyCompilePlanForTest(t, map[string]string{
 				"drivers/example/driver.c": "CONFIG_DRIVER\n",
 			}, []string{"-nostdinc", "-c", "drivers/example/driver.c"}, nil)
-			configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "autoconf.h"}
+			configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "include/generated/autoconf.h"}
 			plan.Sources = append(plan.Sources, configSource)
 			node.Sources = append(node.Sources, ActionPlanSourceEdge{Role: "working-closure", SourceID: configSource.ID})
 			plan.Nodes[0] = node
@@ -6723,7 +6723,7 @@ func TestAnalyzeActionPlanNodeConfigDependenciesRejectsIncompleteCompoundWithSta
 	plan, node := configDependencyCompilePlanForTest(t, map[string]string{
 		"drivers/example/driver.c": "CONFIG_DRIVER\n",
 	}, []string{"-nostdinc", "-c", "drivers/example/driver.c"}, nil)
-	configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "autoconf.h"}
+	configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "include/generated/autoconf.h"}
 	plan.Sources = append(plan.Sources, configSource)
 	node.Sources = append(node.Sources, ActionPlanSourceEdge{Role: "working-closure", SourceID: configSource.ID})
 	plan.Nodes[0] = node
@@ -7077,7 +7077,7 @@ func TestAnalyzeActionPlanNodeConfigDependenciesModelsForcedAutoconfFallbackInpu
 		"-c", "drivers/example/driver.c",
 	}, nil)
 	if got := configDependencyAttachFallbackProjectionInputForTest(
-		t, plan, &node, "autoconf.h", configDependencyAutoconfPath,
+		t, plan, &node, configDependencyAutoconfPath, configDependencyAutoconfPath,
 	); got != binding {
 		t.Fatalf("fallback input binding = %q, want %q", got, binding)
 	}
@@ -7101,7 +7101,7 @@ func TestAnalyzeActionPlanNodeConfigDependenciesRejectsForcedNonAutoconfFallback
 		"-c", "drivers/example/driver.c",
 	}, nil)
 	configDependencyAttachFallbackProjectionInputForTest(
-		t, plan, &node, "auto.conf", "include/config/auto.conf",
+		t, plan, &node, "include/config/auto.conf", "include/config/auto.conf",
 	)
 
 	set, err := AnalyzeActionPlanNodeConfigDependencies(plan, node)
@@ -7122,7 +7122,7 @@ func TestAnalyzeActionPlanNodeConfigDependenciesRejectsPositionalConfigFallbackI
 		"-c", "drivers/example/driver.c",
 	}, nil)
 	configDependencyAttachFallbackProjectionInputForTest(
-		t, plan, &node, "autoconf.h", configDependencyAutoconfPath,
+		t, plan, &node, configDependencyAutoconfPath, configDependencyAutoconfPath,
 	)
 
 	set, err := AnalyzeActionPlanNodeConfigDependencies(plan, node)
@@ -7242,7 +7242,7 @@ func TestAnalyzeActionPlanNodeConfigDependenciesRejectsConfigFallbackInputOutsid
 				"drivers/example/driver.c": "CONFIG_DRIVER\n",
 			}, []string{"-nostdinc", "-c", "drivers/example/driver.c"}, nil)
 			binding := configDependencyAttachFallbackProjectionInputForTest(
-				t, plan, &node, "autoconf.h", configDependencyAutoconfPath,
+				t, plan, &node, configDependencyAutoconfPath, configDependencyAutoconfPath,
 			)
 			recipe := plan.Recipes[node.Recipe]
 			recipe.Tool = compactKbuildScriptRunnerRole
@@ -7555,7 +7555,7 @@ func TestAnalyzeActionPlanNodeConfigDependenciesClassifiesPersistentConfigProjec
 		Tool: "cc", Arguments: []string{"-nostdinc", "-c", "drivers/example/driver.c"},
 	}
 	plan.Recipes[node.Recipe] = recipe
-	configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "autoconf.h"}
+	configSource := ActionPlanSource{ID: "src-00000002", Namespace: "config", Path: "include/generated/autoconf.h"}
 	plan.Sources = append(plan.Sources, configSource)
 	node.InputSet = configDependencyInsertInputSetEntryForTest(t, plan, "", ActionPlanInputSetEntry{
 		Target:   ActionPlanInputSetTarget{Kind: ActionPlanInputSetWorkTarget, Path: configDependencyAutoconfPath},
@@ -8814,7 +8814,7 @@ func TestConfigDependencyMacroDebugPreservesOriginalEnvelopeAndFullConfig(t *tes
 				"drivers/example/driver.c": "#if CONFIG_USED\nint selected;\n#endif\n",
 			}, arguments, map[string]string{"CONFIG_USED": "y", "CONFIG_OTHER": "y"})
 			if got := configDependencyAttachFallbackProjectionInputForTest(
-				t, plan, &node, "autoconf.h", configDependencyAutoconfPath,
+				t, plan, &node, configDependencyAutoconfPath, configDependencyAutoconfPath,
 			); got != binding {
 				t.Fatalf("config input binding = %q, want %q", got, binding)
 			}
@@ -9335,7 +9335,7 @@ func TestRenderConfigCapsuleFiltersResolvedProjections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(capsule.ID) != 64 || len(capsule.Files) != len(ResolvedConfigProjectionOutputs()) {
+	if len(capsule.ID) != 64 || len(capsule.Files) != len(recognizedConfigDocuments()) {
 		t.Fatalf("capsule identity/files = %q/%#v", capsule.ID, capsule.Files)
 	}
 	for pathname, wantFragments := range map[string][]string{
@@ -9556,5 +9556,48 @@ func TestConfigDependencyWitnessRetainsPersistentEntrySemantics(t *testing.T) {
 				t.Fatalf("witness equality after changing %s = %t, want %t", field, equal, wantEqual)
 			}
 		})
+	}
+}
+
+func TestNativeConfigCapsuleOptionalFilesAndMarkerPresence(t *testing.T) {
+	full := resolvedConfigProjectionFixture()
+	delete(full, "include/generated/rustc_cfg")
+	for _, marker := range []string{"include/config/module.h", "include/config/MODULE"} {
+		full[marker] = ""
+	}
+	selected := ConfigDependencySet{Symbols: []string{"CONFIG_MODULE"}, ObjectPaths: []string{"include/config/module.h"}}
+	capsule, err := RenderConfigCapsule(full, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := capsule.Files["include/generated/rustc_cfg"]; exists {
+		t.Fatal("invented optional rustc_cfg")
+	}
+	if value, exists := capsule.Files["include/config/module.h"]; !exists || value != "" {
+		t.Fatal("missing selected empty native marker")
+	}
+	if _, exists := capsule.Files["include/config/MODULE"]; exists {
+		t.Fatal("retained unrelated native marker")
+	}
+	other := selected
+	other.ObjectPaths = []string{"include/config/MODULE"}
+	if familyConfigCapsuleCacheKey(selected) == familyConfigCapsuleCacheKey(other) {
+		t.Fatal("capsule cache ignores exact marker paths")
+	}
+	delete(full, "include/config/module.h")
+	absent, err := RenderConfigCapsule(full, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absent.ID == capsule.ID {
+		t.Fatal("empty marker and absent marker share an identity")
+	}
+	full["include/config/auto.conf"] = strings.ReplaceAll(full["include/config/auto.conf"], "CONFIG_MODULE=m", "CONFIG_MODULE=\"m\"")
+	changed, err := RenderConfigCapsule(full, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.ID == absent.ID {
+		t.Fatal("native format bytes do not affect capsule identity")
 	}
 }

@@ -13,8 +13,9 @@ import (
 )
 
 type CompactMetadata struct {
-	Config         CompactConfig
-	configFragment map[string]string
+	Config                CompactConfig
+	configFragment        map[string]string
+	configProjectionPaths []string
 	// validatedSelectionGraph is the one-shot handoff from metadata validation
 	// to action lowering. Graph construction is deliberately eager so callers
 	// still receive structural Kbuild errors from CompactMetadata construction,
@@ -728,18 +729,20 @@ type CompactKbuildInvocationDependency struct {
 }
 
 type CompactKbuildSelectedSourcePhase struct {
-	OwnerTarget string
-	OutputPath string
-	SourcePath string
-	Ordinal int
+	OwnerTarget  string
+	OutputPath   string
+	SourcePath   string
+	Ordinal      int
 	SourceSHA256 string
-	Spans []CompactKbuildLinkVmlinuxSourceSpan
+	Spans        []CompactKbuildLinkVmlinuxSourceSpan
 	// SourceArguments are the exact positional words supplied to this script
 	// by its selected Make shell command, before either recursive Make boundary.
 	SourceArguments []string
 }
 
 type CompactMetadataOptions struct {
+	// ConfigProjectionPaths is the verified native serializer artifact inventory.
+	ConfigProjectionPaths []string
 	// SourceNamespaces maps canonical source-path prefixes to ActionPlan source
 	// namespaces.  This keeps non-kernel inputs (for example a selected Rust
 	// source toolchain) distinct from files in the Linux source repository.
@@ -884,6 +887,7 @@ func (t *Tree) CompactMetadataForResolvedConfigWithOptions(
 		return nil, err
 	}
 	out := &CompactMetadata{
+		configProjectionPaths:   slices.Clone(opts.ConfigProjectionPaths),
 		sourceNamespaces:        maps.Clone(opts.SourceNamespaces),
 		exactSourceNamespaces:   maps.Clone(opts.ExactSourceNamespaces),
 		actionRoles:             actionRoles,

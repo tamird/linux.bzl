@@ -668,7 +668,7 @@ def _family_variant_output_names(owner, variants, initial):
     for variant in variants:
         prefix = owner + "." + variant
         config_prefix = prefix + ".initial" if initial else prefix
-        for suffix in [".arch", ".config", ".auto.conf", ".auto.conf.cmd", ".autoconf.h", ".rustc_cfg"]:
+        for suffix in [".arch"]:
             names.append(config_prefix + suffix)
         names.append(prefix + (".action-plan.json.gz" if initial else ".observed-action-plan.json.gz"))
     return names
@@ -1827,27 +1827,28 @@ def _mapped_kernel_family_wiring_test_impl(ctx):
     ]
     guard_plan_actions = [action for action in actions if action.mnemonic == "LinuxMappedCompilerGuardPlan"]
 
-    config_actions = [action for action in actions if action.mnemonic == "LinuxKconfigResolve"]
+    config_actions = [action for action in actions if action.mnemonic == "LinuxNativeConfig"]
     asserts.equals(env, 3, len(config_actions), "each public configuration resolves before Kbuild planning")
     for variant in ["base", "irrelevant", "relevant"]:
-        expected_name = "family_smoke." + variant + ".kconfig.config"
+        expected_name = "family_smoke." + variant + ".native-config"
         matches = [action for action in config_actions if expected_name in [file.basename for file in action.outputs.to_list()]]
         asserts.equals(env, 1, len(matches), "missing early configuration for " + variant)
         if not matches:
             continue
         action = matches[0]
         output = [file for file in action.outputs.to_list() if file.basename == expected_name][0]
-        values = _flag_values(action.argv, "-resolved_config_out")
+        values = _flag_values(action.argv, "-native_config_out")
         asserts.equals(env, 1, len(values))
         if values:
             asserts.true(env, _action_path_names_artifact(values[0], output))
-        asserts.equals(env, 5, len(action.outputs.to_list()))
+        asserts.equals(env, 1, len(action.outputs.to_list()))
+        asserts.true(env, output.is_directory)
         for flag in ["-kbuild", "-kbuild_probe_plan_out", "-target_kbuild_probe_results", "-family_plan_variant", "-family_execution_mode"]:
             asserts.equals(env, [], _flag_values(action.argv, flag), "configuration must not request " + flag)
         overlays = _flag_values(action.argv, "-resolve_config_overlay")
         asserts.equals(env, 0 if variant == "base" else 1, len(overlays))
         if variant != "base" and overlays:
-            overlay = [file for file in action.inputs.to_list() if file.basename == variant + ".config"]
+            overlay = [file for file in action.inputs.to_list() if _action_path_names_artifact(overlays[0], file)]
             asserts.equals(env, 1, len(overlay))
             if overlay:
                 asserts.true(env, _action_path_names_artifact(overlays[0], overlay[0]))
@@ -1883,12 +1884,8 @@ def _mapped_kernel_family_wiring_test_impl(ctx):
         asserts.equals(env, ["irrelevant", "relevant"], sorted([value.split("=")[0] for value in overlay_values]))
         for flag in [
             "-family_plan_resolved_arch_out",
-            "-family_plan_resolved_config_out",
-            "-family_plan_resolved_auto_conf_out",
-            "-family_plan_resolved_auto_conf_cmd_out",
-            "-family_plan_resolved_autoconf_out",
-            "-family_plan_resolved_rustc_cfg_out",
             "-family_plan_snapshot_out",
+            "-family_plan_native_config",
         ]:
             asserts.equals(env, 3, len(_flag_values(family_plan.argv, flag)))
         family_plan_inputs = {file.basename: True for file in family_plan.inputs.to_list()}
@@ -1959,7 +1956,7 @@ def _mapped_kernel_variant_provider_test_impl(ctx):
     asserts.equals(env, ["family_smoke.relevant.image"], [file.basename for file in target[DefaultInfo].files.to_list()])
     if LinuxKernelInfo in target:
         kernel = target[LinuxKernelInfo]
-        asserts.equals(env, "family_smoke.relevant.config", kernel.config.basename)
+        asserts.equals(env, "family_smoke.relevant.kconfig.config", kernel.config.basename)
         asserts.equals(env, "family_smoke.relevant.image", kernel.image.basename)
     if LinuxModuleSdkInfo in target:
         sdk = target[LinuxModuleSdkInfo]
@@ -1968,7 +1965,7 @@ def _mapped_kernel_variant_provider_test_impl(ctx):
             sdk.kernel_key.startswith(str(Label("//internal/tests/mapped_kernel:family_smoke")) + "#relevant#"),
             "family SDK key must include configured artifact/toolset identity",
         )
-        asserts.equals(env, "family_smoke.relevant.config", sdk.config.basename)
+        asserts.equals(env, "family_smoke.relevant.kconfig.config", sdk.config.basename)
     if OutputGroupInfo in target:
         groups = target[OutputGroupInfo]
         asserts.equals(env, [

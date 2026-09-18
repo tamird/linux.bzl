@@ -384,8 +384,13 @@ func RestoreActionPlanCheckpoint(data []byte, bindings ActionPlanCheckpointBindi
 		}
 		plan.projectedGeneratorInternalOutputs[key] = output.Value
 	}
+	configPaths, err := NativeConfigProjectionPaths(r.ConfigFiles)
+	if err != nil {
+		return nil, err
+	}
 	m := &CompactMetadata{
-		configFragment: r.ConfigValues, configSymbolUniverse: r.ConfigSymbolUniverse,
+		configProjectionPaths: configPaths,
+		configFragment:        r.ConfigValues, configSymbolUniverse: r.ConfigSymbolUniverse,
 		sourceNamespaces: r.SourceNamespaces, sourceNamespacePrefixes: r.SourceNamespacePrefixes,
 		exactSourceNamespaces: r.ExactSourceNamespaces, exactSourcePaths: r.ExactSourcePaths,
 		actionContracts: map[KbuildActionRoleRef]CompactKbuildActionContract{},

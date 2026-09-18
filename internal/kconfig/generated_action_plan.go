@@ -1110,34 +1110,6 @@ type generatedPlanBuilder struct {
 	fragment map[string]string
 }
 
-type resolvedConfigProjection struct {
-	input  string
-	output string
-}
-
-func resolvedConfigProjections() []resolvedConfigProjection {
-	return []resolvedConfigProjection{
-		{input: ".config", output: ".config"},
-		{input: "auto.conf", output: "include/config/auto.conf"},
-		{input: "auto.conf.cmd", output: "include/config/auto.conf.cmd"},
-		{input: "autoconf.h", output: "include/generated/autoconf.h"},
-		{input: "rustc_cfg", output: "include/generated/rustc_cfg"},
-	}
-}
-
-// ResolvedConfigProjectionOutputs returns the object-tree paths already
-// supplied by the Kconfig replay action. Kbuild goal discovery treats them as
-// satisfied nodes, exactly as GNU Make would treat existing generated config
-// files, so it cannot descend into the obsolete syncconfig/conf tool graph.
-func ResolvedConfigProjectionOutputs() []string {
-	projections := resolvedConfigProjections()
-	outputs := make([]string, 0, len(projections))
-	for _, projection := range projections {
-		outputs = append(outputs, projection.output)
-	}
-	return outputs
-}
-
 func (b *generatedPlanBuilder) add(node ActionPlanNode, recipe ActionRecipe) (string, error) {
 	return appendActionPlanNode(b.plan, node, recipe)
 }
@@ -1335,8 +1307,8 @@ func actionPlanCommandMetadataSourceTreeClosure(
 }
 
 func (b *generatedPlanBuilder) internConfigProjectionSources() error {
-	for _, spec := range resolvedConfigProjections() {
-		if _, err := ensureActionPlanSource(b.plan, "config", spec.input); err != nil {
+	for _, pathname := range b.metadata.configProjectionPaths {
+		if _, err := ensureActionPlanSource(b.plan, "config", pathname); err != nil {
 			return err
 		}
 	}
@@ -1349,20 +1321,20 @@ func (b *generatedPlanBuilder) internConfigProjectionSources() error {
 // writer can read the initial state without racing an unconditional copy. If
 // Kbuild does not select a writer, the copy remains the canonical final state.
 func (b *generatedPlanBuilder) appendMissingConfigProjections() error {
-	for _, spec := range resolvedConfigProjections() {
-		if _, _, exists := planProducerByOutput(b.plan, "prep", spec.output); exists {
+	for _, pathname := range b.metadata.configProjectionPaths {
+		if _, _, exists := planProducerByOutput(b.plan, "prep", pathname); exists {
 			continue
 		}
 		node := ActionPlanNode{
 			Stage: "prep", Kind: "copy", Tool: "actionfile", Product: "sdk",
-			Outputs: []ActionPlanOutput{{Tree: "prep", Path: spec.output}},
+			Outputs: []ActionPlanOutput{{Tree: "prep", Path: pathname}},
 		}
 		recipe := ActionRecipe{
 			Schema: LinuxKernelPlanSchema, Kind: "copy", Tool: "actionfile",
 			Arguments: []string{"-input", "${source:input:00000000}", "-out", "${output:00000000}"},
 			Outputs:   []string{"00000000"},
 		}
-		if _, err := b.addSource(&node, &recipe, "input", "config", spec.input); err != nil {
+		if _, err := b.addSource(&node, &recipe, "input", "config", pathname); err != nil {
 			return err
 		}
 		if _, err := b.add(node, recipe); err != nil {
