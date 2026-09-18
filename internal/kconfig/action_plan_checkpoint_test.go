@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"maps"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/hermeticbuild/linux.bzl/internal/pkgconfigmanifest"
 )
 
 func TestActionPlanCheckpointBackendReplaysCompleteLoweredPlan(t *testing.T) {
@@ -35,7 +39,7 @@ func TestActionPlanCheckpointBackendReplaysCompleteLoweredPlan(t *testing.T) {
 		t.Fatal("lowered fixture registered no compiler queries")
 	}
 	oracle := successfulProbeOracleForFixedPointTest(t, probePlan)
-	bindings := ActionPlanCheckpointBindings{Variant: "base", SourceArtifacts: map[string]string{"linux": oldRoot}, Toolsets: maps.Clone(plan.Toolsets), ConfigValues: maps.Clone(metadata.configFragment), ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: slices.Clone(metadata.configSymbolUniverse), ActionContracts: maps.Clone(metadata.actionContracts)}
+	bindings := ActionPlanCheckpointBindings{Variant: "base", SourceArtifacts: map[string]string{"linux": oldRoot}, Toolsets: maps.Clone(plan.Toolsets), ConfigValues: maps.Clone(metadata.configFragment), ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: slices.Clone(metadata.configSymbolUniverse), ChoiceDialect: ChoiceDialectMember, ActionContracts: maps.Clone(metadata.actionContracts)}
 	bindings.ActionRoles = slices.Clone(metadata.actionRoles)
 	data, err := CaptureActionPlanCheckpoint(plan, bindings)
 	if err != nil {
@@ -271,7 +275,7 @@ func TestActionPlanCheckpointVirtualRootsNeedCurrentBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := m.Config.KbuildProfiles[0].evaluator.template.sourceRoots["__LINUX_BZL_SOURCE_TREE__"]
-	b := ActionPlanCheckpointBindings{Variant: "base", SourceArtifacts: map[string]string{"linux": root}, VirtualSourceRoots: map[string]string{virtual: virtual}, Toolsets: plan.Toolsets, ConfigValues: m.configFragment, ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: m.configSymbolUniverse, ActionContracts: m.actionContracts, ActionRoles: m.actionRoles}
+	b := ActionPlanCheckpointBindings{Variant: "base", SourceArtifacts: map[string]string{"linux": root}, VirtualSourceRoots: map[string]string{virtual: virtual}, Toolsets: plan.Toolsets, ConfigValues: m.configFragment, ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: m.configSymbolUniverse, ChoiceDialect: ChoiceDialectMember, ActionContracts: m.actionContracts, ActionRoles: m.actionRoles}
 	data, err := CaptureActionPlanCheckpoint(plan, b)
 	if err != nil {
 		t.Fatal(err)
@@ -293,10 +297,96 @@ func TestActionPlanCheckpointVirtualRootsNeedCurrentBindings(t *testing.T) {
 	}
 }
 
+func TestActionPlanCheckpointRejectsChangedChoiceDialectWithEqualResolvedConfig(t *testing.T) {
+	m := familyVariantMetadataForTest(t, nil)
+	plan, _, err := m.lowerSelectedActionPlan(actionPlanTestProbeIdentity, actionPlanTestProbeIdentity, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := m.Config.KbuildProfiles[0].evaluator.template.sourceRoots["__LINUX_BZL_SOURCE_TREE__"]
+	b := ActionPlanCheckpointBindings{
+		Variant: "base", SourceArtifacts: map[string]string{"linux": root},
+		Toolsets: plan.Toolsets, ConfigValues: m.configFragment,
+		ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: m.configSymbolUniverse,
+		ChoiceDialect: ChoiceDialectMember, ActionContracts: m.actionContracts, ActionRoles: m.actionRoles,
+	}
+	data, err := CaptureActionPlanCheckpoint(plan, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RestoreActionPlanCheckpoint(data, b); err != nil {
+		t.Fatalf("same dialect rejected: %v", err)
+	}
+	b.ChoiceDialect = ChoiceDialectParent
+	if _, err := RestoreActionPlanCheckpoint(data, b); err == nil || !strings.Contains(err.Error(), "choice dialect") {
+		t.Fatalf("different dialect with identical config accepted: %v", err)
+	}
+	b.ChoiceDialect = ChoiceDialectUnknown
+	if _, err := RestoreActionPlanCheckpoint(data, b); err == nil || !strings.Contains(err.Error(), "choice dialect") {
+		t.Fatalf("unbound dialect accepted: %v", err)
+	}
+	if _, err := CaptureActionPlanCheckpoint(plan, b); err == nil || !strings.Contains(err.Error(), "choice dialect") {
+		t.Fatalf("captured unbound dialect: %v", err)
+	}
+}
+
+func TestActionPlanCheckpointRejectsChangedDeclaredPkgConfigManifest(t *testing.T) {
+	m := familyVariantMetadataForTest(t, nil)
+	plan, _, err := m.lowerSelectedActionPlan(actionPlanTestProbeIdentity, actionPlanTestProbeIdentity, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := m.Config.KbuildProfiles[0].evaluator.template.sourceRoots["__LINUX_BZL_SOURCE_TREE__"]
+	b := ActionPlanCheckpointBindings{
+		Variant: "base", SourceArtifacts: map[string]string{"linux": root},
+		Toolsets: plan.Toolsets, ConfigValues: m.configFragment,
+		ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: m.configSymbolUniverse,
+		ChoiceDialect:   ChoiceDialectMember,
+		ActionContracts: m.actionContracts, ActionRoles: m.actionRoles,
+	}
+	filename := filepath.Join(t.TempDir(), "pkg-config.json")
+	writeManifest := func(packages string) *pkgconfigmanifest.Manifest {
+		t.Helper()
+		contents := `{"schema":"linux.bzl/pkg-config-manifest/v1","packages":` + packages + `}`
+		if err := os.WriteFile(filename, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		manifest, err := pkgconfigmanifest.Read(filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return manifest
+	}
+	original := writeManifest(`{"liboptional":{"cflags":[],"libs":[]}}`)
+	if _, present := original.Packages["liboptional"]; !present {
+		t.Fatal("first declared manifest must make liboptional available")
+	}
+	b.HostPkgConfigManifestIdentity = original.ContentIdentity()
+	data, err := CaptureActionPlanCheckpoint(plan, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RestoreActionPlanCheckpoint(data, b); err != nil {
+		t.Fatalf("unchanged declared host manifest rejected: %v", err)
+	}
+	current := writeManifest(`{}`)
+	if _, present := current.Packages["liboptional"]; present || current.ContentIdentity() == original.ContentIdentity() {
+		t.Fatal("same-path manifest did not change package membership and identity")
+	}
+	b.HostPkgConfigManifestIdentity = current.ContentIdentity()
+	if _, err := RestoreActionPlanCheckpoint(data, b); err == nil || !strings.Contains(err.Error(), "host pkg-config manifest") {
+		t.Fatalf("same-path package change was accepted: %v", err)
+	}
+	b.HostPkgConfigManifestIdentity = ""
+	if _, err := RestoreActionPlanCheckpoint(data, b); err == nil || !strings.Contains(err.Error(), "host pkg-config manifest") {
+		t.Fatalf("unbound package manifest was accepted: %v", err)
+	}
+}
+
 func TestActionPlanCheckpointInitialCaptureHook(t *testing.T) {
 	m := familyVariantMetadataForTest(t, nil)
 	root := m.Config.KbuildProfiles[0].evaluator.template.sourceRoots["__LINUX_BZL_SOURCE_TREE__"]
-	b := ActionPlanCheckpointBindings{Variant: "base", SourceArtifacts: map[string]string{"linux": root}, Toolsets: map[string]string{"target": actionPlanTestProbeIdentity, "host": actionPlanTestProbeIdentity}, ConfigValues: m.configFragment, ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: m.configSymbolUniverse, ActionContracts: m.actionContracts, ActionRoles: m.actionRoles}
+	b := ActionPlanCheckpointBindings{Variant: "base", SourceArtifacts: map[string]string{"linux": root}, Toolsets: map[string]string{"target": actionPlanTestProbeIdentity, "host": actionPlanTestProbeIdentity}, ConfigValues: m.configFragment, ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: m.configSymbolUniverse, ChoiceDialect: ChoiceDialectMember, ActionContracts: m.actionContracts, ActionRoles: m.actionRoles}
 	var captured []byte
 	calls := 0
 	result, err := m.ActionPlanFamilyVariant(actionPlanTestProbeIdentity, actionPlanTestProbeIdentity, ActionPlanFamilyVariantPlanningOptions{Variant: "base", CaptureCheckpoint: func(plan *ActionPlan) error {

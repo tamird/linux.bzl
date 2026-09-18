@@ -13,7 +13,7 @@ func TestActionPlanCheckpointRejectsMalformedOrUnboundState(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := m.Config.KbuildProfiles[0].evaluator.template.sourceRoots["__LINUX_BZL_SOURCE_TREE__"]
-	b := ActionPlanCheckpointBindings{Variant: "base", SourceArtifacts: map[string]string{"linux": root}, Toolsets: plan.Toolsets, ConfigValues: m.configFragment, ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: m.configSymbolUniverse, ActionContracts: m.actionContracts, ActionRoles: m.actionRoles}
+	b := ActionPlanCheckpointBindings{Variant: "base", SourceArtifacts: map[string]string{"linux": root}, Toolsets: plan.Toolsets, ConfigValues: m.configFragment, ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: m.configSymbolUniverse, ChoiceDialect: ChoiceDialectMember, ActionContracts: m.actionContracts, ActionRoles: m.actionRoles}
 	data, err := CaptureActionPlanCheckpoint(plan, b)
 	if err != nil {
 		t.Fatal(err)
@@ -21,7 +21,7 @@ func TestActionPlanCheckpointRejectsMalformedOrUnboundState(t *testing.T) {
 	if _, err := RestoreActionPlanCheckpoint(data, b); err != nil {
 		t.Fatal(err)
 	}
-	for _, mutation := range []string{"unknown-field", "duplicate-field", "trailing", "wrong-schema", "variant", "toolset", "config", "config-files", "config-universe", "roles", "contracts", "source-artifacts", "physical-root", "traversal", "absolute", "backslash", "unknown-artifact", "missing-profile-roots", "duplicate-profile", "duplicate-selection", "missing-producer", "unknown-child", "invalid-projection-slot", "missing-compiler-node"} {
+	for _, mutation := range []string{"unknown-field", "duplicate-field", "trailing", "wrong-schema", "old-schema", "variant", "toolset", "config", "config-files", "config-universe", "choice-dialect", "unbound-choice-dialect", "unsupported-choice-dialect", "roles", "contracts", "source-artifacts", "physical-root", "traversal", "absolute", "backslash", "unknown-artifact", "missing-profile-roots", "duplicate-profile", "duplicate-selection", "missing-producer", "unknown-child", "invalid-projection-slot", "missing-compiler-node"} {
 		t.Run(mutation, func(t *testing.T) {
 			var r actionPlanCheckpoint
 			if err := json.Unmarshal(data, &r); err != nil {
@@ -31,6 +31,8 @@ func TestActionPlanCheckpointRejectsMalformedOrUnboundState(t *testing.T) {
 			switch mutation {
 			case "wrong-schema":
 				r.Schema = "other"
+			case "old-schema":
+				r.Schema = "linux-action-plan-checkpoint-v2"
 			case "variant":
 				r.Variant = "other"
 			case "toolset":
@@ -41,6 +43,12 @@ func TestActionPlanCheckpointRejectsMalformedOrUnboundState(t *testing.T) {
 				r.ConfigFiles[".config"] = "different current config"
 			case "config-universe":
 				r.ConfigSymbolUniverse = []string{"CONFIG_OTHER_UNIVERSE"}
+			case "choice-dialect":
+				r.ChoiceDialect = ChoiceDialectParent
+			case "unbound-choice-dialect":
+				r.ChoiceDialect = ChoiceDialectUnknown
+			case "unsupported-choice-dialect":
+				r.ChoiceDialect = ChoiceDialect(3)
 			case "roles":
 				r.Roles = nil
 			case "contracts":
@@ -102,7 +110,7 @@ func TestActionPlanCheckpointRetainsProjectedGeneratorCommitments(t *testing.T) 
 	plan.Toolsets["host"] = plan.Toolsets["target"]
 	plan.selectionGraph = &compactKbuildSelectionGraph{profiles: map[string]CompactKbuildProfile{}}
 	plan.metadata.actionContracts = map[KbuildActionRoleRef]CompactKbuildActionContract{}
-	b := ActionPlanCheckpointBindings{Variant: "base", SourceArtifacts: map[string]string{"linux": t.TempDir()}, Toolsets: plan.Toolsets, ConfigValues: plan.metadata.configFragment, ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: plan.metadata.configSymbolUniverse, ActionContracts: plan.metadata.actionContracts}
+	b := ActionPlanCheckpointBindings{Variant: "base", SourceArtifacts: map[string]string{"linux": t.TempDir()}, Toolsets: plan.Toolsets, ConfigValues: plan.metadata.configFragment, ConfigFiles: familyTestConfig("1", "0"), ConfigSymbolUniverse: plan.metadata.configSymbolUniverse, ChoiceDialect: ChoiceDialectMember, ActionContracts: plan.metadata.actionContracts}
 	if _, err := CaptureActionPlanCheckpoint(plan, b); err == nil {
 		t.Fatal("captured unlowered projected-generator candidates")
 	}

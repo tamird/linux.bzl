@@ -268,6 +268,15 @@ type KbuildControlEvaluation struct {
 	// discovery consumes these snapshots so an export changed by a later
 	// $(eval ...) cannot leak backward into an earlier child Make process.
 	recipeSnapshots map[kbuildControlRecipeKey]KbuildControlEvaluation
+	// The incremental selected traversal also retains the bound immutable
+	// frontier and read log for each line. A target-wide evaluator alone cannot
+	// describe two lines which consume different file versions.
+	recipeReadSnapshots map[kbuildControlRecipeKey]*KbuildSelectedControlRecipeSnapshot
+	// finalReadView observes lazy exports expanded after the last selected
+	// recipe, using the invocation-completion frontier rather than the parse-
+	// time filesystem. The view's records remain available if callers expand
+	// exported values only after this evaluation has been returned.
+	finalReadView *kbuildControlRecipeReadView
 }
 
 type kbuildControlRecipeKey struct {
@@ -298,6 +307,12 @@ type KbuildControlEvaluationOptions struct {
 	// Control traversal invokes that closure before expanding the corresponding
 	// recipe line and retains it on every evaluator snapshot created there.
 	BindProbeEnvironment func(map[string]string) (func() error, error)
+	// ResetProbeEnvironment restores the invocation's inherited environment
+	// before expanding each recipe's exports. GNU Make uses the incoming value
+	// when an exported recursive variable calls $(shell ...) while its own
+	// environment entry is being constructed; a prior recipe's expansion must
+	// not become the next expansion's process input.
+	ResetProbeEnvironment func() error
 }
 
 // KbuildControlEvaluationBeforeRecipe returns the source-ordered Make state
@@ -341,6 +356,32 @@ func KbuildControlEvaluationBeforeRecipeIndex(
 		ruleIndex: ruleIndex, recipeIndex: recipeIndex,
 	}]
 	return snapshot, ok
+}
+
+// KbuildControlEvaluationRecipeSnapshot returns the exact selected line's
+// immutable file frontier and actual read/producer identities. It is populated
+// by SelectedKbuildControlStepper; legacy target-wide control evaluation still
+// exposes only its preline Make snapshots through the accessor above.
+func KbuildControlEvaluationRecipeSnapshot(
+	evaluation KbuildControlEvaluation,
+	target string,
+	ruleIndex, recipeIndex int,
+) (*KbuildSelectedControlRecipeSnapshot, bool) {
+	snapshot, exists := evaluation.recipeReadSnapshots[kbuildControlRecipeKey{
+		target: compactKbuildGraphTargetPath(target), ruleIndex: ruleIndex, recipeIndex: recipeIndex,
+	}]
+	return snapshot, exists
+}
+
+// KbuildControlEvaluationFinalReads reports actual source/produced reads from
+// final exported Make values. A caller may request these after expanding the
+// returned profile's lazy exports: the logged view stays immutable and valid
+// for the lifetime of that evaluator.
+func KbuildControlEvaluationFinalReads(evaluation KbuildControlEvaluation) []KbuildControlRecipeRead {
+	if evaluation.finalReadView == nil {
+		return nil
+	}
+	return evaluation.finalReadView.readsSnapshot()
 }
 
 // EvaluateSelectedKbuildControlEffects walks only EntryTargets and their
@@ -763,6 +804,12 @@ func EvaluateSelectedKbuildControlEffectsWithOptions(
 				return registerQuery(target, command, activeLineCommandShell, activeLineEnvironment, queryProfile)
 			}
 			for recipeIndex, rawLine := range selected.rule.Recipe {
+				if options.ResetProbeEnvironment != nil {
+					if err := options.ResetProbeEnvironment(); err != nil {
+						cleanup()
+						return fmt.Errorf("restore Kbuild profile %q target %q recipe %d inherited environment: %w", profile.Name, target, recipeIndex, err)
+					}
+				}
 				lineSnapshot := snapshot()
 				environment, environmentErr := evaluateKbuildControlTargetEnvironmentForMakeTarget(
 					lineSnapshot.Profile, target, selected.lookupTarget, recipeContext.target.makeWord, recipeContext.stem,
@@ -843,9 +890,21 @@ func EvaluateSelectedKbuildControlEffectsWithOptions(
 					}
 					if previous, exists := targetRecipeEnvironments[target]; exists && previous != environmentSnapshot {
 						cleanup()
+						different := make([]string, 0)
+						for name, value := range environment {
+							if prior, ok := previous.values[name]; !ok || prior != value {
+								different = append(different, name)
+							}
+						}
+						for name := range previous.values {
+							if _, ok := environment[name]; !ok {
+								different = append(different, name)
+							}
+						}
+						sort.Strings(different)
 						return fmt.Errorf(
-							"Kbuild profile %q target %q has executable recipe lines with different exported environments",
-							profile.Name, target,
+							"Kbuild profile %q target %q has executable recipe lines with different exported environments (variables %q)",
+							profile.Name, target, different,
 						)
 					}
 					if previous, exists := targetRecipeShells[target]; exists && previous != commandShell {
@@ -939,6 +998,11 @@ func EvaluateSelectedKbuildControlEffectsWithOptions(
 	result.Profile.targetRecipeShells = targetRecipeShells
 	result.Profile.probeEnvironmentActivation = finalSnapshot.Profile.probeEnvironmentActivation
 	if options.BindProbeEnvironment != nil {
+		if options.ResetProbeEnvironment != nil {
+			if err := options.ResetProbeEnvironment(); err != nil {
+				return KbuildControlEvaluation{}, fmt.Errorf("restore Kbuild profile %q final inherited environment: %w", profile.Name, err)
+			}
+		}
 		environment, err := ExportedKbuildControlVariables(finalSnapshot)
 		if err != nil {
 			return KbuildControlEvaluation{}, fmt.Errorf("Kbuild profile %q final probe environment: %w", profile.Name, err)
@@ -1100,6 +1164,11 @@ func copyKbuildControlVariableState(
 			delete(state.destination, name)
 		}
 	}
+	if condition, conditional := source.exportedWhen[name]; conditional {
+		destination.exportedWhen[name] = condition
+	} else {
+		delete(destination.exportedWhen, name)
+	}
 }
 
 // ExportedKbuildControlVariables expands the environment GNU Make would pass
@@ -1113,6 +1182,9 @@ func ExportedKbuildControlVariables(evaluation KbuildControlEvaluation) (map[str
 		return nil, fmt.Errorf("Kbuild control evaluation has no source-derived target evaluator")
 	}
 	parser := cloneKbuildParserForEvaluation(evaluation.Profile.evaluator.template)
+	if err := parser.resolveExportedMembership(); err != nil {
+		return nil, fmt.Errorf("Kbuild control: %w", err)
+	}
 	names := make([]string, 0, len(parser.exported))
 	for name, exported := range parser.exported {
 		if exported {
@@ -1188,4 +1260,13 @@ func exactKbuildEvalRecipeBody(line string) (string, bool, error) {
 		return "", false, fmt.Errorf("unsupported eval recipe %q", line)
 	}
 	return args[0], true, nil
+}
+
+// CompactKbuildRecipeIsControlEffect distinguishes an exact Make eval line
+// from an executable recipe when a later selection pass replays the selected
+// source lines. The control traversal already applied the assignment; replay
+// must use immutable line snapshots only for commands which actually execute.
+func CompactKbuildRecipeIsControlEffect(line string) (bool, error) {
+	_, control, err := exactKbuildEvalRecipeBody(line)
+	return control, err
 }

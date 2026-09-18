@@ -1,6 +1,7 @@
 package kconfig
 
 import (
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -956,6 +957,91 @@ func TestExportedKbuildControlVariablesPreserveProbeAtoms(t *testing.T) {
 	}
 	if got := exported["KBUILD_CFLAGS"]; got != token {
 		t.Fatalf("exported KBUILD_CFLAGS = %q, want unresolved probe atom %q", got, token)
+	}
+}
+
+func TestKbuildControlRestoresInheritedEnvironmentBeforeEachExportExpansion(t *testing.T) {
+	makefile := filepath.Join(t.TempDir(), "Makefile")
+	if err := os.WriteFile(makefile, []byte(`
+export FLAGS = $(shell probe-flags)
+all:
+	@echo first
+	@echo second
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	active := map[string]string{"FLAGS": "inherited"}
+	var scopedActivations int
+	parsed, err := ParseKbuildFileTree(makefile, KbuildOptions{
+		EnvironmentVariables:  map[string]string{"FLAGS": "inherited"},
+		MakeVariablesComplete: true, CaptureTargetEvaluator: true,
+		Shell: func(command string) (string, error) {
+			if command != "probe-flags" {
+				t.Fatalf("unexpected Kbuild probe command %q", command)
+			}
+			return "measured-" + active["FLAGS"], nil
+		},
+		// A recursive exported variable's shell sees its incoming process
+		// value while that export is being expanded. Restore the active fake
+		// workload afterward, as the configured probe scope does.
+		shellExportLoopOverride: func(fallbacks []kbuildShellExportFallback) (func() error, error) {
+			if len(fallbacks) != 1 || fallbacks[0].name != "FLAGS" ||
+				fallbacks[0].value != "inherited" || !fallbacks[0].present {
+				return nil, fmt.Errorf("unexpected incoming FLAGS shell scope: %#v", fallbacks)
+			}
+			previous := maps.Clone(active)
+			active = maps.Clone(active)
+			active["FLAGS"] = fallbacks[0].value
+			scopedActivations++
+			return func() error { active = previous; return nil }, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedActivations := scopedActivations
+	profile, err := NewCompactKbuildProfile("root", makefile, filepath.Dir(makefile), parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.EntryTargets = []string{"all"}
+	var resets int
+	evaluation, err := EvaluateSelectedKbuildControlEffectsWithOptions(profile, KbuildControlEvaluationOptions{
+		ResetProbeEnvironment: func() error {
+			resets++
+			active = map[string]string{"FLAGS": "inherited"}
+			return nil
+		},
+		BindProbeEnvironment: func(environment map[string]string) (func() error, error) {
+			bound := maps.Clone(environment)
+			return func() error { active = maps.Clone(bound); return nil }, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resets != 3 {
+		t.Fatalf("reset the parent environment %d times, want once per recipe and final export", resets)
+	}
+	if scopedActivations-parsedActivations != resets {
+		t.Fatalf("selected incoming export shell scopes = %d, want one for each of %d environment expansions",
+			scopedActivations-parsedActivations, resets)
+	}
+	if got, want := evaluation.Profile.EntryTargets, []string{"all"}; !slices.Equal(got, want) {
+		t.Fatalf("control profile changed selected targets: %q", got)
+	}
+	if active["FLAGS"] != "measured-inherited" {
+		t.Fatalf("recipe environment consumed previous export: %#v", active)
+	}
+	// The same fake Shell without a scoped incoming activation must fail
+	// before it runs with a partially expanded exported FLAGS value.
+	unbound := profile
+	unboundParser := cloneKbuildParserForEvaluation(profile.evaluator.template)
+	unboundParser.shellExportLoopOverride = nil
+	unbound.evaluator = &kbuildTargetEvaluator{template: unboundParser}
+	if _, err := EvaluateSelectedKbuildControlEffects(unbound); err == nil ||
+		!strings.Contains(err.Error(), "no scoped activation is available") {
+		t.Fatalf("standalone recursive exported Shell without incoming scope = %v, want rejection", err)
 	}
 }
 
