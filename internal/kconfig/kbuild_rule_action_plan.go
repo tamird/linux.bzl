@@ -1917,10 +1917,9 @@ func (b *compactKbuildRulePlanBuilder) buildSelectedTarget(target, makeTarget st
 	return b.buildResolved(target, &match)
 }
 
-// buildSelectedPhonyStatus executes the one local line whose GNU Make state
-// was frozen at selection time. Source-selected recursive children already
-// have their own actions; an exact sequence edge orders their completion
-// before this private status without replaying Make or inventing a target file.
+// buildSelectedPhonyStatus executes one frozen local line or the final private
+// completion after recursive children. Selection edges preserve source order;
+// neither action replays Make or invents a file named by the PHONY target.
 func (b *compactKbuildRulePlanBuilder) buildSelectedPhonyStatus(
 	target string, status *compactKbuildSelectedPhonyStatus,
 ) (string, error) {
@@ -1947,16 +1946,45 @@ func (b *compactKbuildRulePlanBuilder) buildSelectedPhonyStatus(
 	if err != nil {
 		return "", fmt.Errorf("selected PHONY target %q shell command: %w", target, err)
 	}
-	rooted = compactKbuildFinalizeRootedActionRecipeText(rooted)
 	receipt := &ActionRecipeMakePhonyCompletion{
 		Profile: match.profile.Name, Target: target, SourcePath: match.profile.Path,
 		RuleIndex: match.ruleOrder, RecipeIndex: status.recipeIndex,
-		ExpandedLine: rooted,
+		ExpandedLine: compactKbuildFinalizeRootedActionRecipeText(rooted),
 	}
-	return b.buildHermeticKbuildScriptContext(
-		target, match, inputs, rooted, nil, nil,
-		compactKbuildHermeticScriptOptions{PhonyStatus: receipt},
-	)
+	options := compactKbuildHermeticScriptOptions{PhonyStatus: receipt}
+	if status.recipeIndex >= 0 {
+		automatic, err := compactKbuildRuleRootedAutomaticEvaluationContext(target, match, inputs, nil)
+		if err != nil {
+			return "", err
+		}
+		commands, err := parseCompactKbuildRecipe(rooted, automatic)
+		if err == nil && len(commands) == 1 {
+			values, err := evaluateCompactKbuildRuleVariablesRooted(target, match, inputs, nil, "CONFIG_SHELL")
+			if err != nil {
+				return "", err
+			}
+			invocation, selected, err := compactKbuildSourceScriptCommandWithSourceArguments(
+				match.profile, commands[0], commands[0].arguments, values, b.actionScope(), b.metadata.actionRoles,
+			)
+			if err != nil {
+				return "", err
+			}
+			if selected {
+				receipt.SelectedLine = compactKbuildFinalizeRootedActionRecipeText(rooted)
+				receipt.ScriptPath, receipt.ActionScope = invocation.scriptPath, b.actionScope()
+				options.PhonyScriptPath = invocation.scriptPath
+				options.PhonyPrivateEffects = compactKbuildSourceCheckInvocationDepfileEffects(match.profile, target, invocation)
+				compound := compactKbuildRecipeLineShells([]string{rooted})
+				commands, err := compactKbuildCompoundProgramCommands(compound)
+				if err != nil {
+					return "", err
+				}
+				return b.buildHermeticKbuildScriptContext(target, match, inputs, compound, commands,
+					compactKbuildRecipeSideEffectProjection([]string{rooted}, automatic), options)
+			}
+		}
+	}
+	return b.buildHermeticKbuildScriptContext(target, match, inputs, rooted, nil, nil, options)
 }
 
 // A PHONY status is an execution prerequisite, not an object-tree pathname.
@@ -7771,7 +7799,7 @@ func (b *compactKbuildRulePlanBuilder) buildHermeticKbuildScriptContext(
 		declaredOutputs[0] = ActionPlanOutput{
 			Tree: b.planContext().OutputTree,
 			Path: b.compactKbuildRecipeIntermediateArtifactPath(
-				match.profile, target, 0, "check/"+completionSource+".state",
+				match.profile, target, b.selection.phonyStatusLine, "check/"+completionSource+".state",
 			),
 			ObservedPath: target,
 		}
@@ -7785,7 +7813,7 @@ func (b *compactKbuildRulePlanBuilder) buildHermeticKbuildScriptContext(
 		declaredOutputs[0] = ActionPlanOutput{
 			Tree: b.planContext().OutputTree,
 			Path: b.compactKbuildRecipeIntermediateArtifactPath(
-				match.profile, target, 0, "check/"+options.PhonyStatus.SourcePath+".state",
+				match.profile, target, b.selection.phonyStatusLine, "check/"+options.PhonyStatus.SourcePath+".state",
 			),
 			ObservedPath: target,
 		}

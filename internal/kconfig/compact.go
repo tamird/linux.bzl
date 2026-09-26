@@ -124,6 +124,9 @@ type CompactKbuildSelection struct {
 	// are real file writes with no Make rule of their own; final is the
 	// original Make rule after its earlier phases have completed.
 	SourceScriptPhase string
+	// phonyStatusLine is a lowering-only recipe boundary, one plus the source
+	// line index. It never denotes a Make target or visible object-tree file.
+	phonyStatusLine int
 	// MakeTarget preserves the concrete lexical filename GNU Make used while
 	// matching declarations for Target. It may contain parent traversals which
 	// disappear from the canonical graph identity in Target. It is mandatory;

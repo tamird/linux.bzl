@@ -16157,3 +16157,130 @@ later: $$(dependency)
 		t.Fatalf("later prerequisites = %q, want %q", entry.Line.Normal, want)
 	}
 }
+
+func TestSelectedPhonySourceCheckOrdersRecursiveChild(t *testing.T) {
+	for _, test := range []struct{ before, depfile bool }{{true, false}, {true, true}, {false, false}} {
+		t.Run(fmt.Sprintf("before=%t/depfile=%t", test.before, test.depfile), func(t *testing.T) {
+			root := t.TempDir()
+			check := "$(CONFIG_SHELL) $(srctree)/check.sh"
+			script := "#!/bin/sh\ntest -f before.out\n"
+			var effects []kconfig.ActionRecipePrivateWorkingEffect
+			if test.depfile {
+				check += " $(CC) -Wp,-MMD,$(objtree)/.prepare.d -E -x c -"
+				script += "\"$@\" </dev/null >/dev/null\n"
+				effects = []kconfig.ActionRecipePrivateWorkingEffect{{Path: ".prepare.d", Kind: "regular"}}
+			}
+			child := "$(MAKE) -f $(srctree)/child.mk child.out"
+			lines := []string{check, child}
+			if test.before {
+				// This later Make expansion records the child's producer on the
+				// enclosing target. It must remain absent from the earlier check.
+				lines = append(lines, "$(MAKE) -f $(srctree)/child.mk second.out SEEN=$(wildcard child.out)")
+			} else {
+				lines = []string{child, check}
+			}
+			for name, content := range map[string]string{
+				"Makefile": `
+CONFIG_SHELL := sh
+.PHONY: all prepare
+all: after.out
+prepare: before.out
+	` + strings.Join(lines, "\n\t") + `
+before.out:
+	printf before > $@
+after.out: prepare
+	printf after > $@
+`,
+				"check.sh": script,
+				"child.mk": "child.out second.out:\n\tprintf child > $@\n",
+			} {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			roles := []kconfig.KbuildActionRoleRef{{Scope: "target", Role: "cc"}}
+			variables := map[string]string{"SRCARCH": "x86", "CC": kconfig.KbuildActionRoleToken("target", "cc")}
+			profiles, selections, _, err := evaluatedKbuildProfilesWithOptions(
+				root, root, []string{"all"}, variables, kconfig.KbuildOptions{
+					RootDir: root, Variables: variables, ActionRoles: roles, ConfigVariablesComplete: true, MakeVariablesComplete: true,
+				}, nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			metadata, err := kconfig.CompactMetadataForResolvedConfigWithOptions(
+				&kconfig.ResolvedConfig{Effective: map[string]string{"CONFIG_TEST": "n"}},
+				kconfig.CompactMetadataOptions{SelectedProductsOnly: true, ActionRoles: roles, ActionContracts: map[kconfig.KbuildActionRoleRef]kconfig.CompactKbuildActionContract{{Scope: "target", Role: "cc"}: {}}},
+				func(*kconfig.ResolvedConfig) (kconfig.CompactConfigGraph, error) {
+					return kconfig.CompactConfigGraph{KbuildProfiles: profiles, KbuildSelections: selections}, nil
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := "sha256-" + strings.Repeat("5c", 32)
+			plan, err := metadata.ActionPlan(identity, identity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bindings, err := kconfig.NewActionPlanCheckpointBindings(
+				"base", map[string]string{"linux": root}, plan.Toolsets, nativeConfigFixtureForTest("# CONFIG_TEST is not set\n", "", ""),
+				&kconfig.ResolvedConfig{Effective: map[string]string{"CONFIG_TEST": "n"}},
+				kconfig.CompactMetadataOptions{SelectedProductsOnly: true, ActionRoles: roles, ActionContracts: map[kconfig.KbuildActionRoleRef]kconfig.CompactKbuildActionContract{{Scope: "target", Role: "cc"}: {}}}, "",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoint, err := kconfig.CaptureActionPlanCheckpoint(plan, bindings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err = kconfig.RestoreActionPlanCheckpoint(checkpoint, bindings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nodes := map[string]kconfig.ActionPlanNode{}
+			for _, node := range plan.Nodes {
+				recipe := plan.Recipes[node.Recipe]
+				if completion := recipe.MakePhonyCompletion; completion != nil && completion.Target == "prepare" {
+					name := "completion"
+					if completion.RecipeIndex >= 0 {
+						name = "check"
+						if completion.ScriptPath != "check.sh" || recipe.RequireUnchangedWorkingTree == test.depfile ||
+							!slices.Equal(recipe.PrivateWorkingEffects, effects) {
+							t.Fatalf("check lost immutable source or outputless contract: %#v", recipe)
+						}
+					}
+					nodes[name] = node
+				}
+				for _, output := range node.Outputs {
+					if output.Path == "prepare" {
+						t.Fatal("PHONY prepare became a file")
+					}
+					if output.ObservedPath == "" {
+						nodes[output.Path] = node
+					}
+				}
+			}
+			edges := [][2]string{{"check", "before.out"}}
+			if test.before {
+				edges = append(edges, [2]string{"child.out", "check"}, [2]string{"completion", "child.out"}, [2]string{"completion", "second.out"}, [2]string{"after.out", "completion"})
+			} else {
+				edges = append(edges, [2]string{"check", "child.out"}, [2]string{"after.out", "check"})
+			}
+			for _, edge := range edges {
+				consumer, producer := nodes[edge[0]], nodes[edge[1]]
+				if consumer.ID == "" || producer.ID == "" || !slices.ContainsFunc(consumer.Inputs, func(input kconfig.ActionPlanNodeEdge) bool {
+					return input.ProducerID == producer.ID
+				}) {
+					t.Fatalf("missing source-ordered edge %s -> %s", edge[1], edge[0])
+				}
+			}
+			for _, profile := range profiles {
+				if _, visible := kconfig.CompactKbuildProfileInitialVisibleArtifact(profile, "prepare"); visible {
+					t.Fatal("PHONY status leaked into a child's visible object tree")
+				}
+			}
+		})
+	}
+}

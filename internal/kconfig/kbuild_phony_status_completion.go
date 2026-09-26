@@ -70,7 +70,7 @@ func validateActionRecipeMakePhonyCompletion(recipe ActionRecipe) error {
 	private := privateInline || wrapped && len(recipe.PrivateWorkingEffects) != 0
 	switch {
 	case wrapped:
-		if completion.RecipeIndex != 0 || completion.SelectedLine == "" ||
+		if completion.RecipeIndex < 0 || completion.SelectedLine == "" ||
 			(completion.ActionScope != "target" && completion.ActionScope != "host") ||
 			len(completion.SelectedLine) > 1<<20 || strings.ContainsRune(completion.SelectedLine, 0) ||
 			privateInline || completion.ExpandedLine == "" ||
