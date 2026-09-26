@@ -16297,17 +16297,19 @@ func TestSelectedPhonySourceCheckOrdersRecursiveChild(t *testing.T) {
 			for name, content := range map[string]string{
 				"Makefile": `
 CONFIG_SHELL := sh
-.PHONY: all prepare
-all: after.out
-prepare: before.out
+.PHONY: all prepare prerequisite modules_check
+all: after.out modules_check
+prepare: prerequisite
 	` + strings.Join(lines, "\n\t") + `
-before.out:
-	printf before > $@
+prerequisite:
+	$(MAKE) -f $(srctree)/child.mk before.out
+modules_check: prerequisite
+	$(CONFIG_SHELL) $(srctree)/check.sh
 after.out: prepare
 	printf after > $@
 `,
 				"check.sh": script,
-				"child.mk": "child.out second.out:\n\tprintf child > $@\n",
+				"child.mk": "before.out child.out second.out:\n\tprintf child > $@\n",
 			} {
 				if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
 					t.Fatal(err)
@@ -16354,6 +16356,10 @@ after.out: prepare
 			if err != nil {
 				t.Fatal(err)
 			}
+			store, err := kconfig.NewActionPlanInputSetStoreFromNodes(plan.InputSets)
+			if err != nil {
+				t.Fatal(err)
+			}
 			nodes := map[string]kconfig.ActionPlanNode{}
 			for _, node := range plan.Nodes {
 				recipe := plan.Recipes[node.Recipe]
@@ -16374,10 +16380,12 @@ after.out: prepare
 					}
 					if output.ObservedPath == "" {
 						nodes[output.Path] = node
+					} else if output.ObservedPath == "modules_check" {
+						nodes[output.ObservedPath] = node
 					}
 				}
 			}
-			edges := [][2]string{{"check", "before.out"}}
+			edges := [][2]string{{"check", "before.out"}, {"modules_check", "before.out"}}
 			if test.before {
 				edges = append(edges, [2]string{"child.out", "check"}, [2]string{"completion", "child.out"}, [2]string{"completion", "second.out"}, [2]string{"after.out", "completion"})
 			} else {
@@ -16385,9 +16393,16 @@ after.out: prepare
 			}
 			for _, edge := range edges {
 				consumer, producer := nodes[edge[0]], nodes[edge[1]]
-				if consumer.ID == "" || producer.ID == "" || !slices.ContainsFunc(consumer.Inputs, func(input kconfig.ActionPlanNodeEdge) bool {
+				found := slices.ContainsFunc(consumer.Inputs, func(input kconfig.ActionPlanNodeEdge) bool {
 					return input.ProducerID == producer.ID
-				}) {
+				})
+				if err := store.Walk(consumer.InputSet, func(input kconfig.ActionPlanInputSetEntry) error {
+					found = found || input.ProducerID == producer.ID
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if consumer.ID == "" || producer.ID == "" || !found {
 					t.Fatalf("missing source-ordered edge %s -> %s", edge[1], edge[0])
 				}
 			}

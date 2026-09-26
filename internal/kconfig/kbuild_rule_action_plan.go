@@ -2036,7 +2036,7 @@ func (b *compactKbuildRulePlanBuilder) appendCompactKbuildSelectedPlanNode(
 			finalChild = b.selectionGraph.sourcePhaseChildren[phases[1]]
 		}
 		for _, dependency := range b.profile.TargetInvocationDependencies {
-			if !replayedTargets[canonicalKbuildRulePath(dependency.Target)] {
+			if dependency.Prerequisite || !replayedTargets[canonicalKbuildRulePath(dependency.Target)] {
 				continue
 			}
 			if finalChild != "" && dependency.Profile != finalChild {

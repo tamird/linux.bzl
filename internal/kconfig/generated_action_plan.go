@@ -477,7 +477,7 @@ func (m *CompactMetadata) compactKbuildSelectedPhonySourceStatus(
 	}
 	dependencies := []CompactKbuildInvocationDependency{}
 	for _, dependency := range profile.TargetInvocationDependencies {
-		if compactKbuildGraphTargetPath(dependency.Target) == target {
+		if !dependency.Prerequisite && compactKbuildGraphTargetPath(dependency.Target) == target {
 			dependencies = append(dependencies, dependency)
 		}
 	}

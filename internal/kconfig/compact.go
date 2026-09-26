@@ -414,10 +414,10 @@ type CompactKbuildProfile struct {
 	// they never publish files into the invocation's object-tree frontier.
 	InvocationControlPrerequisites []CompactKbuildInvocationControlPrerequisite
 	// TargetInvocationDependencies record recursive Make invocations selected
-	// while expanding one concrete target recipe, including invocations found
-	// inside an immutable source script executed by that recipe.  The child
-	// profile and goals come from the evaluated Make argv; action ordering never
-	// infers this edge from an output or script filename.
+	// by a target's recipe or completed through its prerequisites. Only direct
+	// recipe invocations, including calls inside immutable source scripts, own
+	// command replays; both kinds order the target after the child completes.
+	// Child profiles and goals come from evaluated Make argv.
 	TargetInvocationDependencies []CompactKbuildInvocationDependency
 	// SelectedSourceScriptPhases are exact writes within a selected immutable
 	// source script, retained separately from real Make targets. Their output
@@ -730,6 +730,9 @@ type CompactKbuildInvocationControlPrerequisite struct {
 }
 
 type CompactKbuildInvocationDependency struct {
+	// Prerequisite means the child completed through a Make prerequisite,
+	// rather than a recursive call in Target's own recipe.
+	Prerequisite    bool
 	Target          string
 	Profile         string
 	Goals           []string

@@ -486,7 +486,9 @@ func newCompactKbuildSelectionGraph(config CompactConfig) (*compactKbuildSelecti
 			}
 			key := compactKbuildProfileTargetKey{profile: profile.Name, target: target}
 			graph.targetInvocations[key] = append(graph.targetInvocations[key], dependency.Profile)
-			graph.invocationParents[dependency.Profile] = append(graph.invocationParents[dependency.Profile], key)
+			if !dependency.Prerequisite {
+				graph.invocationParents[dependency.Profile] = append(graph.invocationParents[dependency.Profile], key)
+			}
 		}
 	}
 
@@ -852,7 +854,7 @@ func (g *compactKbuildSelectionGraph) indexSelectedSourcePhases(config CompactCo
 			}
 			children := map[int]string{}
 			for _, dependency := range profile.TargetInvocationDependencies {
-				if dependency.Target != ownerTarget {
+				if dependency.Prerequisite || dependency.Target != ownerTarget {
 					continue
 				}
 				ordinal := -1
@@ -2457,7 +2459,9 @@ func (g *compactKbuildSelectionGraph) preparePhonyStatusLines(metadata *CompactM
 	for _, owner := range slices.Clone(g.ordered) {
 		profile := g.profiles[owner.profile]
 		if !g.compactKbuildProfileTargetIsPhony(profile, owner.target) ||
-			len(g.targetInvocations[compactKbuildProfileTargetKey{profile: owner.profile, target: owner.target}]) == 0 {
+			!slices.ContainsFunc(profile.TargetInvocationDependencies, func(dependency CompactKbuildInvocationDependency) bool {
+				return !dependency.Prerequisite && compactKbuildGraphTargetPath(dependency.Target) == owner.target
+			}) {
 			continue
 		}
 		selection := g.selections[owner]
