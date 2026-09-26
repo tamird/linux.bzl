@@ -1255,9 +1255,10 @@ type kbuildInvocationRequest struct {
 	// visibleState is the process-local immutable object-tree snapshot. Request
 	// identity hashes its canonical observable digest; cumulative slice/map
 	// projections are never constructed.
-	visibleState              kbuildFrontierState
-	invocationPredecessors    []string
-	suppressParentCommandLine bool
+	visibleState                   kbuildFrontierState
+	invocationPredecessors         []string
+	invocationControlPrerequisites []kconfig.CompactKbuildInvocationControlPrerequisite
+	suppressParentCommandLine      bool
 }
 
 func equivalentKbuildRootContinuation(parent, child kbuildInvocationRequest) bool {
@@ -1306,7 +1307,7 @@ func parseLinuxRootFinalInvocation(root string, options kconfig.KbuildOptions) (
 	if err != nil {
 		return nil, err
 	}
-	profile, err := kconfig.NewCompactKbuildProfile("driver:Makefile", makefile, root, outer)
+	profile, err := kconfig.NewCompactKbuildProfile("driver:Makefile", "Makefile", root, outer)
 	if err != nil {
 		return nil, err
 	}
@@ -3596,7 +3597,7 @@ func evaluatedKbuildInvocationProfiles(
 		}
 		if hasFeatureDump {
 			candidate, candidateErr := kconfig.NewCompactKbuildProfile(
-				kbuildInvocationProfileNameFromDigest(request.name, requestDigest), makefile, rootDir, parsed,
+				kbuildInvocationProfileNameFromDigest(request.name, requestDigest), request.makefile, rootDir, parsed,
 			)
 			if candidateErr != nil {
 				return -1, candidateErr
@@ -3635,7 +3636,7 @@ func evaluatedKbuildInvocationProfiles(
 			delete(effectiveSyntheticTools, name)
 		}
 		profile, err := kconfig.NewCompactKbuildProfile(
-			kbuildInvocationProfileNameFromDigest(request.name, requestDigest), makefile, rootDir, parsed,
+			kbuildInvocationProfileNameFromDigest(request.name, requestDigest), request.makefile, rootDir, parsed,
 		)
 		if err != nil {
 			return -1, err
@@ -3648,6 +3649,7 @@ func evaluatedKbuildInvocationProfiles(
 			&profile, kbuildFrontierArtifactView{state: initialFrontier},
 		)
 		profile.InvocationPredecessors = append([]string(nil), request.invocationPredecessors...)
+		profile.InvocationControlPrerequisites = slices.Clone(request.invocationControlPrerequisites)
 		profile.EntryTargets = make([]string, 0, len(request.entryTargets))
 		for _, requested := range request.entryTargets {
 			target := ""
@@ -6223,8 +6225,28 @@ func selectedKbuildSelectionsWithResolvedTargets(
 	invocationActionDependencies := map[actionIdentity]map[actionIdentity]bool{}
 	for profileIndex := range profiles {
 		consumers := actionsByProfile[profileIndex]
-		if len(consumers) == 0 || len(profiles[profileIndex].InvocationPredecessors) == 0 {
+		if len(consumers) == 0 {
 			continue
+		}
+		for _, prerequisite := range profiles[profileIndex].InvocationControlPrerequisites {
+			predecessorIndex, exists := profileByName[prerequisite.Profile]
+			if !exists || prerequisite.Profile == profiles[profileIndex].Name ||
+				kconfig.CanonicalKbuildGraphTarget(prerequisite.Target) != prerequisite.Target ||
+				!indexes[predecessorIndex].targetIsPhony(profiles[predecessorIndex], prerequisite.Target) {
+				return nil, fmt.Errorf("Kbuild invocation %q has invalid completed control prerequisite %#v", profiles[profileIndex].Name, prerequisite)
+			}
+			predecessor := actionIdentity{profile: predecessorIndex, target: prerequisite.Target}
+			if selectedLifecycle[predecessor] == "" {
+				// A completed forwarding/no-op control rule has no physical action.
+				// Its selected children already precede this invocation.
+				continue
+			}
+			for _, consumer := range consumers {
+				if invocationActionDependencies[consumer] == nil {
+					invocationActionDependencies[consumer] = map[actionIdentity]bool{}
+				}
+				invocationActionDependencies[consumer][predecessor] = true
+			}
 		}
 		for _, predecessorName := range profiles[profileIndex].InvocationPredecessors {
 			predecessorIndex, exists := profileByName[predecessorName]
@@ -9505,8 +9527,9 @@ func selectedKbuildRecursiveMakePlanWithCausalTraversal(
 	frontiers := newKbuildRecursiveMakeFrontierBuilder()
 	targetState := map[string]uint8{}
 	type traversalResult struct {
-		terminals []string
-		frontier  *kbuildRecursiveMakeFrontier
+		terminals         []string
+		completedControls []string
+		frontier          *kbuildRecursiveMakeFrontier
 	}
 	targetResults := map[string]traversalResult{}
 	ruleIndex := newKbuildProfileTargetIndexWithResolvedTargets(profile, nil, resolvedTargets)
@@ -9552,7 +9575,7 @@ func selectedKbuildRecursiveMakePlanWithCausalTraversal(
 	recordInvocation := func(
 		invocation kbuildRecursiveMakeInvocation,
 		consumer string,
-		terminals []string,
+		terminals, completedControls []string,
 		frontier *kbuildRecursiveMakeFrontier,
 		recipeControl *kconfig.KbuildControlEvaluation,
 	) ([]string, *kbuildRecursiveMakeFrontier, error) {
@@ -9560,6 +9583,13 @@ func selectedKbuildRecursiveMakePlanWithCausalTraversal(
 		// Visibility belongs to the causal frontier. DFS replay populates the
 		// effective request only after every referenced child has completed.
 		request.visibleState = kbuildFrontierState{}
+		request.invocationControlPrerequisites = slices.Clone(profile.InvocationControlPrerequisites)
+		for _, target := range completedControls {
+			prerequisite := kconfig.CompactKbuildInvocationControlPrerequisite{Profile: profile.Name, Target: target}
+			if !slices.Contains(request.invocationControlPrerequisites, prerequisite) {
+				request.invocationControlPrerequisites = append(request.invocationControlPrerequisites, prerequisite)
+			}
+		}
 		requestKey := kbuildInvocationRequestKey(request)
 		if replay, exists := replayByRequest[requestKey]; exists {
 			if !slices.Equal(replay, invocation.replayArguments) {
@@ -9662,6 +9692,7 @@ func selectedKbuildRecursiveMakePlanWithCausalTraversal(
 		case 2:
 			result := targetResults[target]
 			result.terminals = append([]string(nil), result.terminals...)
+			result.completedControls = slices.Clone(result.completedControls)
 			return result, nil
 		}
 		targetState[target] = 1
@@ -9713,6 +9744,7 @@ func selectedKbuildRecursiveMakePlanWithCausalTraversal(
 			}
 		}
 		predecessors := []string{}
+		completedControls := []string{}
 		prerequisiteFrontiers := []*kbuildRecursiveMakeFrontier{}
 		prerequisitesByTarget := map[string][]kbuildSelectionPrerequisite{
 			target: append(append([]kbuildSelectionPrerequisite(nil), normal...), orderOnly...),
@@ -9723,6 +9755,7 @@ func selectedKbuildRecursiveMakePlanWithCausalTraversal(
 				return traversalResult{}, err
 			}
 			predecessors = appendUnique(predecessors, result.terminals...)
+			completedControls = appendUnique(completedControls, result.completedControls...)
 			prerequisiteFrontiers = append(prerequisiteFrontiers, result.frontier)
 		}
 		for _, peer := range groupOutputs {
@@ -9780,6 +9813,7 @@ func selectedKbuildRecursiveMakePlanWithCausalTraversal(
 					return traversalResult{}, err
 				}
 				predecessors = appendUnique(predecessors, result.terminals...)
+				completedControls = appendUnique(completedControls, result.completedControls...)
 				prerequisiteFrontiers = append(prerequisiteFrontiers, result.frontier)
 			}
 		}
@@ -9864,7 +9898,7 @@ func selectedKbuildRecursiveMakePlanWithCausalTraversal(
 					}
 					if effect.recursive {
 						terminals, frontier, err = recordInvocation(
-							effect.invocation, target, terminals, frontier, recipeControl,
+							effect.invocation, target, terminals, completedControls, frontier, recipeControl,
 						)
 						if err != nil {
 							return traversalResult{}, err
@@ -9906,9 +9940,15 @@ func selectedKbuildRecursiveMakePlanWithCausalTraversal(
 			}
 		}
 		targetState[target] = 2
+		if len(effectiveRecipeIndexes) != 0 && ruleIndex.targetIsPhony(profile, target) {
+			// Only complete targets precede another invocation. In particular,
+			// this target is absent while one of its own children is running.
+			completedControls = appendUnique(completedControls, target)
+		}
 		result := traversalResult{
-			terminals: append([]string(nil), terminals...),
-			frontier:  frontier,
+			completedControls: slices.Clone(completedControls),
+			terminals:         append([]string(nil), terminals...),
+			frontier:          frontier,
 		}
 		targetResults[target] = result
 		for _, peer := range groupOutputs {
@@ -12356,6 +12396,9 @@ func forEachCanonicalKbuildInvocationRequestKeyPart(
 	for _, predecessor := range request.invocationPredecessors {
 		visit("invocation-predecessor=" + predecessor)
 	}
+	for _, prerequisite := range request.invocationControlPrerequisites {
+		visit("control-prerequisite=" + prerequisite.Profile + "\x1f" + prerequisite.Target)
+	}
 	visibleDigest := kbuildFrontierDigest(request.visibleState)
 	visit("visible-frontier=" + hex.EncodeToString(visibleDigest[:]))
 	environmentNames := make([]string, 0, len(request.environment))
@@ -12438,6 +12481,7 @@ func canonicalKbuildInvocationRequestsEqual(left, right kbuildInvocationRequest)
 		left.suppressParentCommandLine != right.suppressParentCommandLine ||
 		!slices.Equal(left.entryTargets, right.entryTargets) ||
 		!slices.Equal(left.invocationPredecessors, right.invocationPredecessors) ||
+		!slices.Equal(left.invocationControlPrerequisites, right.invocationControlPrerequisites) ||
 		!maps.Equal(left.environment, right.environment) ||
 		!maps.Equal(left.variables, right.variables) {
 		return false
