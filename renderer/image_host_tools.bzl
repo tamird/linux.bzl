@@ -31,8 +31,7 @@ def _impl(ctx):
     host_architecture = host.architecture
     cc, features = host.cc, host.features
     prepared = ctx.attr._prepared_source[KernelSourceTreeInfo]
-    source = prepared.root.path
-    files = ctx.attr._source_tree[DefaultInfo].files.to_list()
+    source = prepared.source_root
     sources = {source + "/" + p: f for p, f in prepared.logical.items()}
     index = source_index(sources.keys())
     execution = execution_tools(ctx)
@@ -65,11 +64,12 @@ def _impl(ctx):
             local["@"] = {"value": output.path}
             command = "\n".join([evaluate(expr, local, index) for expr in rule.get("recipes", [])])
             command = command.replace("../", source + "/tools/")
+            command = command.replace(source, prepared.root.path)
             run_recipe(
                 ctx,
                 execution,
                 command = "set -eu\nmkdir -p " + shell_quote(output.dirname) + "\n" + command,
-                inputs = depset(files, transitive = [prepared.files]),
+                inputs = prepared.files,
                 outputs = [output],
                 mnemonic = "ObjtoolTable",
             )
@@ -95,15 +95,16 @@ def _impl(ctx):
         flags = shell_words(value("OBJTOOL_CFLAGS", variables, index) if group == "objtool" else value("CFLAGS", subcmd, index))
         if group == "objtool":
             flags += shell_words(value("CFLAGS_" + obj.rsplit("/", 1)[-1], arch.variables, index))
+
+        # Preserve the toolchain's object variants for cc_common.link to select.
         _, compilation = cc_common.compile(
             actions = ctx.actions,
             name = ctx.label.name + ".objects/" + obj,
             feature_configuration = features,
             cc_toolchain = cc,
             srcs = [sources[source + "/" + src]],
-            public_hdrs = [f for f in files if f.extension == "h"],
-            additional_inputs = files + generated + prepared.files.to_list(),
-            compilation_contexts = [library[CcInfo].compilation_context for library in libraries],
+            additional_inputs = generated,
+            compilation_contexts = [prepared.compilation_context] + [library[CcInfo].compilation_context for library in libraries],
             user_compile_flags = flags,
         )
         outputs.append(compilation)
@@ -125,7 +126,5 @@ kernel_objtool = rule(implementation = _impl, fragments = ["cpp"], toolchains = 
     "_host_toolchain": attr.label(default = "//:host_toolchain", providers = [KernelHostToolchainInfo], cfg = "exec"),
     "libelf": attr.label(default = "//host_libraries:libelf", providers = [CcInfo, KernelHostLibraryInfo], cfg = "exec"),
     "optional_libraries": attr.label_list(providers = [CcInfo, KernelHostLibraryInfo], cfg = "exec"),
-    "_anchor": attr.label(default = "//:source/Makefile", allow_single_file = True),
-    "_source_tree": attr.label(default = "//:source_tree"),
     "_prepared_source": attr.label(default = "//:prepared_source", providers = [KernelSourceTreeInfo], cfg = "exec"),
 })

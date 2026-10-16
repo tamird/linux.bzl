@@ -1,12 +1,13 @@
 # Prototype qualification
 
-The `Prototype qualification` workflow checks two properties of the static
-repository prototype at `0bbb0d3aecc5846a940cc0a9b34fae746566b4ec`. It uses the
-matching upstream generator artifact and pinned Linux source. It does not
-rebuild the standalone generator.
+The `Prototype qualification` workflow checks configuration parity and compiler
+dependency tracking. It builds and tests the current standalone generator with
+Bazel before running consumers against the pinned Linux source.
 
-Dispatch the workflow with `all`, `configuration-parity`, or `source-edit-reuse`
-to run the experiments together or independently.
+Dispatch the workflow with `configuration-parity`, `source-edit-reuse`, or
+`examples` to select an experiment or the maintained example matrix. `all` runs
+them together. The example matrix reuses the `Kernel repository prototype`
+workflow.
 
 ## Configuration parity
 
@@ -15,6 +16,11 @@ then supplies the examples' raw requests through `KCONFIG_ALLCONFIG` and
 `--allnoconfig`. The native reference uses the selected compiler and linker;
 their version output and the effective environment are retained as evidence.
 The comparison covers base, debug, LZ4, BTF requests, and ARM64.
+
+Compiler probes currently use conservative fallbacks during repository generation.
+A compiler built by Bazel may be unavailable at that stage; running those probes
+requires a separate execution mechanism. This comparison records the resulting
+differences. Source dependency tracking preserves that policy.
 
 Every written symbol is compared. Reports separate missing symbols from
 different values. A mismatch can arise from the prototype's compiler-probe
@@ -26,9 +32,10 @@ run the actual executables.
 
 ## Source-edit reuse
 
-The workflow builds the x86-64 example, repeats it unchanged, then appends
-a unique C comment to `init/main.c` and builds again. All three phases use
-the same build options. The source is restored when the step exits.
+The workflow builds the x86-64 example, repeats it unchanged, then makes three
+cumulative edits, rebuilding after each: a unique comment in `init/main.c`, a
+comment in `init/do_mounts.h`, and a directory entry in `usr/default_cpio_list`.
+All five phases use the same build options. The files are restored on exit.
 
 Compact Bazel execution logs record executed actions and cache hits. A
 pinned BuildBuddy decoder projects them to JSONL without expanding each
@@ -36,16 +43,25 @@ action's source-tree inputs. `aquery` supplies the complete compiler-output
 inventory, including actions absent from the execution log.
 
 `reuse-report.json` distinguishes a valid measurement from successful
-selective reuse. The unchanged phase must execute no kernel compiles, and
-the edited phase must execute `init/main.o`. The report counts unrelated
-compiles and identifies `kernel/fork.o` as a concrete control. Broad
-recompilation is a completed measurement with a failed reuse qualification;
-it does not make evidence collection fail. This measures source-edit
-invalidation, not sharing between configurations or cold-build speed.
+selective reuse. The baseline must observe the entire compiler inventory, the
+unchanged phase must execute no kernel compiles, and the source edit must
+execute only `init/main.o`. The header edit must execute its selected
+`do_mounts` consumers. The initramfs edit must change the payload and the raw
+object that embeds it through `.incbin`, while independent controls stay cached.
+The generated C source describing exported symbols and its object must remain
+byte-identical after this payload edit, and the compilation must stay cached even
+though the kernel object used to generate that source changes.
+The inventory includes native Bazel C and assembly actions and the original
+`KbuildCC` actions, excluding host-tool compilation. Broad recompilation produces
+a report and fails the qualification. This measures dependency invalidation;
+it does not qualify sharing between configurations or cold-build speed.
 
-## Results on 2026-10-16
+## Original prototype results on 2026-10-16
 
-The prototype at the revision above does not pass either qualification.
+These measurements cover the original prototype at
+`0bbb0d3aecc5846a940cc0a9b34fae746566b4ec`, using its matching upstream generator
+artifact. It did not pass either qualification. They predate the fixes and
+expanded regression checks described above.
 
 ### Native configuration comparison
 
@@ -109,3 +125,49 @@ These elapsed times describe this sequential run; they are not a controlled
 performance comparison with the dynamic planner. This experiment does not
 qualify cross-configuration sharing, Aya's kernel-version matrix, booting,
 or 32-bit guests.
+
+## Updated dependency tracking results on 2026-10-17
+
+The following checks used
+`d9538487b91773a4884ada9002a00171898853a5`, with its generator built and tested
+by Bazel. Compiler-probe fallbacks remain unchanged.
+
+[The five-phase reuse run](https://github.com/tamird/linux.bzl/actions/runs/38972452725/job/117215551322)
+passed every measurement and selective-reuse check:
+
+| Phase | Executed kernel compiles | Logged compiler cache hits | Build elapsed time |
+| --- | ---: | ---: | ---: |
+| Baseline | 987 | 0 | 21m 40s |
+| Unchanged | 0 | 0 | 2m 16s |
+| Comment added to `init/main.c` | 1 | 0 | 6m 18s |
+| Comment added to `init/do_mounts.h` | 3 | 0 | 6m 4s |
+| Directory added to `usr/default_cpio_list` | 1 | 0 | 6m 9s |
+
+All five phases had the same 987-action compiler inventory. The baseline
+executed every action, and an independent count from the projected execution
+logs agreed with the report. Every observed compiler runner was
+`processwrapper-sandbox`. Actions already up to date were absent from the logs;
+the zero logged cache-hit counts do not mean those actions executed again.
+
+The source edit recompiled only `init/main.o`, reusing all 986 unrelated
+compiler actions. The header edit recompiled exactly `init/do_mounts.o`,
+`init/do_mounts_initrd.o`, and `init/initramfs.o`. The payload edit recompiled
+only `usr/initramfs_data.o`; both the payload and this raw embedding object
+changed. The independent `kernel/fork.o` control, generated `.vmlinux.export.c`,
+and raw `.vmlinux.export.o` remained byte-identical throughout the run. In
+particular, changing an input to the export-source generator did not recompile
+its unchanged output.
+
+These elapsed times describe this sequential run, not a controlled performance
+comparison. The experiment does not qualify sharing between configurations.
+
+[The maintained example matrix](https://github.com/tamird/linux.bzl/actions/runs/38972448852)
+passed all eight cases: x86-64, ARM64, debug, LZ4, initramfs, graph metadata,
+platform checks, and the BTF capability-gap check. The first four built kernel
+images. The BTF case checks the expected missing capability; it does not build
+a BTF-enabled kernel. These checks do not exercise booting, Aya's kernel-version
+matrix, or 32-bit guests.
+
+Changes after that tested revision document these results and remove the script
+materializer's unused handling of extra directory arguments. Its only caller
+passes a manifest and destination; the removed loop was never entered.

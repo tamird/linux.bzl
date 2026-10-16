@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Arrange Bazel-declared generated prerequisites for compiler include lookup."""
+"""Arrange Bazel-declared generated prerequisites for native script recipes."""
 import json
 from pathlib import Path
 import shutil
@@ -7,13 +7,6 @@ import sys
 
 out = Path(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
-for name in sys.argv[3:]:
-    path = Path(name)
-    if path.is_absolute() or '..' in path.parts:
-        raise ValueError(name)
-    (out / path).mkdir(parents=True, exist_ok=True)
-    # Bazel tree artifacts materialize files, so preserve otherwise empty dirs.
-    (out / path / ".kbuild-directory").touch()
 for name, source in json.loads(Path(sys.argv[1]).read_text()).items():
     path = Path(name)
     if path.is_absolute() or '..' in path.parts:
