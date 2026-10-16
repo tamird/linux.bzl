@@ -10,10 +10,40 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 import json
+import hashlib
+import os
 from pathlib import Path
 from typing import TypeAlias
 
 Outputs: TypeAlias = tuple[str, ...]
+PHASES = ("baseline", "unchanged", "edited", "header", "incbin")
+
+
+def native_target(path: str) -> str | None:
+    """Identify the logical Kbuild target in cc_common's owned output directory."""
+    _, marker, rest = path.partition("/_objs/")
+    owner, _, target = rest.partition("/")
+    return target if marker and owner.endswith(".compile") else None
+
+
+def kernel_compile(mnemonic: str, outputs: Outputs) -> bool:
+    return mnemonic == "KbuildCC" or (
+        mnemonic in ("CppCompile", "Assemble")
+        and any(native_target(path) is not None for path in outputs)
+    )
+
+
+def target_outputs(expected: set[Outputs], target: str) -> Outputs:
+    matches = [outputs for outputs in expected if any(
+        (native_target(path) or "").startswith(target + "/")
+        or path.endswith("/" + target) and native_target(path) is None
+        for path in outputs
+    )]
+    match matches:
+        case [outputs]:
+            return outputs
+        case _:
+            raise ValueError(f"Expected one compile for {target}, found {matches}")
 
 
 def records(path: Path) -> Iterator[dict[str, object]]:
@@ -25,7 +55,7 @@ def records(path: Path) -> Iterator[dict[str, object]]:
             yield record
 
 
-def inventory(path: Path) -> set[Outputs]:
+def action_outputs(path: Path) -> Iterator[tuple[str, Outputs]]:
     query = json.loads(path.read_text())
     fragments = {str(item["id"]): item for item in query["pathFragments"]}
 
@@ -45,11 +75,33 @@ def inventory(path: Path) -> set[Outputs]:
         str(item["id"]): filename(str(item["pathFragmentId"]))
         for item in query["artifacts"]
     }
-    return {
-        tuple(sorted(artifacts[str(output)] for output in action["outputIds"]))
-        for action in query["actions"]
-        if action["mnemonic"] == "KbuildCC"
-    }
+    for action in query["actions"]:
+        yield action["mnemonic"], tuple(sorted(artifacts[str(output)] for output in action["outputIds"]))
+
+
+def inventory(path: Path) -> set[Outputs]:
+    return {outputs for mnemonic, outputs in action_outputs(path) if kernel_compile(mnemonic, outputs)}
+
+
+def snapshot(directory: Path, name: str, workspace: Path) -> None:
+    query = directory / f"{name}.aquery.json"
+    expected = inventory(query)
+    paths = {}
+    for target in ("init/main.o", "kernel/fork.o", "usr/initramfs_data.o", ".vmlinux.export.o"):
+        match [path for path in target_outputs(expected, target) if path.endswith(".o")]:
+            case [path]:
+                paths[target] = path
+            case other:
+                raise ValueError(f"Expected one raw object for {target}, found {other}")
+    for target in ("usr/initramfs_inc_data", ".vmlinux.export.c"):
+        match [path for _, outputs in action_outputs(query) for path in outputs
+               if path.endswith(".artifacts/" + target)]:
+            case [path]:
+                paths[target] = path
+            case other:
+                raise ValueError(f"Expected one generated {target}, found {other}")
+    digests = {target: hashlib.sha256((workspace / path).read_bytes()).hexdigest() for target, path in paths.items()}
+    (directory / f"{name}.digests.json").write_text(json.dumps(digests, indent=2) + "\n")
 
 
 @dataclass
@@ -111,7 +163,7 @@ def phase(path: Path, expected: set[Outputs]) -> Phase:
         if status or exit_code:
             raise ValueError(f"Failed {mnemonic} spawn in {path}: {status}, exit {exit_code}")
         result.mnemonics[(mnemonic, "cache_hit" if hit else "executed")] += 1
-        if mnemonic != "KbuildCC":
+        if mnemonic not in ("KbuildCC", "CppCompile", "Assemble"):
             continue
         resolved = []
         for output in outputs:
@@ -121,6 +173,8 @@ def phase(path: Path, expected: set[Outputs]) -> Phase:
                 case _:
                     raise ValueError(f"Unresolved compiler output in {path}: {output}")
         identity = tuple(sorted(resolved))
+        if not kernel_compile(mnemonic, identity):
+            continue
         if identity not in expected:
             raise ValueError(f"Unknown compiler output in {path}: {identity}")
         if identity in result.executed or identity in result.cached:
@@ -133,25 +187,22 @@ def phase(path: Path, expected: set[Outputs]) -> Phase:
 def report(directory: Path) -> dict[str, object]:
     inventories = {
         name: inventory(directory / f"{name}.aquery.json")
-        for name in ("baseline", "unchanged", "edited")
+        for name in PHASES
     }
     expected = inventories["baseline"]
     if not expected or any(value != expected for value in inventories.values()):
         raise ValueError("Kernel compile output inventory changed between builds")
-    controls = {}
-    for source in ("init/main.o", "kernel/fork.o"):
-        matches = [outputs for outputs in expected if any(path.endswith("/" + source) for path in outputs)]
-        match matches:
-            case [outputs]:
-                controls[source] = outputs
-            case _:
-                raise ValueError(f"Expected one compile for {source}, found {matches}")
+    controls = {target: target_outputs(expected, target) for target in (
+        "init/main.o", "kernel/fork.o", "init/do_mounts.o", "init/do_mounts_initrd.o", "init/initramfs.o", "usr/initramfs_data.o",
+    )}
     phases = {
         name: phase(directory / f"{name}.execution.jsonl", expected)
         for name in inventories
     }
     if len({value.invocation for value in phases.values()}) != len(phases):
         raise ValueError("Build phases reused an invocation log")
+    if expected - phases["baseline"].executed - phases["baseline"].cached:
+        raise ValueError("Baseline did not observe every compiler action; inventory includes unmeasured actions")
     if phases["unchanged"].executed:
         raise ValueError("Unchanged build executed kernel compiles; edit comparison is not isolated")
     edited = phases["edited"]
@@ -163,6 +214,27 @@ def report(directory: Path) -> dict[str, object]:
         )
     unrelated = expected - {source_compile}
     unrelated_executed = unrelated & edited.executed
+    # Each of these sources directly includes init/do_mounts.h in the pinned
+    # kernel, including initramfs.c's early rootfs setup.
+    header_consumers = {controls[target] for target in ("init/do_mounts.o", "init/do_mounts_initrd.o", "init/initramfs.o")}
+    if any((native_target(path) or "").startswith("init/do_mounts_rd.o/") or path.endswith("/init/do_mounts_rd.o")
+           for outputs in expected for path in outputs):
+        header_consumers.add(target_outputs(expected, "init/do_mounts_rd.o"))
+    if missing := header_consumers - phases["header"].executed:
+        raise ValueError(f"Included-header consumers did not execute: {sorted(missing)}")
+    if controls["usr/initramfs_data.o"] not in phases["incbin"].executed:
+        raise ValueError("Assembly embedding the changed initramfs payload did not execute")
+    digests = {name: json.loads((directory / f"{name}.digests.json").read_text()) for name in PHASES}
+    for target in ("usr/initramfs_inc_data", "usr/initramfs_data.o"):
+        if digests["header"][target] == digests["incbin"][target]:
+            raise ValueError(f"The initramfs edit did not change {target}")
+    if len({value["kernel/fork.o"] for value in digests.values()}) != 1:
+        raise ValueError("Unrelated kernel/fork.o bytes changed during the trial")
+    # The directory-record edit changes vmlinux.o, but not its exported-symbol
+    # C source. Rebuilding that source's ancestors must not recompile it.
+    for target in (".vmlinux.export.c", ".vmlinux.export.o"):
+        if digests["header"][target] != digests["incbin"][target]:
+            raise ValueError(f"The initramfs edit unexpectedly changed {target}")
     return {
         "measurement_complete": True,
         "compile_inventory_unchanged": True,
@@ -172,19 +244,31 @@ def report(directory: Path) -> dict[str, object]:
             "unrelated_not_executed_after_edit": len(unrelated - edited.executed),
             "unrelated_control_reused": controls["kernel/fork.o"] not in edited.executed,
             "all_unrelated_compiles_reused": not unrelated_executed,
+            "header_edit_recompiled_only_consumers": phases["header"].executed == header_consumers,
+            "incbin_edit_recompiled_only_consumer": phases["incbin"].executed == {controls["usr/initramfs_data.o"]},
         },
         "phases": {name: value.report() for name, value in phases.items()},
         "controls": {
             source: {"outputs": outputs, "after_edit": edited.outcome(outputs)}
             for source, outputs in controls.items()
         },
+        "digests": digests,
     }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("snapshot", "report"))
     parser.add_argument("directory", type=Path)
+    parser.add_argument("phase", choices=PHASES, nargs="?")
     args = parser.parse_args()
+    if args.command == "snapshot":
+        if args.phase is None:
+            parser.error("snapshot requires a phase")
+        snapshot(args.directory, args.phase, Path(os.environ["BUILD_WORKING_DIRECTORY"]))
+        return
+    if args.phase is not None:
+        parser.error("report does not take a phase")
     result = report(args.directory)
     (args.directory / "reuse-report.json").write_text(json.dumps(result, indent=2) + "\n")
     # Keep every output identity in the artifact, while making CI logs readable.
@@ -193,6 +277,10 @@ def main() -> None:
         for name, measured in result["phases"].items()
     }
     print(json.dumps(result, indent=2))
+    if not all(result["qualification"][key] for key in (
+        "all_unrelated_compiles_reused", "header_edit_recompiled_only_consumers", "incbin_edit_recompiled_only_consumer",
+    )):
+        raise SystemExit("Kernel dependency reuse qualification failed; see reuse-report.json")
 
 
 if __name__ == "__main__":

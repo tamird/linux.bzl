@@ -1,5 +1,6 @@
 """Resolve configured prerequisite programs and register one action per artifact."""
 
+load("@rules_cc//cc:find_cc_toolchain.bzl", "use_cc_toolchain")
 load(":commands.bzl", "register", "shell_words")
 load(":execution_tools.bzl", "EXECUTION_TOOLS_TYPE")
 load(":expressions.bzl", "evaluate", "make_words", "match", "program", "source_index")
@@ -511,8 +512,6 @@ def _describe(path, state):
             kind = "compile"
     if not has_recipe:
         fail("No native action producer for " + path)
-    if kind == "host" and path != "scripts/basic/fixdep":
-        dependencies.append("scripts/basic/fixdep")
     if kind == "compile" or (native != None and native.get("compile")) or path.endswith(".lds"):
         # Root Kbuild already declares the ordering among bootstrap assembly
         # generators. Other objects consume the configured preparation outputs.
@@ -537,7 +536,6 @@ def _impl(ctx):
     if setup.identity != config.identity:
         fail("Mixed native setup and kernel configuration")
     prepared = ctx.attr._prepared_source[KernelSourceTreeInfo]
-    files = prepared.files
     source_files = prepared.logical
     index = source_index(["__source__/" + p for p in source_files])
     index["__includes__"] = FLAG_PROGRAM["image_programs"]
@@ -598,7 +596,25 @@ def _impl(ctx):
     # Declare every output before registering jobs. This permits a direct,
     # configured topological check and avoids label cycles between alternatives.
     artifacts = {out: ctx.actions.declare_file(ctx.label.name + ".artifacts/" + out) for out in producers}
-    common = {"include/generated/autoconf.h": config.header}
+
+    # Compilers resolve generated includes through individual artifacts in one
+    # namespace. Configuration outputs come from another rule, so alias them
+    # here once instead of copying them into each compiler's input tree.
+    config_files = {}
+    for path, source in {"include/generated/autoconf.h": config.header, "include/config/auto.conf": config.config, ".config": config.config}.items():
+        output = ctx.actions.declare_file(ctx.label.name + ".artifacts/" + path)
+        ctx.actions.symlink(output = output, target_file = source)
+        config_files[path] = output
+    generated_root = config_files[".config"].dirname
+    compiler_directories = {}
+    for d in descriptors.values():
+        directory = d["directory"]
+        if directory not in compiler_directories:
+            path = "" if directory == "." else directory + "/"
+            marker = ctx.actions.declare_file(ctx.label.name + ".artifacts/" + path + ".kbuild-directory")
+            ctx.actions.write(marker, "")
+            compiler_directories[directory] = marker
+    common = {"include/generated/autoconf.h": config_files["include/generated/autoconf.h"]}
     if config.values.get("OBJTOOL") == "y":
         objtool = ctx.attr._objtool[KernelObjtoolInfo]
         if objtool.executable == None:
@@ -617,6 +633,17 @@ def _impl(ctx):
             closure = dict(common)
             for dep in deps:
                 closure.update(finished[dep])
+            direct = dict(common)
+            direct.update({p: artifacts[p] for p in d["deps"] if p in producers and producers[p] != target})
+
+            # Source prerequisites are mandatory inputs of this action, e.g.
+            # assembler .incbin payloads which C preprocessor depfiles omit.
+            # Descendants consume its outputs, not every ancestor's sources.
+            source_prerequisites = {
+                p.removeprefix("__source__/"): source_files[p.removeprefix("__source__/")]
+                for p in d["deps"]
+                if p.removeprefix("__source__/") in source_files
+            }
             outputs = {out: artifacts[out] for out in d["outs"]}
             ancestry, parent = [d["directory"]], d["directory"]
             for _parent in range(len(state["parents"]) + 1):
@@ -641,14 +668,15 @@ def _impl(ctx):
                 d["driver"],
                 outputs,
                 closure,
-                files,
-                prepared.root.path,
+                prepared,
                 config,
                 setup,
+                struct(root = generated_root, directory_marker = compiler_directories[d["directory"]], direct = direct, config = config_files),
                 d.get("members", [p for p in d["deps"] if p.endswith(".o")] if d["kind"] == "host" and not target.endswith(".o") else []),
                 native = d.get("native"),
                 ancestry = ancestry,
                 memberships = memberships,
+                source_prerequisites = source_prerequisites,
             )
             members.append({"target": target, "dependencies": sorted(deps), "outputs": {p: f.path for p, f in outputs.items()}})
             closure.update(outputs)
@@ -706,7 +734,7 @@ kbuild_resolved_setup = rule(implementation = _setup_impl, cfg = _transition, at
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
 })
 
-kbuild_resolved_build = rule(implementation = _impl, cfg = _transition, toolchains = [EXECUTION_TOOLS_TYPE], attrs = {
+kbuild_resolved_build = rule(implementation = _impl, cfg = _transition, fragments = ["cpp"], toolchains = use_cc_toolchain() + [EXECUTION_TOOLS_TYPE], attrs = {
     "config": attr.label(mandatory = True, providers = [KernelConfigInfo]),
     "catalog": attr.label(mandatory = True, providers = [KbuildCatalogInfo]),
     "required_options": attr.string_dict(),
@@ -716,7 +744,6 @@ kbuild_resolved_build = rule(implementation = _impl, cfg = _transition, toolchai
     "_objtool": attr.label(default = "//:objtool", providers = [KernelObjtoolInfo]),
     "_setup": attr.label(default = "//:toolchain", providers = [KernelToolchainInfo]),
     "_materialize": attr.label(default = "//rules:materialize.py", allow_single_file = True, cfg = "exec"),
-    "_source_tree": attr.label(default = "//:source_tree"),
     "_prepared_source": attr.label(default = "//:prepared_source", providers = [KernelSourceTreeInfo], cfg = "exec"),
     "_anchor": attr.label(default = "//:source/Makefile", allow_single_file = True),
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),

@@ -7,16 +7,58 @@ on:
         description: Experiment to run
         type: choice
         default: all
-        options: [all, configuration-parity, source-edit-reuse]
+        options: [all, configuration-parity, source-edit-reuse, examples]
 
 permissions:
   contents: read
   actions: read
 
 jobs:
+  examples:
+    if: inputs.experiment == 'all' || inputs.experiment == 'examples'
+    uses: ./.github/workflows/kernel-repository.yml
+
+  generator:
+    if: inputs.experiment != 'examples'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      USE_BAZEL_VERSION: 9.1.0
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: torvalds/linux
+          ref: 0fcb05b72344f40806cbe810de8872f1698bf053
+          path: _tmp/linux
+          persist-credentials: false
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: kernel-repository
+          repository-cache: true
+      - name: Build and test the current generator
+        run: |
+          bazel test //:prototype_test //:repository_test --jobs=4 --test_output=errors
+          bazel build //:consumer_support --jobs=4
+      - uses: actions/upload-artifact@v7
+        with:
+          name: qualification-generator
+          path: bazel-bin/consumer-support.tar.gz
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: qualification-generator-logs
+          path: |
+            bazel-testlogs/**/test.log
+            bazel-testlogs/repository_test/test.outputs/**
+          retention-days: 14
+
   qualify:
     name: ${{ matrix.experiment }}
     runs-on: ubuntu-24.04
+    needs: generator
     timeout-minutes: 150
     strategy:
       fail-fast: false
@@ -33,14 +75,13 @@ jobs:
           ref: 0fcb05b72344f40806cbe810de8872f1698bf053
           path: _tmp/linux
           persist-credentials: false
-      - name: Fetch the matching prebuilt generator
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: qualification-generator
+          path: _tmp/kernel-repository
+      - name: Configure the consumer with the current generator
         run: |
           mkdir -p "$RUNNER_TEMP/linux-prototype-qualification" _tmp/kernel-repository
-          gh api repos/hermeticbuild/linux.bzl/actions/artifacts/12039764132/zip > "$RUNNER_TEMP/linux-prototype-qualification/consumer.zip"
-          echo "b5f77f4dfb2292b8346c933100824e999efb9b256c99409457f12dcfb83efb8a  $RUNNER_TEMP/linux-prototype-qualification/consumer.zip" | sha256sum --check
-          unzip -q "$RUNNER_TEMP/linux-prototype-qualification/consumer.zip" -d _tmp/kernel-repository
           tar -xzf _tmp/kernel-repository/consumer-support.tar.gz -C _tmp/kernel-repository
           python3 example.py --generated _tmp/kernel-repository/support
       - name: Configure Bazel
@@ -71,12 +112,18 @@ jobs:
           set -euo pipefail
           results="$RUNNER_TEMP/linux-prototype-qualification"
           source_file="$GITHUB_WORKSPACE/_tmp/linux/init/main.c"
+          header_file="$GITHUB_WORKSPACE/_tmp/linux/init/do_mounts.h"
+          payload_file="$GITHUB_WORKSPACE/_tmp/linux/usr/default_cpio_list"
           cp "$source_file" "$results/main.c.original"
-          trap 'cp "$results/main.c.original" "$source_file"' EXIT
-          for phase in baseline unchanged edited; do
-            if [ "$phase" = edited ]; then
-              printf '\n/* prototype reuse experiment %s/%s */\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$source_file"
-            fi
+          cp "$header_file" "$results/do_mounts.h.original"
+          cp "$payload_file" "$results/default_cpio_list.original"
+          trap 'cp "$results/main.c.original" "$source_file"; cp "$results/do_mounts.h.original" "$header_file"; cp "$results/default_cpio_list.original" "$payload_file"' EXIT
+          for phase in baseline unchanged edited header incbin; do
+            case "$phase" in
+              edited) printf '\n/* prototype reuse experiment %s/%s */\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$source_file" ;;
+              header) printf '\n/* prototype header experiment %s/%s */\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$header_file" ;;
+              incbin) printf '\ndir /linux-bzl-incbin-%s-%s 0755 0 0\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$payload_file" ;;
+            esac
             bazel build //:x86_64_kernel --jobs=4 \
               --sandbox_block_path=/bin --sandbox_block_path=/usr/bin --sandbox_block_path=/usr/local/bin \
               --execution_log_compact_file="$results/$phase.execution.pb.zst"
@@ -95,10 +142,11 @@ jobs:
                 })}
                 else empty end
               ' > "$results/$phase.execution.jsonl"
-            bazel aquery 'mnemonic("KbuildCC", deps(//:x86_64_kernel))' \
+            bazel aquery 'mnemonic("CppCompile|Assemble|KbuildCC", deps(//:x86_64_kernel)) union outputs(".*[.]artifacts/(usr/initramfs_inc_data|[.]vmlinux.export.c)", deps(//:x86_64_kernel))' \
               --output=jsonproto --include_commandline=false > "$results/$phase.aquery.json"
+            bazel run //qualification:reuse_report -- snapshot "$results" "$phase"
           done
-          bazel run //qualification:reuse_report -- "$results"
+          bazel run //qualification:reuse_report -- report "$results"
       - name: Upload qualification evidence
         if: always()
         uses: actions/upload-artifact@v7

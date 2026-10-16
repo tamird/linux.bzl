@@ -12,7 +12,7 @@ load(":host_toolchain.bzl", "KernelHostToolchainInfo")
 load(":rules.bzl", "KernelConfigInfo")
 load(":source_tree.bzl", "KernelSourceTreeInfo")
 
-KernelToolchainInfo = provider(doc = "Kernel Toolchain Info.", fields = ["file", "files", "identity", "tools", "variables", "sources", "host_cc", "host_features", "architecture", "host_architecture", "driver_tools"])
+KernelToolchainInfo = provider(doc = "Kernel Toolchain Info.", fields = ["file", "files", "identity", "tools", "variables", "sources", "cc", "compiler", "features", "non_object_features", "host_cc", "host_features", "architecture", "host_architecture", "driver_tools"])
 
 def _impl(ctx):
     config = ctx.attr._config[KernelConfigInfo]
@@ -24,6 +24,12 @@ def _impl(ctx):
         cc_toolchain = cc,
         requested_features = ctx.features,
         unsupported_features = ctx.disabled_features,
+    )
+    non_object_features = cc_common.configure_features(
+        ctx = ctx,
+        cc_toolchain = cc,
+        requested_features = ctx.features,
+        unsupported_features = ctx.disabled_features + ["compiler_input_flags"],
     )
     host_features = host_info.features
     metadata = ctx.attr._metadata[KernelCompilerMetadataInfo]
@@ -47,7 +53,7 @@ def _impl(ctx):
         if command in execution.commands:
             tools[name] = execution.commands[command].path
     prepared = ctx.attr._prepared_source[KernelSourceTreeInfo]
-    source = prepared.root.path
+    source = prepared.source_root
     sources = source_index([source + "/" + p for p in prepared.logical])
     sources["__execution_tools__"] = {n: f.path for n, f in execution.commands.items()}
     compile_variables = cc_common.create_compile_variables(cc_toolchain = cc, feature_configuration = features)
@@ -135,11 +141,15 @@ def _impl(ctx):
     }))
     return [KernelToolchainInfo(
         file = out,
-        files = depset(driver_tools, transitive = [cc.all_files, host.all_files, execution.files, prepared.files, metadata.files]),
+        files = depset(driver_tools, transitive = [cc.all_files, host.all_files, execution.files, metadata.files]),
         identity = config.identity,
         tools = tools,
         variables = variables,
         sources = sources,
+        cc = cc,
+        compiler = metadata.compiler,
+        features = features,
+        non_object_features = non_object_features,
         host_cc = host,
         host_features = host_features,
         architecture = config.architecture,
@@ -156,8 +166,6 @@ kbuild_toolchain_setup = rule(
         "_host_toolchain": attr.label(default = "//:host_toolchain", providers = [KernelHostToolchainInfo], cfg = "exec"),
         "_metadata": attr.label(default = "//:compiler_metadata", providers = [KernelCompilerMetadataInfo]),
         "_config": attr.label(default = "//:active_config", providers = [KernelConfigInfo]),
-        "_anchor": attr.label(default = "//:source/Makefile", allow_single_file = True),
-        "_source_tree": attr.label(default = "//:source_tree"),
         "_prepared_source": attr.label(default = "//:prepared_source", providers = [KernelSourceTreeInfo], cfg = "exec"),
     },
 )

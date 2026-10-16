@@ -18,7 +18,7 @@ def _stage_links(files):
     roots = {f.path.split("/")[0]: True for f in files}
     return "\n".join(['if [ ! -e %s ]; then ln -s "$exec_root"/%s %s; fi' % (shell_quote(root), shell_quote(root), shell_quote(root)) for root in sorted(roots)])
 
-def shell_words(text):
+def shell_words(text, allow_recipe = False):
     # Split an already-expanded command argument list, retaining quoted C
     # strings. This does not parse Make expressions or execute shell syntax.
     words, current, quote, escaped, active = [], "", "", False, False
@@ -42,6 +42,8 @@ def shell_words(text):
                 words.append(current)
                 current, active = "", False
         elif c in [";", "|", "&", "<", ">", "`"]:
+            if allow_recipe:
+                return None
             fail("Shell operation in compiler arguments: " + text)
         else:
             current += c
@@ -100,11 +102,11 @@ def _scope(setup, directory, target, objtree, source, ancestry = None, membershi
                 variables = program([node], variables, setup.sources, cells = True).variables
     return variables
 
-def _host_flags(setup, link):
-    variables = cc_common.create_link_variables(cc_toolchain = setup.host_cc, feature_configuration = setup.host_features) if link else cc_common.create_compile_variables(cc_toolchain = setup.host_cc, feature_configuration = setup.host_features)
+def _host_link_flags(setup):
+    variables = cc_common.create_link_variables(cc_toolchain = setup.host_cc, feature_configuration = setup.host_features)
     return cc_common.get_memory_inefficient_command_line(
         feature_configuration = setup.host_features,
-        action_name = ACTION_NAMES.cpp_link_executable if link else ACTION_NAMES.c_compile,
+        action_name = ACTION_NAMES.cpp_link_executable,
         variables = variables,
     )
 
@@ -129,9 +131,82 @@ def _rewrite_flags(flags, tree, source, generated):
         rewritten.append(f)
     return rewritten
 
+def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies, directory_marker, source_tree, source_prerequisites, setup, host):
+    # Let Bazel's C++ action discover includes from the compiler's depfile.
+    # Candidate source files belong in the prunable header context, including
+    # textual includes without a .h suffix. Making them additional_inputs (or
+    # supplying the prepared tree) would make every source edit recompile all
+    # objects. Kbuild's explicit prerequisites remain mandatory: .incbin and
+    # similar assembler reads are not recorded by the C preprocessor.
+    if source_file == None:
+        fail("No declared compiler source for " + target)
+    features = setup.host_features if host else setup.features
+    if not host:
+        if setup.compiler == "clang" and "-nostdinc" in flags:
+            # Clang leaves the toolchain's -nostdlibinc unclaimed when Kbuild
+            # passes -nostdinc. Split the equivalent policy without suppressing
+            # unused-argument diagnostics or permitting any default includes.
+            normalized = []
+            for flag in flags:
+                normalized.extend(["-nostdlibinc", "-nobuiltininc"] if flag == "-nostdinc" else [flag])
+            flags = normalized
+        if "-S" in flags or "-E" in flags:
+            # compiler_input_flags supplies both -c and the source. Native
+            # -S/-E own the mode, so restore only the source argument.
+            features = setup.non_object_features
+            flags = flags + [source_file.path]
+
+    # Generated ancestors stay available for textual includes, including
+    # co-produced files, but only direct Kbuild prerequisites are mandatory.
+    # A generated C file's producer may depend on the entire linked kernel;
+    # those inputs must not force recompilation when its C output is unchanged.
+    generated = cc_common.create_compilation_context(headers = depset(dependencies.values()))
+
+    # Kbuild adds -I $(obj), allowing checked-in sources to include generated
+    # headers through ../ paths. That directory must exist even when it has no
+    # generated input files. A stable marker preserves it in the sandbox and
+    # stays mandatory because an empty search directory is absent from depfiles.
+    _, compilation = cc_common.compile(
+        actions = ctx.actions,
+        name = ctx.label.name + (".host-compile/" if host else ".compile/") + target,
+        feature_configuration = features,
+        cc_toolchain = setup.host_cc if host else setup.cc,
+        srcs = [source_file],
+        compilation_contexts = [source_tree.compilation_context, generated],
+        additional_inputs = [directory_marker] + direct_dependencies.values() + source_prerequisites.values() + setup.files.to_list(),
+        user_compile_flags = flags,
+        disallow_pic_outputs = True,
+    )
+    if len(compilation.objects) != 1:
+        fail("Expected one compiler output for %s, got %s" % (target, compilation.objects))
+    return compilation.objects[0]
+
+def _compiler_flags(command, compiler, source, target):
+    """Recognize a single native compiler invocation without interpreting recipes."""
+    args = shell_words(command, allow_recipe = True)
+    if not args or args[0] != compiler or not any([flag in args for flag in ["-c", "-S", "-E"]]):
+        return None
+    flags, output_next, source_count, output_count = [], False, 0, 0
+    for arg in args[1:]:
+        if output_next:
+            if arg != target:
+                return None
+            output_next = False
+            output_count += 1
+        elif arg == "-o":
+            output_next = True
+        elif arg == source:
+            source_count += 1
+        elif arg != "-c":
+            flags.append(arg)
+    if output_next or output_count != 1 or source_count != 1:
+        return None
+    return flags
+
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
-def register(ctx, target, directory, kind, driver, outputs, dependencies, files, source, config, setup, object_members = [], native = None, ancestry = None, memberships = {}):
+def register(ctx, target, directory, kind, driver, outputs, dependencies, source_tree, config, setup, compiler_inputs, object_members = [], native = None, ancestry = None, memberships = {}, source_prerequisites = {}):
+    source = source_tree.source_root
     if kind == "archive":
         variables = dict(setup.variables)
         for key, val in {
@@ -155,121 +230,104 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, files,
         return
 
     if kind in ["host", "compile"]:
-        tree = ctx.actions.declare_directory(outputs.values()[0].basename + ".headers/" + target)
-        mapping = ctx.actions.declare_file(tree.basename + ".inputs/" + target + ".json")
-        ctx.actions.write(mapping, json.encode({p: f.path for p, f in dependencies.items()}))
-        ctx.actions.run(
-            executable = execution_tools(ctx).python,
-            arguments = [ctx.file._materialize.path, mapping.path, tree.path, directory],
-            inputs = depset([ctx.file._materialize, mapping] + dependencies.values(), transitive = [execution_tools(ctx).files]),
-            outputs = [tree],
-            mnemonic = "KbuildHeaders",
-        )
-        variables = _scope(setup, directory, target, tree.path, source, ancestry, memberships)
-        flags = []
-        extra_inputs = []
-        link = False
+        # Objtool consumes the finished object in a separate action.
+        compiler_dependencies = {p: f for p, f in dependencies.items() if p != "tools/objtool/objtool"}
+        direct_dependencies = {p: f for p, f in compiler_inputs.direct.items() if p != "tools/objtool/objtool"}
+        generated_root = compiler_inputs.root
+        variables = _scope(setup, directory, target, generated_root, source, ancestry, memberships)
         if kind == "host":
             link = not target.endswith(".o")
             path = target[:-2] + ".c" if target.endswith(".o") else target + ".c"
-            source_file = dependencies[path].path if path in dependencies else source + "/" + path
-            if link and not object_members:
-                # Keep compile and link feature sets separate: LLVM uses its
-                # builtin headers for compilation and a runtime resource tree
-                # for linking. Concatenating both sets changes header lookup.
-                obj = ctx.actions.declare_file(outputs[target].basename + ".host-objects/" + target + ".o")
-                compile_flags = _host_flags(setup, False) + shell_words(value("hostc_flags", variables, setup.sources))
-                compile_flags = _rewrite_flags(compile_flags, tree.path, source, dependencies)
-                compile_flags += ["-c", source_file, "-o", obj.path]
+            objects = [dependencies[p] for p in object_members]
+            if not objects:
+                source_file = dependencies.get(path, source_tree.logical.get(path))
+                compile_flags = shell_words(value("hostc_flags", variables, setup.sources))
+                compile_flags = _rewrite_flags(compile_flags, generated_root, source, dependencies)
+                obj = _compile(ctx, target, source_file, compile_flags, compiler_dependencies, direct_dependencies, compiler_inputs.directory_marker, source_tree, source_prerequisites, setup, host = True)
+                objects.append(obj)
+            if link:
+                flags = _host_link_flags(setup) + shell_words(value("KBUILD_HOSTLDFLAGS", variables, setup.sources))
+                flags.extend([obj.path for obj in objects])
+                flags.extend(shell_words(value("KBUILD_HOSTLDLIBS", variables, setup.sources)))
+                flags = _rewrite_flags(flags, generated_root, source, dependencies)
+                flags.extend(["-o", outputs[target].path])
                 ctx.actions.run(
                     executable = setup.tools["HOSTCC"],
-                    arguments = compile_flags,
-                    inputs = depset([tree] + dependencies.values(), transitive = [files, setup.files]),
-                    outputs = [obj],
-                    mnemonic = "KbuildHostCC",
-                    progress_message = "LLVM compile %s" % target,
+                    arguments = flags,
+                    inputs = depset(objects, transitive = [setup.files]),
+                    outputs = outputs.values(),
+                    mnemonic = "KbuildHostLink",
+                    progress_message = "Link host tool %s" % target,
                 )
-                extra_inputs.append(obj)
-                flags.append(obj.path)
-            elif link:
-                flags.extend([dependencies[p].path for p in object_members])
             else:
-                flags.extend(["-c", source_file])
-            flags = _host_flags(setup, link) + shell_words(value("KBUILD_HOSTLDFLAGS" if link else "hostc_flags", variables, setup.sources)) + flags
-            if link:
-                flags.extend(shell_words(value("KBUILD_HOSTLDLIBS", variables, setup.sources)))
-        else:
-            path = target[:-2] + ".c"
-            if path not in dependencies and source + "/" + path not in setup.sources and target.endswith(".o"):
-                path = target[:-2] + ".S"
-            if native != None and native.get("first"):
-                path = native["first"].removeprefix("__source__/")
-            flags.extend(shell_words(value("a_flags" if path.endswith(".S") else "c_flags", variables, setup.sources)))
-            flags.append("-S" if target.endswith(".s") else "-c")
-            flags.append(dependencies[path].path if path in dependencies else source + "/" + path)
-        flags = _rewrite_flags(flags, tree.path, source, dependencies)
+                ctx.actions.symlink(output = outputs[target], target_file = objects[0])
+            return
+
+        path = target[:-2] + ".c"
+        if path not in dependencies and path not in source_tree.logical and target.endswith(".o"):
+            path = target[:-2] + ".S"
+        if native != None and native.get("first"):
+            path = native["first"].removeprefix("__source__/")
+        source_file = dependencies.get(path, source_tree.logical.get(path))
+        if source_file == None:
+            fail("No declared compiler source %s for %s" % (path, target))
+        compile_variables = program(FLAG_PROGRAM["image_command_helpers"], variables, setup.sources, cells = True).variables
+        compile_variables.update(variables)
+        compile_variables["<"] = {"value": source_file.path}
+        postprocess_variables = dict(compile_variables)
+        compile_variables["cmd_objtool"] = {"value": ""}
+        compile_variables["cmd_ld_single"] = {"value": ""}
+        name = evaluate(native["arguments"][0], variables, setup.sources).strip() if native else ("as_o_S" if path.endswith(".S") else "cc_s_c" if target.endswith(".s") else "cc_o_c")
+        command = value("cmd_" + name, compile_variables, setup.sources).strip()
+        flags = _compiler_flags(command, setup.tools["CC"], source_file.path, target)
+        if flags == None:
+            fail("Expected a single native compiler command for %s: %s" % (target, command))
+        flags = _rewrite_flags(flags, generated_root, source, dependencies)
+
+        # LLVM's integrated assembler also searches include directories for
+        # .incbin, including inline assembly in C. Preserve Kbuild's generated
+        # and source namespaces without a private copy of the source tree.
+        flags.extend(["-I" + generated_root, "-I" + source])
+        raw = _compile(ctx, target, source_file, flags, compiler_dependencies, direct_dependencies, compiler_inputs.directory_marker, source_tree, source_prerequisites, setup, host = False)
         postprocess = ""
-        raw = None
-        compiler_outputs = outputs.values()
-        if kind == "compile" and target.endswith(".o") and config.make_values.get("CONFIG_OBJTOOL") == "y":
-            variables["objtool"] = {"value": dependencies["tools/objtool/objtool"].path}
+        postprocess_inputs = [raw]
+        if target.endswith(".o"):
+            if config.make_values.get("CONFIG_OBJTOOL") == "y":
+                objtool = dependencies["tools/objtool/objtool"]
+                postprocess_variables["objtool"] = {"value": objtool.path}
+                postprocess_inputs.append(objtool)
 
             # Membership and target-specific arguments use the logical Kbuild
             # name. Freeze those decisions before substituting the action path.
-            for name in ["objtool-enabled", "objtool-args"]:
-                variables[name] = {"value": value(name, variables, setup.sources)}
-            variables["@"] = {"value": outputs[target].path}
-            postprocess = value("cmd_objtool", variables, setup.sources).strip()
-            if postprocess:
-                raw = ctx.actions.declare_file(outputs[target].basename + ".raw/" + target)
-                compiler_outputs = [raw]
-        flags.extend(["-o", compiler_outputs[0].path])
-        args = ctx.actions.args()
-        args.add_all(flags)
-        action = {
-            "arguments": [args],
-            "inputs": depset([tree] + dependencies.values() + extra_inputs, transitive = [files, setup.files]),
-            "outputs": compiler_outputs,
-            "mnemonic": (("KbuildHostLink" if link else "KbuildHostCC") if kind == "host" else "KbuildCC"),
-            "progress_message": "Compile %s" % target,
-        }
-        if kind == "compile":
-            # Kbuild assembly and inline assembly can use .incbin with a
-            # build-root-relative filename. Preserve that namespace in a
-            # private working directory, with only declared generated inputs.
-            command = """set -eu
-exec_root="$PWD"
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-cp -a %s/. "$work/"
-cd "$work"
-%s
-"$exec_root/"%s "$@"
-""" % (shell_quote(tree.path), _stage_links(files.to_list() + setup.files.to_list()), shell_quote(setup.tools["CC"]))
-            run_recipe(ctx, execution_tools(ctx), command = command, **action)
-        else:
-            ctx.actions.run(executable = setup.tools["HOSTCC"], **action)
+            for name in ["objtool-enabled", "objtool-args", "is-single-obj-m"]:
+                postprocess_variables[name] = {"value": value(name, postprocess_variables, setup.sources)}
+            postprocess_variables["@"] = {"value": outputs[target].path}
+            postprocess_variables["tmp-target"] = {"value": outputs[target].path + ".tmp"}
+            postprocess = (value("cmd_ld_single", postprocess_variables, setup.sources) + value("cmd_objtool", postprocess_variables, setup.sources)).strip()
         if postprocess:
             run_recipe(
                 ctx,
                 execution_tools(ctx),
                 command = "set -eu\ncp " + shell_quote(raw.path) + " " + shell_quote(outputs[target].path) + "\nchmod u+w " + shell_quote(outputs[target].path) + "\n" + postprocess.lstrip("; "),
-                inputs = depset([raw] + dependencies.values(), transitive = [setup.files]),
+                inputs = depset(postprocess_inputs, transitive = [setup.files]),
                 outputs = outputs.values(),
                 mnemonic = "KbuildObjtool",
                 progress_message = "Objtool %s" % target,
             )
+        else:
+            ctx.actions.symlink(output = outputs[target], target_file = raw)
         return
     if driver == "asm_headers":
         ctx.actions.write(outputs[target], "#include <asm-generic/%s>\n" % target.rsplit("/", 1)[-1])
         return
-    codegen(ctx, target, directory, outputs, dependencies, files, source, config, setup, native, ancestry)
+    codegen(ctx, target, directory, outputs, dependencies, source_tree, config, setup, compiler_inputs, native, ancestry, source_prerequisites)
 
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
-def codegen(ctx, target, directory, outputs, dependencies, files, source, config, setup, native = None, ancestry = None):
+def codegen(ctx, target, directory, outputs, dependencies, source_tree, config, setup, compiler_inputs, native = None, ancestry = None, source_prerequisites = {}):
+    source = source_tree.source_root
     if native != None:
-        native_codegen(ctx, target, outputs, dependencies, files, source, config, setup, native)
+        native_codegen(ctx, target, outputs, dependencies, source_tree, config, setup, compiler_inputs, native, source_prerequisites)
         return
     variables = _scope(setup, directory, target, "__object__", source, ancestry)
     key = "Kbuild" if directory == "." else directory + "/Kbuild"
@@ -328,9 +386,6 @@ def codegen(ctx, target, directory, outputs, dependencies, files, source, config
                 n = evaluate(assignment["name_expression"], variables, setup.sources)
                 variables[n] = {"value": evaluate(assignment["value_expression"], variables, setup.sources)}
     else:
-        if native != None:
-            native_codegen(ctx, target, outputs, dependencies, files, source, config, setup, native)
-            return
         fail("No direct codegen lowering for " + target)
     variables["<"] = {"value": first}
     variables["^"] = {"value": first}
@@ -352,20 +407,25 @@ def codegen(ctx, target, directory, outputs, dependencies, files, source, config
         fail("Undeclared generated dependency in %s: %s" % (target, command))
     if filechk:
         command = "{ " + command + "; } > " + shell_quote(outputs[target].path)
+
+    # Only executable recipes use the interpreter-bound source tree. Keep
+    # its namespace out of compiler flags and compiler input declarations.
+    command = command.replace(source, source_tree.root.path)
     run_recipe(
         ctx,
         execution_tools(ctx),
         command = "set -eu\n" + command,
-        inputs = depset([config.config] + dependencies.values(), transitive = [files, setup.files]),
+        inputs = depset([config.config] + dependencies.values(), transitive = [source_tree.files, setup.files]),
         outputs = outputs.values(),
         mnemonic = "KbuildGenerate",
         progress_message = "Generate %s" % target,
-        env = {"KBUILD_VERBOSE": "0", "srctree": source},
+        env = {"KBUILD_VERBOSE": "0", "srctree": source_tree.root.path},
     )
 
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
-def native_codegen(ctx, target, outputs, dependencies, files, source, config, setup, native):
+def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setup, compiler_inputs, native, source_prerequisites):
+    source = source_tree.source_root
     variables = program(FLAG_PROGRAM["image_command_helpers"], native["variables"], setup.sources, cells = True).variables
     variables.update(native["variables"])
     for name, tool in setup.tools.items():
@@ -437,6 +497,27 @@ def native_codegen(ctx, target, outputs, dependencies, files, source, config, se
     command = command.replace("__object__/", "").replace("__object__", ".")
     if native["function"] == "filechk":
         command = "{ " + command + "; } > " + shell_quote(target)
+    source_path = first.removeprefix(source + "/")
+    source_file = dependencies.get(source_path, source_tree.logical.get(source_path))
+    flags = _compiler_flags(command, setup.tools["CC"], first, target)
+
+    # Native preprocessing and compiler-emitted assembly use the same Bazel
+    # dependency discovery as ordinary objects. Recognize the command shape,
+    # rather than naming linker scripts or architecture-specific targets.
+    if flags != None and source_file != None:
+        if len(outputs) != 1:
+            fail("Native compiler command must have one output: " + target)
+        compiler_dependencies = {p: f for p, f in dependencies.items() if p != "tools/objtool/objtool"}
+        direct_dependencies = {p: f for p, f in compiler_inputs.direct.items() if p != "tools/objtool/objtool"}
+        compiler_dependencies.update(compiler_inputs.config)
+        direct_dependencies.update(compiler_inputs.config)
+        flags = _rewrite_flags(flags, compiler_inputs.root, source, compiler_dependencies)
+        flags.extend(["-I" + compiler_inputs.root, "-I" + source])
+        compiled = _compile(ctx, target, source_file, flags, compiler_dependencies, direct_dependencies, compiler_inputs.directory_marker, source_tree, source_prerequisites, setup, host = False)
+        ctx.actions.symlink(output = outputs[target], target_file = compiled)
+        return
+    if native.get("compile"):
+        fail("Native compiler recipe needs explicit lowering for dependency discovery: %s: %s" % (target, command))
     stage = ctx.actions.declare_directory(outputs.values()[0].basename + ".native-inputs/" + target)
     manifest = ctx.actions.declare_file(stage.basename + ".mapping/" + target + ".json")
     arranged = {p: f.path for p, f in dependencies.items()}
@@ -450,6 +531,7 @@ def native_codegen(ctx, target, outputs, dependencies, files, source, config, se
         outputs = [stage],
         mnemonic = "KbuildNativeInputs",
     )
+
     exports = dict(setup.tools)
     for name in ["KBUILD_VMLINUX_LIBS", "KBUILD_LDS", "KERNELRELEASE", "SRCARCH"] + (FLAG_PROGRAM["image_link_exports"] if native.get("final_link") else []):
         if name not in ("KBUILD_VMLINUX_LIBS", "KBUILD_LDS", "KERNELRELEASE", "SRCARCH") and name not in variables.get("__exports__", {}):
@@ -457,6 +539,7 @@ def native_codegen(ctx, target, outputs, dependencies, files, source, config, se
         exports[name] = value(name, variables, setup.sources).replace("__source__", source).replace("__object__", ".")
     exports.update({"objtree": ".", "CONFIG_SHELL": setup.tools["CONFIG_SHELL"], "KBUILD_BUILD_USER": "bazel", "KBUILD_BUILD_HOST": "bazel"})
     command = "\n".join(["export " + name + "=" + shell_quote(val) for name, val in exports.items()]) + "\n" + command
+    command = command.replace(source, source_tree.root.path)
 
     # Driver-based native links must find the declared linker beside the
     # selected tools, even when the compiler is a multicall-binary symlink.
@@ -473,16 +556,16 @@ cd "$work"
 %s
 %s
 %s
-""" % (shell_quote(stage.path), _stage_links(files.to_list() + setup.files.to_list() + [ctx.file._link_script]), "mkdir -p " + " ".join([shell_quote(p.rpartition("/")[0] or ".") for p in outputs]), command)
+""" % (shell_quote(stage.path), _stage_links(source_tree.files.to_list() + setup.files.to_list() + [ctx.file._link_script]), "mkdir -p " + " ".join([shell_quote(p.rpartition("/")[0] or ".") for p in outputs]), command)
     for path, output in outputs.items():
         script += "cp %s %s\n" % (shell_quote(path), shell_quote(output.path))
     run_recipe(
         ctx,
         execution_tools(ctx),
         command = script,
-        inputs = depset([stage, config.config, ctx.file._link_script] + dependencies.values(), transitive = [files, setup.files]),
+        inputs = depset([stage, config.config, ctx.file._link_script] + dependencies.values(), transitive = [source_tree.files, setup.files]),
         outputs = outputs.values(),
-        mnemonic = "KbuildCC" if native.get("compile") else "KbuildGenerate",
+        mnemonic = "KbuildGenerate",
         progress_message = "Native generator %s" % target,
-        env = {"KBUILD_VERBOSE": "0", "srctree": source},
+        env = {"KBUILD_VERBOSE": "0", "srctree": source_tree.root.path},
     )
