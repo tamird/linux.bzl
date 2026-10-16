@@ -1,0 +1,113 @@
+name: Prototype qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      experiment:
+        description: Experiment to run
+        type: choice
+        default: all
+        options: [all, configuration-parity, source-edit-reuse]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  qualify:
+    name: ${{ matrix.experiment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        experiment: ${{ inputs.experiment == 'all' && fromJSON('["configuration-parity", "source-edit-reuse"]') || fromJSON(format('["{0}"]', inputs.experiment)) }}
+    env:
+      USE_BAZEL_VERSION: 9.1.0
+    steps:
+      - uses: actions/checkout@v5
+      - name: Checkout the generator's pinned kernel
+        uses: actions/checkout@v5
+        with:
+          repository: torvalds/linux
+          ref: 0fcb05b72344f40806cbe810de8872f1698bf053
+          path: _tmp/linux
+          persist-credentials: false
+      - name: Fetch the matching prebuilt generator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/linux-prototype-qualification" _tmp/kernel-repository
+          gh api repos/hermeticbuild/linux.bzl/actions/artifacts/12039764132/zip > "$RUNNER_TEMP/linux-prototype-qualification/consumer.zip"
+          echo "b5f77f4dfb2292b8346c933100824e999efb9b256c99409457f12dcfb83efb8a  $RUNNER_TEMP/linux-prototype-qualification/consumer.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/linux-prototype-qualification/consumer.zip" -d _tmp/kernel-repository
+          tar -xzf _tmp/kernel-repository/consumer-support.tar.gz -C _tmp/kernel-repository
+          python3 example.py --generated _tmp/kernel-repository/support
+      - name: Configure Bazel
+        uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: prototype-qualification-${{ matrix.experiment }}
+          repository-cache: true
+      - name: Compare native and prototype configurations
+        if: matrix.experiment == 'configuration-parity'
+        working-directory: examples
+        run: bazel test //qualification:parity --jobs=4 --keep_going --test_output=errors
+      - name: Check the reuse reporter
+        if: matrix.experiment == 'source-edit-reuse'
+        working-directory: examples
+        run: bazel test //qualification:reuse_report_test --test_output=errors
+      - name: Fetch the compact execution log decoder
+        if: matrix.experiment == 'source-edit-reuse'
+        run: |
+          decoder="$RUNNER_TEMP/linux-prototype-qualification/bb"
+          curl --fail --location --output "$decoder" https://github.com/buildbuddy-io/bazel/releases/download/5.0.492/bazel-5.0.492-linux-x86_64
+          echo "e9e996a1a01555e45433acf9432f9d40d5bda437812a830d6701fe9b09853df9  $decoder" | sha256sum --check
+          chmod +x "$decoder"
+      - name: Measure unchanged and edited source builds
+        if: matrix.experiment == 'source-edit-reuse'
+        working-directory: examples
+        run: |
+          set -euo pipefail
+          results="$RUNNER_TEMP/linux-prototype-qualification"
+          source_file="$GITHUB_WORKSPACE/_tmp/linux/init/main.c"
+          cp "$source_file" "$results/main.c.original"
+          trap 'cp "$results/main.c.original" "$source_file"' EXIT
+          for phase in baseline unchanged edited; do
+            if [ "$phase" = edited ]; then
+              printf '\n/* prototype reuse experiment %s/%s */\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$source_file"
+            fi
+            bazel build //:x86_64_kernel --jobs=4 \
+              --sandbox_block_path=/bin --sandbox_block_path=/usr/bin --sandbox_block_path=/usr/local/bin \
+              --execution_log_compact_file="$results/$phase.execution.pb.zst"
+            # Decode compact entries without expanding every action's source-tree inputs.
+            "$results/bb" print --compact_execution_log="$results/$phase.execution.pb.zst" --raw=true --sort=false |
+              jq -c '
+                if has("invocation") then {invocation: .invocation.id}
+                elif has("file") then {id, path: .file.path}
+                elif has("directory") then {id, path: .directory.path}
+                elif has("unresolvedSymlink") then {id, path: .unresolvedSymlink.path}
+                elif has("spawn") then {spawn: (.spawn | {
+                  outputs: (.outputs // []), mnemonic, runner: (.runner // ""),
+                  cacheHit: (.cacheHit // false),
+                  exitCode: (.exitCode // 0),
+                  status: (.status // "")
+                })}
+                else empty end
+              ' > "$results/$phase.execution.jsonl"
+            bazel aquery 'mnemonic("KbuildCC", deps(//:x86_64_kernel))' \
+              --output=jsonproto --include_commandline=false > "$results/$phase.aquery.json"
+          done
+          bazel run //qualification:reuse_report -- "$results"
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: prototype-${{ matrix.experiment }}
+          path: |
+            ${{ runner.temp }}/linux-prototype-qualification/*.json
+            ${{ runner.temp }}/linux-prototype-qualification/*.jsonl
+            ${{ runner.temp }}/linux-prototype-qualification/*.pb.zst
+            examples/bazel-testlogs/qualification/**/test.log
+            examples/bazel-testlogs/qualification/**/test.outputs/**
+          retention-days: 14
