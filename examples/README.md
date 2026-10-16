@@ -10,10 +10,10 @@ prompts use the prototype's `allnoconfig` policy.
 From the repository root, first build and configure the prototype:
 
 ```sh
-python3 build.py --linux _tmp/linux
-_tmp/kernel-repository/kernel-repository generate \
-  --linux _tmp/linux --out _tmp/kernel-repository/repo --all-backends
-python3 example.py
+bazel build //:consumer_support
+mkdir -p _tmp/kernel-repository
+tar -xzf bazel-bin/consumer-support.tar.gz -C _tmp/kernel-repository
+python3 example.py --generated _tmp/kernel-repository/support
 ```
 
 `example.py` writes only ignored `.generated/` module support and dependency

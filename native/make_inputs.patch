@@ -1,0 +1,23 @@
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -616,3 +616,20 @@
+     }),
+     visibility = ["//visibility:public"],
+ )
++
++# Keep the source list and configuration shared with parser consumers.
++# The static parser uses musl, whose glob_t lacks GNU Make's directory hooks;
++# include Make's bundled glob/fnmatch implementations and matching headers.
++filegroup(
++    name = "posix_parser_inputs",
++    srcs = MAKE_SRCS + MAKE_HDRS + LIB_HDRS + POSIX_LIB_SRCS + POSIX_LIB_HDRS + [
++        "src/posixos.c",
++        "lib/glob.c",
++        "lib/fnmatch.c",
++        ":config_h",
++        ":gmk_default_h",
++        ":lib_glob_h",
++        ":lib_fnmatch_h",
++    ],
++    visibility = ["//visibility:public"],
++)
