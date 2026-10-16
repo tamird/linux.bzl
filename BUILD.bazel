@@ -1,9 +1,110 @@
 load("@buildifier_prebuilt//:rules.bzl", "buildifier", "buildifier_test")
-load("@rules_python//python:defs.bzl", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("//native:bootstrap.bzl", "consumer_support", "kconfig_parser", "kernel_repository_binary", "make_parser")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["repository.bzl"])
+exports_files([
+    "repository.bzl",
+    "launcher.c",
+    "renderer/rules_bison_cstdlib.patch",
+    "renderer/rules_cc_autoconf_no_host_shell.patch",
+])
+
+py_library(
+    name = "compiler_capability_support",
+    srcs = ["renderer/compiler_capabilities.py"],
+    data = ["renderer/compiler_capabilities.json"],
+    imports = ["renderer"],
+)
+
+py_binary(
+    name = "bootstrap_builder",
+    srcs = ["build.py"],
+    main = "build.py",
+)
+
+make_parser(
+    name = "make_parser",
+    tags = ["manual"],
+    exports = ["//native:" + name for name in [
+        "ast_export.inc",
+        "expr_export.inc",
+        "setup_export.inc",
+    ]],
+)
+
+kconfig_parser(
+    name = "kconfig_parser",
+    tags = ["manual"],
+)
+
+kernel_repository_binary(
+    name = "kernel_repository",
+    kconfig = ":kconfig_parser",
+    license_files = [
+        "@bootstrap_python//:licenses",
+        "@bootstrap_make//:COPYING",
+        "@bootstrap_linux//:COPYING",
+        "@bootstrap_linux//:LICENSES/preferred/GPL-2.0",
+    ],
+    make = ":make_parser",
+    renderer = glob(
+        ["renderer/*"],
+        exclude = ["**/__pycache__/**"],
+    ),
+    tags = ["manual"],
+)
+
+consumer_support(
+    name = "consumer_support",
+    exec_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    fragments = ["@example_fixtures//configs:" + name + ".config" for name in [
+        "x86_64",
+        "aarch64",
+        "debug",
+        "btf",
+        "lz4",
+    ]],
+    generator = ":kernel_repository",
+    tags = ["manual"],
+)
+
+py_test(
+    name = "repository_test",
+    srcs = [
+        "build.py",
+        "test_repository.py",
+    ],
+    args = [
+        "--tool",
+        "$(rootpath :kernel_repository)",
+        "--linux",
+        "$(rootpath @bootstrap_linux//:Makefile)",
+        "--config-dir",
+        "$(rootpath @example_fixtures//configs:x86_64.config)",
+    ],
+    data = [
+        ":kernel_repository",
+        "@bootstrap_linux//:Makefile",
+        "@bootstrap_linux//:sources",
+    ] + ["@example_fixtures//configs:" + name + ".config" for name in [
+        "x86_64",
+        "aarch64",
+        "debug",
+        "btf",
+        "lz4",
+    ]],
+    main = "test_repository.py",
+    tags = ["manual"],
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
 
 filegroup(
     name = "generator_sources",
@@ -12,9 +113,9 @@ filegroup(
         "example.py",
         "launcher.c",
         "test_repository.py",
+        "//native:sources",
     ] + glob(
         [
-            "native/**",
             "renderer/**",
         ],
         exclude = ["**/__pycache__/**"],

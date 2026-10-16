@@ -1,5 +1,7 @@
 from pathlib import Path
-import subprocess
+import argparse
+import hashlib
+import json
 from compiler_capabilities import native_capabilities
 HERE = Path(__file__).resolve().parent
 
@@ -15,10 +17,8 @@ def prepare_sources(linux, output):
     parser = parser.replace(finalize, '\treturn; /* Link and finalize the syntax in Bazel analysis. */')
     parser = parser.replace('\tyyparse();', '\t/* Preprocessor definitions shared by the kernel Kconfig files. */\n\tif (strcmp(name, "scripts/Kconfig.include")) {\n\t\tzconf_initscan("scripts/Kconfig.include");\n\t\tyyparse();\n\t\tzconf_initscan(name);\n\t}\n\tyyparse();', 1)
     (output / 'parser.y').write_text(parser)
-    subprocess.run(['bison', '-t', '-d', '-o', output / 'parser.tab.c', output / 'parser.y'], check=True)
     lexer = (src / 'lexer.l').read_text().replace('cur_filename = file_lookup(name, NULL, 0);', 'cur_filename = file_lookup(name, NULL, 0);\n\tyyrestart(yyin);\n\tBEGIN(INITIAL);\n\tprev_token = prev_prev_token = T_EOL;\n\tcur_lineno = 1;')
     (output / 'lexer.l').write_text(lexer)
-    subprocess.run(['flex', '-o', output / 'lexer.lex.c', output / 'lexer.l'], check=True)
     preprocess = (src / 'preprocess.c').read_text()
     marker = 'static LIST_HEAD(env_list);'
     assert preprocess.count(marker) == 1
@@ -31,6 +31,16 @@ def prepare_sources(linux, output):
     dump = (HERE / 'dump.c').read_text()
     dump = dump[:dump.index('int main(')] + (HERE / 'kconfig_syntax.inc').read_text()
     (output / 'dump.c').write_text(dump)
-    sources = [src / (n + '.c') for n in ('confdata', 'expr', 'menu', 'symbol', 'util')]
-    sources += [output / n for n in ('lexer.lex.c', 'parser.tab.c', 'preprocess.c', 'dump.c')]
-    return sources
+    identity = {str(path.relative_to(linux)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(src.iterdir()) if path.suffix in ('.c', '.h', '.l', '.y')}
+    identity.update({str(path.relative_to(linux)): hashlib.sha256(path.read_bytes()).hexdigest()
+                     for path in sorted((linux / 'scripts/include').rglob('*.h'))})
+    (output / 'parser-sources.json').write_text(json.dumps(identity, sort_keys=True))
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Prepare native Kconfig syntax exporter sources')
+    parser.add_argument('--linux', required=True, type=Path)
+    parser.add_argument('--out', required=True, type=Path)
+    args = parser.parse_args()
+    prepare_sources(args.linux, args.out)

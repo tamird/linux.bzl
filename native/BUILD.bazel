@@ -1,0 +1,26 @@
+load("@rules_python//python:defs.bzl", "py_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(glob([
+    "*.bzl",
+    "*.patch",
+    "*.inc",
+    "*.c",
+]))
+
+py_binary(
+    name = "prepare",
+    srcs = ["prepare.py"],
+    data = [
+        "dump.c",
+        "kconfig_fallback.inc",
+        "kconfig_syntax.inc",
+    ],
+    deps = ["//:compiler_capability_support"],
+)
+
+filegroup(
+    name = "sources",
+    srcs = glob(["*"]),
+)

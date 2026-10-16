@@ -31,10 +31,10 @@ jobs:
           path: _tmp/linux
           persist-credentials: false
 
-      - name: Install bootstrap and tracing tools
+      - name: Install tracing tool
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools build-essential bison flex patch strace
+          sudo apt-get install -y strace
 
       - name: Configure Bazel
         uses: bazel-contrib/setup-bazel@0.19.0
@@ -50,26 +50,16 @@ jobs:
         run: bazel test //... --jobs=4 --test_output=errors
 
       - name: Build static generator from source
-        run: python3 build.py --jobs 4
+        run: bazel build //:consumer_support --jobs=4
 
       - name: Audit standalone generation
-        run: |
-          python3 test_repository.py \
-            --tool _tmp/kernel-repository/kernel-repository \
-            --linux _tmp/linux --out _tmp/kernel-repository/check --strace
-
-      - name: Package consumer support
-        run: |
-          mkdir -p _tmp/kernel-repository/support/rules
-          cp _tmp/kernel-repository/check/repo/MODULE.bazel _tmp/kernel-repository/check/repo/repository-tool.json _tmp/kernel-repository/support/
-          cp _tmp/kernel-repository/check/repo/rules/*.patch _tmp/kernel-repository/support/rules/
-          tar -czf _tmp/kernel-repository/consumer-support.tar.gz -C _tmp/kernel-repository kernel-repository support
+        run: bazel test //:repository_test --jobs=4 --test_arg=--strace --test_output=errors
 
       - name: Upload consumer support
         uses: actions/upload-artifact@v7
         with:
           name: kernel-repository-consumer
-          path: _tmp/kernel-repository/consumer-support.tar.gz
+          path: bazel-bin/consumer-support.tar.gz
           retention-days: 7
 
       - name: Upload generation diagnostics and executable
@@ -78,10 +68,9 @@ jobs:
         with:
           name: kernel-repository-prototype
           path: |
-            _tmp/kernel-repository/kernel-repository
-            _tmp/kernel-repository/check/exec.trace
-            _tmp/kernel-repository/check/generation.log
-            examples/bazel-testlogs/**/test.log
+            bazel-bin/kernel-repository
+            bazel-testlogs/repository_test/test.log
+            bazel-testlogs/repository_test/test.outputs/**
           if-no-files-found: warn
           retention-days: 7
 
@@ -161,14 +150,17 @@ jobs:
         working-directory: examples
         env:
           TEST_TARGETS: ${{ matrix.test }}
-        run: bazel test $TEST_TARGETS --jobs=4 --test_output=errors
+        run: |
+          read -r -a targets <<< "$TEST_TARGETS"
+          bazel test "${targets[@]}" --jobs=4 --test_output=errors
 
       - name: Build example with host tools blocked
         working-directory: examples
         env:
           BUILD_TARGETS: ${{ matrix.build }}
         run: |
-          bazel build $BUILD_TARGETS --jobs=4 \
+          read -r -a targets <<< "$BUILD_TARGETS"
+          bazel build "${targets[@]}" --jobs=4 \
             --sandbox_block_path=/bin --sandbox_block_path=/usr/bin \
             --sandbox_block_path=/usr/local/bin
 

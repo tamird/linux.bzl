@@ -1,171 +1,138 @@
-#!/usr/bin/env python3
-"""Bootstrap the single-file Linux/x86_64 repository generator.
+"""Bazel action helpers for the standalone repository generator."""
 
-Host build dependencies: Python3, musl-tools, GCC/binutils, Make, patch, Bison,
-Flex. None is required when invoking the resulting executable.
-"""
 import argparse
-import hashlib
+import gzip
+import io
 import json
-import os
 from pathlib import Path
+import re
 import shutil
+import struct
 import subprocess
-import sys
 import tarfile
-import urllib.request
+import tempfile
+from typing import TypedDict
 import zipfile
 
-HERE = Path(__file__).resolve().parent
-PYTHON_VERSION = '3.13.9'
-PYTHON_SHA256 = 'ed5ef34cda36cfa2f3a340f07cac7e7814f91c7f3c411f6d3562323a866c5c66'
-MAKE_SHA256 = 'dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3'
-STATIC_MODULES = '''*static*
-array arraymodule.c
-_bisect _bisectmodule.c
-_contextvars _contextvarsmodule.c
-_json _json.c
-_random _randommodule.c
-_struct _struct.c
-math mathmodule.c
-binascii binascii.c -UUSE_ZLIB_CRC32
-_posixsubprocess _posixsubprocess.c
-select selectmodule.c
-fcntl fcntlmodule.c
-grp grpmodule.c
-_md5 md5module.c -I$(srcdir)/Modules/_hacl/include _hacl/Hacl_Hash_MD5.c -D_BSD_SOURCE -D_DEFAULT_SOURCE
-_sha1 sha1module.c -I$(srcdir)/Modules/_hacl/include _hacl/Hacl_Hash_SHA1.c -D_BSD_SOURCE -D_DEFAULT_SOURCE
-_sha2 sha2module.c -I$(srcdir)/Modules/_hacl/include Modules/_hacl/libHacl_Hash_SHA2.a
-_sha3 sha3module.c -I$(srcdir)/Modules/_hacl/include _hacl/Hacl_Hash_SHA3.c -D_BSD_SOURCE -D_DEFAULT_SOURCE
-_blake2 _blake2/blake2module.c _blake2/blake2b_impl.c _blake2/blake2s_impl.c
-*disabled*
-_ssl _hashlib _ctypes _curses _curses_panel _tkinter readline _bz2 _lzma zlib
-'''
+
+# bootstrap.bzl writes these action specifications.
+class NamespaceSpec(TypedDict):
+    nm: str
+    objcopy: str
+    namespace: str
+    objects: list[tuple[str, str]]
 
 
-def run(command, cwd, log):
-    with log.open('w') as stream:
-        result = subprocess.run([str(x) for x in command], cwd=cwd, stdout=stream, stderr=subprocess.STDOUT)
-    if result.returncode:
-        raise RuntimeError(f'{command[0]} failed; see {log}\n{log.read_text()[-6000:]}')
+class BundleSpec(TypedDict):
+    binary: str
+    output: str
+    python_metadata: str
+    make_module: str
+    identity: str
+    stdlib: list[str]
+    renderer: list[str]
+    license_files: list[str]
 
 
-def archive(url, path, digest):
-    if not path.exists():
-        urllib.request.urlretrieve(url, path)
-    if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-        raise ValueError(f'Archive checksum mismatch: {path}')
-    return path
+class SupportSpec(TypedDict):
+    tool: str
+    linux_anchor: str
+    fragments: list[str]
+    output: str
 
 
-def namespaced_object(objects, out, namespace, main):
-    """Isolate upstream C globals, preserving unresolved libc references."""
-    combined = out.with_suffix('.combined.o')
-    run(['ld', '-r', '-o', combined, *objects], out.parent, out.with_suffix('.ld.log'))
-    symbols = subprocess.check_output(['nm', '--defined-only', '--extern-only', str(combined)], text=True)
-    names = sorted({line.split()[-1] for line in symbols.splitlines() if line.split()})
-    mapping = out.with_suffix('.symbols')
-    mapping.write_text(''.join(n + ' ' + (main if n == 'main' else namespace + n) + '\n' for n in names))
-    subprocess.run(['objcopy', '--redefine-syms=' + str(mapping), str(combined), str(out)], check=True)
+def namespace(spec: NamespaceSpec) -> None:
+    """Rename parser-owned globals, preserving references to libc."""
+    symbols = set()
+    for source, _ in spec['objects']:
+        result = subprocess.run(
+            [spec['nm'], '--defined-only', '--extern-only', '--format=just-symbols', source],
+            check=True, capture_output=True, text=True,
+        )
+        symbols.update(result.stdout.splitlines())
+    mapping = ''.join(f'{name} {spec["namespace"]}{name}\n' for name in sorted(symbols))
+    with tempfile.NamedTemporaryFile(mode='w', dir=Path(spec['objects'][0][1]).parent) as stream:
+        stream.write(mapping)
+        stream.flush()
+        for source, output in spec['objects']:
+            subprocess.run([spec['objcopy'], '--redefine-syms=' + stream.name, source, output], check=True)
 
 
-def build(linux, work, output, jobs):
-    work.mkdir(parents=True, exist_ok=True)
-    cc = work / 'musl-cc'
-    # Debian's musl-gcc delegates --print-multiarch to its glibc GCC. CPython
-    # requires this query to match the compiler's actual libc headers.
-    cc.write_text('#!/bin/sh\nif [ "$1" = --print-multiarch ]; then\n echo x86_64-linux-musl\nelse\n exec musl-gcc "$@"\nfi\n')
-    cc.chmod(0o755)
-    source = work / ('Python-' + PYTHON_VERSION)
-    if not source.exists():
-        path = archive(f'https://www.python.org/ftp/python/{PYTHON_VERSION}/Python-{PYTHON_VERSION}.tar.xz',
-                       work / ('Python-' + PYTHON_VERSION + '.tar.xz'), PYTHON_SHA256)
-        with tarfile.open(path) as stream:
-            stream.extractall(work, filter='data')
-    python = work / 'python-build'
-    python.mkdir(exist_ok=True)
-    if not (python / 'Makefile').exists():
-        run(['env', 'CC=' + str(cc), 'LDFLAGS=-static', source / 'configure',
-             '--disable-shared', '--without-ensurepip', '--disable-test-modules'], python, python / 'configure.log')
-    setup = python / 'Modules/Setup.local'
-    if not setup.exists() or setup.read_text() != STATIC_MODULES:
-        setup.write_text(STATIC_MODULES)
-    print('Building static CPython', flush=True)
-    run(['make', '-j' + str(jobs), 'libpython3.13.a', 'Modules/_hacl/libHacl_Hash_SHA2.a'], python, python / 'build.log')
+def assert_static(binary: Path) -> None:
+    """Check the ELF program headers directly; no ambient readelf is needed."""
+    with binary.open('rb') as stream:
+        header = stream.read(64)
+        if header[:6] != b'\x7fELF\x02\x01':
+            raise ValueError('Generator must be a 64-bit little-endian ELF')
+        program_offset = struct.unpack_from('<Q', header, 32)[0]
+        entry_size, count = struct.unpack_from('<HH', header, 54)
+        for index in range(count):
+            stream.seek(program_offset + index * entry_size)
+            kind = struct.unpack('<I', stream.read(4))[0]
+            if kind in (2, 3):
+                raise ValueError('Generator must have neither an interpreter nor dynamic dependencies')
 
-    patch_digest = hashlib.sha256((HERE / 'native/gnu-make-4.4.1.patch').read_bytes()).hexdigest()[:12]
-    make_source, make_build = work / ('make-source-' + patch_digest), work / ('make-build-' + patch_digest)
-    if not make_source.exists():
-        path = archive('https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz', work / 'make-4.4.1.tar.gz', MAKE_SHA256)
-        with tarfile.open(path) as stream:
-            stream.extractall(work, filter='data')
-        (work / 'make-4.4.1').rename(make_source)
-        run(['patch', '-p1', '-i', HERE / 'native/gnu-make-4.4.1.patch'], make_source, work / 'make-patch.log')
-    for name in ('ast_export.inc', 'expr_export.inc', 'setup_export.inc'):
-        shutil.copyfile(HERE / 'native' / name, make_source / 'src' / name)
-    make_build.mkdir(exist_ok=True)
-    if not (make_build / 'Makefile').exists():
-        run(['env', 'CC=' + str(cc), 'LDFLAGS=-static', make_source / 'configure', '--without-guile', '--disable-nls'],
-            make_build, make_build / 'configure.log')
-    print('Building native GNU Make parser', flush=True)
-    run(['make', '-j' + str(jobs)], make_build, make_build / 'build.log')
-    make_object = work / 'make.o'
-    namespaced_object([*sorted((make_build / 'src').glob('*.o')), make_build / 'lib/libgnu.a'], make_object,
-                      'kernel_make_', 'kernel_make_main')
 
-    sys.path.insert(0, str(HERE / 'renderer'))
-    sys.path.insert(0, str(HERE / 'native'))
-    from prepare import prepare_sources
-    kconfig = work / 'kconfig'
-    sources = prepare_sources(linux, kconfig)
-    print('Building native Kconfig parser', flush=True)
-    objects = []
-    for source_file in sources:
-        obj = kconfig / (source_file.stem + '.o')
-        run([cc, '-O2', '-I', linux / 'scripts/kconfig', '-I', linux / 'scripts/include', '-I', kconfig,
-             '-c', source_file, '-o', obj], kconfig, obj.with_suffix('.log'))
-        objects.append(obj)
-    kconfig_object = work / 'kconfig.o'
-    namespaced_object(objects, kconfig_object, 'kernel_kconfig_', 'kernel_kconfig_main')
-    identity = {str(p.relative_to(linux)): hashlib.sha256(p.read_bytes()).hexdigest()
-                for p in sorted((linux / 'scripts/kconfig').iterdir()) if p.suffix in ('.c', '.h', '.l', '.y')}
-    identity.update({str(p.relative_to(linux)): hashlib.sha256(p.read_bytes()).hexdigest()
-                     for p in sorted((linux / 'scripts/include').rglob('*.h'))})
-    output.parent.mkdir(parents=True, exist_ok=True)
-    linked = output.with_name('.' + output.name + '.linking')
-    print('Linking one static executable', flush=True)
-    run([cc, '-O2', '-static', '-I', python, '-I', work / ('Python-' + PYTHON_VERSION) / 'Include',
-         HERE / 'launcher.c', make_object, kconfig_object, python / 'libpython3.13.a', python / 'Modules/_hacl/libHacl_Hash_SHA2.a', '-lm', '-ldl', '-lpthread', '-o', linked],
-        work, work / 'link.log')
-    subprocess.run(['strip', str(linked)], check=True)
-    # ZIP_STORED needs no decompressor/DSO at runtime. CPython imports stdlib
-    # straight from this ELF's appended zip. Only renderer data is materialized.
-    with zipfile.ZipFile(linked, 'a', compression=zipfile.ZIP_STORED) as bundle:
-        for path in sorted((work / ('Python-' + PYTHON_VERSION) / 'Lib').rglob('*.py')):
-            relative = path.relative_to(work / ('Python-' + PYTHON_VERSION) / 'Lib')
-            if not {'test', 'tests', 'idlelib', 'tkinter', 'ensurepip', '__pycache__'} & set(relative.parts):
-                bundle.write(path, relative.as_posix())
-        for path in sorted((HERE / 'renderer').iterdir()):
-            if path.is_file():
-                bundle.write(path, 'resources/renderer/' + path.name)
-        bundle.writestr('resources/renderer/parser-sources.json', json.dumps(identity, sort_keys=True))
-        bundle.writestr('resources/renderer/tool-versions.json', json.dumps({'python': PYTHON_VERSION, 'make': '4.4.1'}))
-        for name, path in [('Linux-GPL-2.0', linux / 'LICENSES/preferred/GPL-2.0'), ('CPython', work / ('Python-' + PYTHON_VERSION) / 'LICENSE'),
-                           ('GNU-Make', make_source / 'COPYING'), ('Linux', linux / 'COPYING')]:
-            bundle.write(path, 'resources/licenses/' + name)
-    dynamic = subprocess.check_output(['readelf', '-l', '-d', str(linked)], text=True)
-    if 'INTERP' in dynamic or '(NEEDED)' in dynamic:
-        raise RuntimeError('Generator must have neither an ELF interpreter nor dynamic dependencies')
-    linked.replace(output)
-    print(output)
-    print('sha256: ' + hashlib.sha256(output.read_bytes()).hexdigest())
+def zip_entry(bundle: zipfile.ZipFile, name: str, data: bytes) -> None:
+    entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    entry.external_attr = 0o100644 << 16
+    bundle.writestr(entry, data)
+
+
+def bundle(spec: BundleSpec) -> None:
+    source, output = Path(spec['binary']), Path(spec['output'])
+    assert_static(source)
+    shutil.copyfile(source, output)
+    metadata_path = Path(spec['python_metadata'])
+    metadata = json.loads(metadata_path.read_text())
+    stdlib = metadata_path.parent / metadata['python_paths']['stdlib']
+    make_module = Path(spec['make_module']).read_text()
+    match = re.search(r'\bversion\s*=\s*"([^"]+)"', make_module)
+    if match is None:
+        raise ValueError('GNU Make module does not declare its version')
+    versions = {'python': metadata['python_version'], 'make': match[1].split('.bcr.')[0]}
+    with zipfile.ZipFile(output, 'a', compression=zipfile.ZIP_STORED) as archive:
+        for path in sorted(map(Path, spec['stdlib'])):
+            zip_entry(archive, path.relative_to(stdlib).as_posix(), path.read_bytes())
+        for path in sorted(map(Path, spec['renderer'])):
+            zip_entry(archive, 'resources/renderer/' + path.name, path.read_bytes())
+        zip_entry(archive, 'resources/renderer/parser-sources.json', Path(spec['identity']).read_bytes())
+        zip_entry(archive, 'resources/renderer/tool-versions.json', json.dumps(versions, sort_keys=True).encode())
+        for index, path in enumerate(sorted(map(Path, spec['license_files']))):
+            zip_entry(archive, f'resources/licenses/{index}-{path.name}', path.read_bytes())
+    output.chmod(0o755)
+
+
+def support(spec: SupportSpec) -> None:
+    output = Path(spec['output']).resolve()
+    tool = Path(spec['tool']).resolve()
+    # Bazel may expose source files as individual symlinks inside a real directory.
+    linux = Path(spec['linux_anchor']).resolve().parent
+    with tempfile.TemporaryDirectory(prefix='consumer-support-', dir=output.parent) as directory:
+        repository = Path(directory) / 'repo'
+        command = [str(tool), 'generate', '--linux', str(linux), '--out', str(repository), '--all-backends']
+        for fragment in spec['fragments']:
+            command.extend(['--config-fragment', str(Path(fragment).resolve())])
+        subprocess.run(command, env={'PATH': ''}, check=True)
+        files = {'kernel-repository': tool}
+        for name in ('MODULE.bazel', 'repository-tool.json'):
+            files['support/' + name] = repository / name
+        for patch in sorted((repository / 'rules').glob('*.patch')):
+            files['support/rules/' + patch.name] = patch
+        with output.open('wb') as raw, gzip.GzipFile(fileobj=raw, filename='', mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode='w') as archive:
+                for name, path in sorted(files.items()):
+                    data = path.read_bytes()
+                    entry = tarfile.TarInfo(name)
+                    entry.size = len(data)
+                    entry.mode = 0o755 if name == 'kernel-repository' else 0o644
+                    archive.addfile(entry, io.BytesIO(data))
 
 
 if __name__ == '__main__':
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--linux', type=Path, default=Path('_tmp/linux'))
-    p.add_argument('--work', type=Path, default=Path('_tmp/kernel-repository/bootstrap'))
-    p.add_argument('--out', type=Path, default=Path('_tmp/kernel-repository/kernel-repository'))
-    p.add_argument('--jobs', type=int, default=8)
-    args = p.parse_args()
-    build(args.linux.resolve(), args.work.resolve(), args.out.resolve(), args.jobs)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['namespace', 'bundle', 'support'])
+    parser.add_argument('specification', type=Path)
+    args = parser.parse_args()
+    action = {'namespace': namespace, 'bundle': bundle, 'support': support}[args.action]
+    action(json.loads(args.specification.read_text()))

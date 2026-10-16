@@ -17,18 +17,14 @@ fallback policy and existing architecture/boot limitations are unchanged.
 
 ## Build and try it
 
-From the repository root:
+On Linux x86-64, place the kernel checkout at `_tmp/linux`, then run from
+the repository root:
 
 ```sh
-# One-time host bootstrap dependencies (Debian):
-sudo apt-get install musl-tools build-essential bison flex patch
-
-python3 build.py --linux _tmp/linux
-
-_tmp/kernel-repository/kernel-repository generate \
-  --linux _tmp/linux --out _tmp/kernel-repository/repo --all-backends
-
-python3 example.py
+bazel build //:consumer_support
+mkdir -p _tmp/kernel-repository
+tar -xzf bazel-bin/consumer-support.tar.gz -C _tmp/kernel-repository
+python3 example.py --generated _tmp/kernel-repository/support
 cd examples
 bazel build //:x86_64_kernel //:aarch64_kernel
 bazel build @kernel//multi_platform:configs
@@ -36,13 +32,12 @@ bazel build @kernel//multi_platform:configs
 bazel build @kernel//multi_platform:kernels
 ```
 
-Outputs must be empty directories. The bootstrap caches sources/objects under
-`_tmp/kernel-repository/bootstrap`. GNU Make and CPython downloads have pinned
-SHA256 digests. Building the tool currently uses host bootstrap tools; **running
-it, including fetching the generated repository, needs none of those tools**.
-The resulting binary is about 17 MB. `readelf -l -d` must show neither `INTERP`
-nor `NEEDED`. No system Python, libc installation, Make, Bison, Flex, patch or
-compiler is needed at fetch time. The tool requires Linux `/proc/self/exe`.
+Bazel compiles the patched GNU Make and kernel parsers with declared toolchains,
+links the launcher against pinned static CPython objects from
+python-build-standalone, and packages the renderer. Dependencies and outputs use
+Bazel's normal caches. The package action verifies static ELF linkage.
+No system Python, libc installation, Make, Bison, Flex, patch or compiler is
+needed at fetch time. The tool requires Linux `/proc/self/exe`.
 
 The Kconfig C parser is compiled from the supplied checkout. Its parser/support
 source digests are embedded and checked before generation: rebuild the tool when
@@ -85,16 +80,16 @@ the generated repository.
 ```sh
 # Optional host tracing tool, used only by this test runner:
 sudo apt-get install strace
-python3 test_repository.py \
-  --tool _tmp/kernel-repository/kernel-repository \
-  --linux _tmp/linux --out _tmp/kernel-repository/check --strace
+bazel test //:repository_test --test_arg=--strace --test_output=errors
 ```
 
 This checks static ELF linkage, full generation with empty PATH and poisoned
 compiler/Make/Python environment variables, and an exec trace containing only
 the same binary. It also checks preserved example requests, parser-version and output-directory
 failures. An optional `--reference` can compare Kconfig/Make data with a previously
-generated workspace. Root unit/style checks run with `bazel test //...`.
+generated workspace. Omit `--test_arg=--strace` when tracing is unavailable.
+Root unit/style checks run with `bazel test //...`; the generator integration
+test is explicit because it requires the Linux checkout and Linux execution.
 
 For a build/link check of the repository rule's output, run in the example:
 
@@ -106,7 +101,8 @@ bazel build //:x86_64_kernel //:aarch64_kernel @kernel//execution_tools:check \
 
 `native/` owns parser integration and bootstrap inputs; `renderer/` is the
 independent renderer/runtime snapshot. `launcher.c` owns the static executable's
-entry points, and `build.py` links the three native object groups together.
+entry points. `native/bootstrap.bzl` owns compilation and linking; `build.py`
+contains the declared namespace and packaging action helpers.
 Upstream parser global symbols are namespaced before linking; libc references
 remain shared. No dynamically loaded Python extension modules are required.
 

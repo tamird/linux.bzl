@@ -6,6 +6,70 @@ module(
 # Development tools only. Consumers declare the generated kernel toolchains.
 bazel_dep(name = "rules_python", version = "1.8.0", dev_dependency = True)
 bazel_dep(name = "buildifier_prebuilt", version = "8.2.1.1", dev_dependency = True)
+bazel_dep(name = "llvm", version = "0.8.24", dev_dependency = True)
+bazel_dep(name = "make", version = "4.4.1.bcr.2", dev_dependency = True)
+bazel_dep(name = "rules_cc", version = "0.2.25", dev_dependency = True)
+bazel_dep(name = "platforms", version = "1.1.0", dev_dependency = True)
+bazel_dep(name = "rules_bison", version = "0.4.bcr.1", dev_dependency = True)
+bazel_dep(name = "rules_flex", version = "0.4.1", dev_dependency = True)
+bazel_dep(name = "rules_m4", version = "0.3.bcr.1", dev_dependency = True)
+
+single_version_override(
+    module_name = "make",
+    patch_strip = 1,
+    patches = ["//native:make_inputs.patch"],
+)
+
+single_version_override(
+    module_name = "rules_bison",
+    patch_strip = 1,
+    patches = ["//:renderer/rules_bison_cstdlib.patch"],
+)
+
+single_version_override(
+    module_name = "rules_cc_autoconf",
+    patch_strip = 1,
+    patches = ["//:renderer/rules_cc_autoconf_no_host_shell.patch"],
+    version = "0.27.0",
+)
+
+register_toolchains(
+    "@llvm//toolchain:all",
+    dev_dependency = True,
+)
+
+python_runtime = use_repo_rule("//native:repositories.bzl", "python_runtime_repository")
+
+python_runtime(
+    name = "bootstrap_python",
+    dev_dependency = True,
+    modules = [
+        "array",
+        "_bisect",
+        "_contextvars",
+        "_json",
+        "_random",
+        "_struct",
+        "math",
+        "binascii",
+        "_posixsubprocess",
+        "select",
+        "fcntl",
+        "grp",
+        "_md5",
+        "_sha1",
+        "_sha2",
+        "_sha3",
+        "_blake2",
+    ],
+)
+
+make_parser = use_repo_rule("//native:repositories.bzl", "make_parser_repository")
+
+make_parser(
+    name = "bootstrap_make",
+    dev_dependency = True,
+)
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python", dev_dependency = True)
 python.toolchain(python_version = "3.13")
@@ -17,4 +81,16 @@ example_fixtures(
     build_file_content = 'exports_files(["initramfs.py"])',
     dev_dependency = True,
     path = "examples",
+)
+
+# The workflow checks out this source at the pinned kernel revision before building.
+example_fixtures(
+    name = "bootstrap_linux",
+    build_file_content = '''package(default_visibility = ["//visibility:public"])
+exports_files(["Makefile", "COPYING", "LICENSES/preferred/GPL-2.0"])
+filegroup(name = "kconfig", srcs = glob(["scripts/kconfig/*.c", "scripts/kconfig/*.h", "scripts/kconfig/*.l", "scripts/kconfig/*.y", "scripts/include/**/*.h"]))
+filegroup(name = "sources", srcs = glob(["**"], exclude = [".git/**"]))
+''',
+    dev_dependency = True,
+    path = "_tmp/linux",
 )

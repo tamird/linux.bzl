@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Integration checks for the single-binary generation boundary.
 
-The test runner uses host Python/readelf/strace. The generator under test gets an
-empty environment, and every exec it makes must be of that same ELF.
+The generator under test gets an empty environment. Optional strace diagnostics
+also verify that every subprocess executes that same ELF.
 """
 import argparse
 import ast
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import tempfile
+from build import assert_static
 
 
 def read_program(repo):
@@ -30,15 +32,23 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--tool', type=Path, required=True)
     p.add_argument('--linux', type=Path, required=True)
-    p.add_argument('--out', type=Path, required=True)
+    p.add_argument('--out', type=Path, default=Path(os.environ.get('TEST_TMPDIR', '_tmp/kernel-repository/check')))
     p.add_argument('--reference', type=Path, help='Existing prototype output for differential checks')
     p.add_argument('--config-dir', type=Path, default=Path(__file__).resolve().parent / 'examples/configs')
     p.add_argument('--strace', action='store_true', help='Require strace and audit every exec')
     args = p.parse_args()
     tool, linux, out = args.tool.resolve(), args.linux.resolve(), args.out.resolve()
+    if linux.is_file():
+        linux = linux.parent
+    config_dir = args.config_dir.resolve()
+    if config_dir.is_file():
+        config_dir = config_dir.parent
     out.mkdir(parents=True, exist_ok=True)
-    headers = subprocess.check_output(['readelf', '-l', '-d', tool], text=True)
-    assert 'INTERP' not in headers and '(NEEDED)' not in headers, headers
+    # Bazel follows symlinks when collecting undeclared outputs. The generated
+    # repository links the entire kernel source tree, so only retain audit logs.
+    diagnostics = Path(os.environ.get('TEST_UNDECLARED_OUTPUTS_DIR', out)).resolve()
+    diagnostics.mkdir(parents=True, exist_ok=True)
+    assert_static(tool)
     result = subprocess.run([tool, 'version'], env={'PATH': ''}, capture_output=True, text=True, check=True)
     assert json.loads(result.stdout)['make'] == '4.4.1', result.stdout
     # Only syntax export is allowed; the linked Make must never run recipes.
@@ -46,18 +56,18 @@ def main():
     assert result.returncode == 2 and 'Only GNU Make syntax export' in result.stderr
     repo = out / 'repo'
     command = [str(tool), 'generate', '--linux', str(linux), '--out', str(repo), '--all-backends']
-    for fragment in sorted(args.config_dir.glob('*.config')):
+    for fragment in sorted(config_dir.glob('*.config')):
         command.extend(['--config-fragment', str(fragment.resolve())])
     if args.strace:
         command = [shutil.which('strace'), '-f', '-s', '4096', '-e', 'trace=execve,execveat',
-                   '-o', str(out / 'exec.trace'), *command]
+                   '-o', str(diagnostics / 'exec.trace'), *command]
         assert command[0], 'strace is required for --strace'
-    with (out / 'generation.log').open('w') as log:
+    with (diagnostics / 'generation.log').open('w') as log:
         subprocess.run(command, env={'PATH': '', 'CC': '/nonexistent/compiler', 'ARCH': 'invalid',
                                     'MAKEFLAGS': '--definitely-invalid', 'PYTHONHOME': '/nonexistent'},
                        stdout=log, stderr=subprocess.STDOUT, check=True)
     if args.strace:
-        trace = (out / 'exec.trace').read_text()
+        trace = (diagnostics / 'exec.trace').read_text()
         executable_paths = re.findall(r'\bexecve\("([^"\n]+)"', trace)
         assert len(executable_paths) > 1000, len(executable_paths)
         assert set(executable_paths) == {str(tool)}, set(executable_paths)
