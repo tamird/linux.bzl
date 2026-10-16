@@ -1,0 +1,83 @@
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load(":native_conf.bzl", "native_conf", "native_config_reference")
+
+exports_files(["native_reference.py"])
+
+_CASES = {
+    "base": ("x86_64_kernel", "x86_64"),
+    "debug": ("x86_64_debug_kernel", "x86_64"),
+    "lz4": ("x86_64_lz4_kernel", "x86_64"),
+    "btf": ("x86_64_btf_vmlinux", "x86_64"),
+    "arm64": ("aarch64_kernel", "aarch64"),
+}
+
+# The source list follows scripts/kconfig/Makefile's conf-objs/common-objs.
+# The native parser, preprocessor and semantic implementation are unmodified.
+native_conf(
+    name = "conf",
+    srcs = ["@kernel//:source/scripts/kconfig/" + name + ".c" for name in [
+        "conf",
+        "confdata",
+        "expr",
+        "menu",
+        "preprocess",
+        "symbol",
+        "util",
+    ]],
+    hdrs = ["@kernel//:source/scripts/kconfig/" + name + ".h" for name in [
+        "expr",
+        "internal",
+        "lkc",
+        "lkc_proto",
+        "preprocess",
+    ]] + ["@kernel//:source/scripts/include/" + name + ".h" for name in [
+        "array_size",
+        "hash",
+        "hashtable",
+        "list",
+        "list_types",
+        "xalloc",
+    ]],
+    include_anchor = "@kernel//:source/scripts/include/xalloc.h",
+    lexer = "@kernel//:source/scripts/kconfig/lexer.l",
+    parser = "@kernel//:source/scripts/kconfig/parser.y",
+)
+
+[
+    native_config_reference(
+        name = name + "_native",
+        conf = ":conf",
+        config = "//:" + target + "_requested",
+        platform = "@llvm//platforms:linux_" + arch,
+    )
+    for name, (target, arch) in _CASES.items()
+]
+
+[
+    py_test(
+        name = name + "_parity",
+        srcs = ["parity_test.py"],
+        args = ["$(rootpath :" + name + "_native)"],
+        data = [":" + name + "_native"],
+        main = "parity_test.py",
+    )
+    for name in _CASES
+]
+
+test_suite(
+    name = "parity",
+    tests = [":" + name + "_parity" for name in _CASES],
+)
+
+py_binary(
+    name = "reuse_report",
+    srcs = ["reuse_report.py"],
+)
+
+py_test(
+    name = "reuse_report_test",
+    srcs = [
+        "reuse_report.py",
+        "reuse_report_test.py",
+    ],
+)
