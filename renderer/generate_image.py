@@ -358,6 +358,10 @@ def main(argv=None):
     with (out / 'BUILD.bazel').open('a') as stream:
         stream.write('load("//rules:host_toolchain.bzl","kernel_host_toolchain")\nkernel_host_toolchain(name="host_toolchain")\n')
         stream.write('load("//rules:host_tools.bzl","kernel_objtool")\nkernel_objtool(name="objtool")\n')
+        stream.write('''load("//rules:pahole.bzl", "kernel_pahole", "kernel_pahole_test")
+kernel_pahole(name="pahole", binary="@pahole//:pahole", exec_compatible_with=["@platforms//os:linux", "@platforms//cpu:x86_64"])
+kernel_pahole_test(name="pahole_test", pahole=":pahole")
+''')
     shutil.copyfile(HERE / 'text_transforms.bzl', out / 'rules/text_transforms.bzl')
     shutil.copyfile(HERE / 'multi_platform_test.py', out / 'rules/multi_platform_test.py')
     shutil.copyfile(HERE / 'multi_platform.bzl', out / 'rules/multi_platform.bzl')

@@ -17,6 +17,7 @@ def main(argv=None):
     (args.repo / 'options/BUILD.bazel').write_text('load("//rules:rules.bzl", "kernel_option_sources")\npackage(default_visibility=["//visibility:public"])\nkernel_option_sources(name="options", files=json.decode(' + repr(json.dumps({p: json.dumps(body) for p, body in syntax.items()})) + '))\n')
     here = Path(__file__).resolve().parent
     shutil.copyfile(here / 'compiler_metadata.bzl', args.repo / 'rules/compiler_metadata.bzl')
+    shutil.copyfile(here / 'pahole.bzl', args.repo / 'rules/pahole.bzl')
     (args.repo / 'compiler_metadata').mkdir(exist_ok=True)
     (args.repo / 'compiler_metadata/BUILD.bazel').write_text('load("//rules:compiler_metadata.bzl", "legacy_compiler_metadata")\nlegacy_compiler_metadata(name="metadata", visibility=["//visibility:public"])\n')
     with (args.repo / 'BUILD.bazel').open('a') as stream:

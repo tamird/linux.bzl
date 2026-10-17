@@ -111,6 +111,9 @@ jobs:
           - example: btf-capability-gap
             test: //:btf_capability_test
             build: //:x86_64_btf_vmlinux_config
+          - example: btf-declared-tool
+            test: //:btf_declared_config_test @kernel//:pahole_test
+            build: //:x86_64_btf_declared_config
           - example: initramfs
             build: //:example_initramfs
           - example: graph-metadata

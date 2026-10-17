@@ -28,13 +28,14 @@ _configured = rule(implementation = _configured_impl, attrs = {
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
 })
 
-def kernel_example(name, requested, platform, overrides = {}, required_options = {}, tags = []):
+def kernel_example(name, requested, platform, overrides = {}, required_options = {}, pahole = None, tags = []):
     kernel_config(
         name = name + "_requested",
         options = "@kernel//options:options",
         base = requested,
         requested = overrides,
         allnoconfig = True,
+        pahole = pahole,
         tags = ["manual"],
     )
     kbuild_resolved_build(
