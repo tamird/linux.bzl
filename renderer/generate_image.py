@@ -171,7 +171,9 @@ def main(argv=None):
                   '--linux', str(linux), '--syntax', str(syntax_path), '--out', str(out),
                   '--default-config', '//configs:minimal', '--config-scope', 'target'])
     tree = json.loads(a.ast.read_text())
-    extras = [p for p in sorted(linux.rglob('Makefile*')) if p.is_file()] + sorted(linux.rglob('Kbuild.*')) + sorted(linux.rglob('Platform')) + [linux / 'scripts/Kbuild.include', linux / 'tools/objtool/Build', *sorted(linux.glob('tools/objtool/arch/*/Build')), linux / 'tools/lib/subcmd/Build']
+    extras = [p for pattern in ('Makefile*', 'Kbuild.*', 'Platform')
+              for p in sorted(linux.rglob(pattern)) if p.is_file()]
+    extras += [linux / 'scripts/Kbuild.include', linux / 'tools/objtool/Build', *sorted(linux.glob('tools/objtool/arch/*/Build')), linux / 'tools/lib/subcmd/Build']
     existing = {Path(f['file']).resolve() for f in tree['files']}
     tree['files'].extend(parse_events(native_events(a.make, [p for p in extras if p.resolve() not in existing], expressions=True))['files'])
     entries = []
