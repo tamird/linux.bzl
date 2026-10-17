@@ -237,8 +237,11 @@ def main(argv=None):
     data['image_exports'] = export_directives(top)
     data['image_version'] = backend.slice_program(top, {'VERSION', 'PATCHLEVEL', 'SUBLEVEL', 'EXTRAVERSION'})
     first = next(n['line'] for n in flat if n.get('name') == 'obj-y')
-    last = next(n['line'] for n in flat if n.get('name') == 'subdir-rustflags-y')
-    data['graph_init'] = backend.bounded(build, first, last)
+    # Kbuild resets directory variables before reading configuration and local
+    # assignments. The reset inventory changes between kernel versions.
+    first_include = next(n['line'] for n in flat if n['line'] > first and
+                         n['kind'] == 'directive' and n['directive'] in ('include', '-include', 'sinclude'))
+    data['graph_init'] = backend.bounded(build, first, first_include - 1)
     data['image_archives'] = {
         'builtin': next(n['value_expression'] for n, _ in walk(bodies['scripts/Makefile.build']) if n.get('name') == 'cmd_ar_builtin'),
         'library': next(n['value_expression'] for n, _ in walk(bodies['scripts/Makefile.lib']) if n.get('name') == 'cmd_ar'),
