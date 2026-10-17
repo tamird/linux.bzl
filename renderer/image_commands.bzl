@@ -54,7 +54,7 @@ def shell_words(text, allow_recipe = False):
         words.append(current)
     return words
 
-def _scope(setup, directory, target, objtree, source, ancestry = None, memberships = {}, native = None, invocation_environment = None):
+def _scope(setup, directory, target, objtree, source, ancestry = None, graph_variables = {}, native = None, invocation_environment = None):
     variables = dict(setup.variables)
     if invocation_environment != None:
         variables = {name: {"value": cell["value"].replace("__source__", source).replace("__object__", objtree)} for name, cell in invocation_environment.items() if name != "__exports__"}
@@ -96,11 +96,13 @@ def _scope(setup, directory, target, objtree, source, ancestry = None, membershi
         inherited_a.append(value("subdir-asflags-y", variables, setup.sources))
     for name, inherited in [("KBUILD_CFLAGS", inherited_c), ("KBUILD_AFLAGS", inherited_a)]:
         variables[name] = {"value": value(name, variables, setup.sources) + " " + " ".join(inherited)}
-    variables = program(FLAG_PROGRAM["helpers"], variables, setup.sources, cells = True).variables
+
+    # Keep Kbuild's graph snapshots and recursive helper flavors. Replaying
+    # graph transformations here would prefix paths and expand members twice.
+    variables.update(graph_variables)
+    variables = program(FLAG_PROGRAM["image_helpers"], variables, setup.sources, cells = True).variables
     object_scope = program(FLAG_PROGRAM["image_object_helpers"], variables, setup.sources, cells = True)
     variables = object_scope.variables
-    for name, text in memberships.items():
-        variables[name] = {"value": text}
     if native != None:
         variables.update(native.get("inherited_variables", {}))
     target_assignments.extend(object_scope.target_assignments)
@@ -218,7 +220,7 @@ def _compiler_flags(command, compiler, source, target):
 
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
-def register(ctx, target, directory, kind, driver, outputs, dependencies, source_tree, config, setup, compiler_inputs, object_members = [], native = None, ancestry = None, memberships = {}, source_prerequisites = {}, invocation_environment = None):
+def register(ctx, target, directory, kind, driver, outputs, dependencies, source_tree, config, setup, compiler_inputs, object_members = [], native = None, ancestry = None, graph_variables = {}, source_prerequisites = {}, invocation_environment = None):
     source = source_tree.source_root
     if kind == "archive":
         variables = dict(setup.variables)
@@ -247,7 +249,7 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, source
         compiler_dependencies = {p: f for p, f in dependencies.items() if p != "tools/objtool/objtool"}
         direct_dependencies = {p: f for p, f in compiler_inputs.direct.items() if p != "tools/objtool/objtool"}
         generated_root = compiler_inputs.root
-        variables = _scope(setup, directory, target, generated_root, source, ancestry, memberships, native, invocation_environment)
+        variables = _scope(setup, directory, target, generated_root, source, ancestry, graph_variables, native, invocation_environment)
         if kind == "host":
             link = not target.endswith(".o")
             path = target[:-2] + ".c" if target.endswith(".o") else target + ".c"
@@ -333,16 +335,16 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, source
     if driver == "asm_headers":
         ctx.actions.write(outputs[target], "#include <asm-generic/%s>\n" % target.rsplit("/", 1)[-1])
         return
-    codegen(ctx, target, directory, outputs, dependencies, source_tree, config, setup, compiler_inputs, native, ancestry, source_prerequisites, invocation_environment)
+    codegen(ctx, target, directory, outputs, dependencies, source_tree, config, setup, compiler_inputs, native, ancestry, graph_variables, source_prerequisites, invocation_environment)
 
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
-def codegen(ctx, target, directory, outputs, dependencies, source_tree, config, setup, compiler_inputs, native = None, ancestry = None, source_prerequisites = {}, invocation_environment = None):
+def codegen(ctx, target, directory, outputs, dependencies, source_tree, config, setup, compiler_inputs, native = None, ancestry = None, graph_variables = {}, source_prerequisites = {}, invocation_environment = None):
     source = source_tree.source_root
     if native != None:
         native_codegen(ctx, target, outputs, dependencies, source_tree, config, setup, compiler_inputs, native, source_prerequisites)
         return
-    variables = _scope(setup, directory, target, "__object__", source, ancestry, invocation_environment = invocation_environment)
+    variables = _scope(setup, directory, target, "__object__", source, ancestry, graph_variables, invocation_environment = invocation_environment)
     key = "Kbuild" if directory == "." else directory + "/Kbuild"
     if key not in FLAG_PROGRAM["commands"]:
         key = "Makefile" if directory == "." else directory + "/Makefile"

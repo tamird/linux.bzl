@@ -102,10 +102,11 @@ def _context(directory, state):
         if directory in state["dtbs_lists"]:
             initial["need-dtbslist"] = {"value": "1"}
         local_context = None
+        graph_variables = {}
 
         # Setup already evaluated the architecture include. Replaying it here
         # repeats += assignments (including platform load addresses).
-        bodies = [FLAG_PROGRAM["image_roots"], FLAG_PROGRAM["graph_init"], statements, FLAG_PROGRAM["graph_helpers"]] if directory == "." else [FLAG_PROGRAM["image_common"], FLAG_PROGRAM["graph_init"], statements, FLAG_PROGRAM["helpers"], FLAG_PROGRAM["graph_helpers"]]
+        bodies = [FLAG_PROGRAM["image_roots"], FLAG_PROGRAM["graph_init"], statements, FLAG_PROGRAM["graph_helpers"]] if directory == "." else [FLAG_PROGRAM["image_common"], FLAG_PROGRAM["graph_init"], statements, FLAG_PROGRAM["graph_helpers"], FLAG_PROGRAM["image_helpers"]]
         for body in bodies:
             sources = dict(state["sources"])
             if body == FLAG_PROGRAM["image_arch"]:
@@ -114,6 +115,12 @@ def _context(directory, state):
             initial = result.variables
             if body == statements:
                 local_context = result
+            if body == FLAG_PROGRAM["graph_helpers"]:
+                for pattern in FLAG_PROGRAM["graph_variables"]:
+                    if pattern.endswith("*"):
+                        graph_variables.update({name: cell for name, cell in initial.items() if name.startswith(pattern[:-1])})
+                    elif pattern in initial:
+                        graph_variables[pattern] = initial[pattern]
 
         # Preserve rules from the single local evaluation; reevaluating the
         # Makefile repeats += and path-prefix assignments.
@@ -124,7 +131,7 @@ def _context(directory, state):
             initial = dtbs.variables
             dtb_rules = dtbs.rules
         implicit = program(FLAG_PROGRAM["image_implicit_rules"], initial, state["sources"], cells = True)
-        state["contexts"][directory] = struct(variables = initial, rules = context.rules + dtb_rules + implicit.rules, target_assignments = context.target_assignments)
+        state["contexts"][directory] = struct(variables = initial, graph_variables = graph_variables, rules = context.rules + dtb_rules + implicit.rules, target_assignments = context.target_assignments)
         builtins = make_words(_value("subdir-builtin", initial, state["sources"]))
         modorders = make_words(_value("subdir-modorder", initial, state["sources"]))
         for child in make_words(_value("subdir-ym", initial, state["sources"])):
@@ -914,10 +921,9 @@ def _impl(ctx):
             if ancestry[-1] != ".":
                 ancestry.append(".")
             ancestry = list(reversed(ancestry))
-            memberships = {}
-            if d["kind"] == "compile":
-                scope = _context(d["directory"], state).variables
-                memberships = {name: _value(name, scope, state["sources"]) for name in ["lib-y", "real-obj-y", "real-obj-m", "multi-obj-y", "multi-obj-m", "multi-obj-ym"]}
+            graph_variables = {}
+            if not d["directory"].startswith("@") and (d["kind"] in ["host", "compile"] or (d["kind"] == "generate" and d.get("native") == None and d["driver"] != "asm_headers")):
+                graph_variables = _context(d["directory"], state).graph_variables
             register(
                 ctx,
                 target,
@@ -933,7 +939,7 @@ def _impl(ctx):
                 d.get("members", [p for p in d["deps"] if p.endswith(".o")] if d["kind"] == "host" and not target.endswith(".o") else []),
                 native = d.get("native"),
                 ancestry = ancestry,
-                memberships = memberships,
+                graph_variables = graph_variables,
                 source_prerequisites = source_prerequisites,
                 invocation_environment = state["invocations"][d["directory"]].environment if d["directory"] in state["invocations"] else None,
             )
