@@ -86,11 +86,18 @@ example_fixtures(
 # The workflow checks out this source at the pinned kernel revision before building.
 example_fixtures(
     name = "bootstrap_linux",
-    build_file_content = '''package(default_visibility = ["//visibility:public"])
-exports_files(["Makefile", "COPYING", "LICENSES/preferred/GPL-2.0"])
-filegroup(name = "kconfig", srcs = glob(["scripts/kconfig/*.c", "scripts/kconfig/*.h", "scripts/kconfig/*.l", "scripts/kconfig/*.y", "scripts/include/**/*.h"]))
-filegroup(name = "sources", srcs = glob(["**"], exclude = [".git/**"]))
-''',
+    build_file = "//native:linux_source.BUILD.bazel",
     dev_dependency = True,
     path = "_tmp/linux",
+)
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "linux_6_18",
+    build_file = "//native:linux_source.BUILD.bazel",
+    dev_dependency = True,
+    integrity = "sha256-K2lWT31P6gyFmxlZujNwnubpE5vRAOMKhTtXFZqCIbg=",
+    strip_prefix = "linux-6.18.52",
+    urls = ["https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.52.tar.xz"],
 )

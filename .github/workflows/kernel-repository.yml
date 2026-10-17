@@ -51,16 +51,23 @@ jobs:
         run: bazel test //... --jobs=4 --test_output=errors
 
       - name: Build static generator from source
-        run: bazel build //:consumer_support --jobs=4
+        run: bazel build //:consumer_support //native/linux_6_18:consumer_support --jobs=4
 
       - name: Audit standalone generation
-        run: bazel test //:repository_test --jobs=4 --test_arg=--strace --test_output=errors
+        run: bazel test //:repository_test //native/linux_6_18:repository_test --jobs=4 --test_arg=--strace --test_output=errors
 
       - name: Upload consumer support
         uses: actions/upload-artifact@v7
         with:
           name: kernel-repository-consumer
           path: bazel-bin/consumer-support.tar.gz
+          retention-days: 7
+
+      - name: Upload LTS consumer support
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-repository-consumer-linux_6_18
+          path: bazel-bin/native/linux_6_18/consumer-support.tar.gz
           retention-days: 7
 
       - name: Upload generation diagnostics and executable
@@ -72,6 +79,9 @@ jobs:
             bazel-bin/kernel-repository
             bazel-testlogs/repository_test/test.log
             bazel-testlogs/repository_test/test.outputs/**
+            bazel-bin/native/linux_6_18/kernel-repository
+            bazel-testlogs/native/linux_6_18/repository_test/test.log
+            bazel-testlogs/native/linux_6_18/repository_test/test.outputs/**
           if-no-files-found: warn
           retention-days: 7
 

@@ -1,0 +1,23 @@
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "Makefile",
+    "COPYING",
+    "LICENSES/preferred/GPL-2.0",
+])
+
+filegroup(
+    name = "kconfig",
+    srcs = glob([
+        "scripts/kconfig/*.c",
+        "scripts/kconfig/*.h",
+        "scripts/kconfig/*.l",
+        "scripts/kconfig/*.y",
+        "scripts/include/**/*.h",
+    ]),
+)
+
+filegroup(
+    name = "sources",
+    srcs = glob(["**"], exclude = [".git/**"]),
+)

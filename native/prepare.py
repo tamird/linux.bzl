@@ -17,7 +17,18 @@ def prepare_sources(linux, output):
     parser = parser.replace(finalize, '\treturn; /* Link and finalize the syntax in Bazel analysis. */')
     parser = parser.replace('\tyyparse();', '\t/* Preprocessor definitions shared by the kernel Kconfig files. */\n\tif (strcmp(name, "scripts/Kconfig.include")) {\n\t\tzconf_initscan("scripts/Kconfig.include");\n\t\tyyparse();\n\t\tzconf_initscan(name);\n\t}\n\tyyparse();', 1)
     (output / 'parser.y').write_text(parser)
-    lexer = (src / 'lexer.l').read_text().replace('cur_filename = file_lookup(name, NULL, 0);', 'cur_filename = file_lookup(name, NULL, 0);\n\tyyrestart(yyin);\n\tBEGIN(INITIAL);\n\tprev_token = prev_prev_token = T_EOL;\n\tcur_lineno = 1;')
+    lexer = (src / 'lexer.l').read_text()
+    # Each process parses Kconfig.include and then one file. Reset Flex's EOF
+    # buffer and token history when opening the second file. file_lookup's
+    # signature changed after 6.18; the scanner entry point owns this state.
+    scanner = 'void zconf_initscan(const char *name)\n{'
+    assert lexer.count(scanner) == 1, 'Expected one zconf_initscan definition'
+    before, scanner_body = lexer.split(scanner)
+    scanner_body, after = scanner_body.split('\n}', 1)
+    reset = '\tyylineno = 1;'
+    assert scanner_body.count(reset) == 1, 'Expected one scanner line reset'
+    scanner_body = scanner_body.replace(reset, reset + '\n\tyyrestart(yyin);\n\tBEGIN(INITIAL);\n\tprev_token = prev_prev_token = T_EOL;\n\tcur_lineno = 1;')
+    lexer = before + scanner + scanner_body + '\n}' + after
     (output / 'lexer.l').write_text(lexer)
     preprocess = (src / 'preprocess.c').read_text()
     marker = 'static LIST_HEAD(env_list);'
