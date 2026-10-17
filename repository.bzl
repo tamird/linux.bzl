@@ -38,8 +38,9 @@ def _kernel_repository_impl(ctx):
 
     # These are the actual inputs to the native parsers and source catalogue.
     # A local checkout changing must invalidate generation, not keep stale BUILD
-    # files. Tool-label changes are tracked automatically by repository rules.
+    # files. Watch the executable too: ctx.execute does not track its contents.
     ctx.watch_tree(source)
+    ctx.watch(tool)
     arguments = [tool, "generate", "--linux", source, "--out", ctx.path(".")]
     if ctx.attr.all_backends:
         arguments.append("--all-backends")
