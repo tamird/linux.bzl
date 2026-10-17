@@ -61,6 +61,12 @@ def _build_dispatch(words):
         fail("Unsupported recursive Kbuild arguments: " + str(words))
     return struct(directory = _normalize(words[1].split("=", 1)[1]), goals = words[2:])
 
+def _enter_invocation(directory, variables, visibility, state):
+    invocation = struct(environment = _exported_environment(variables, state["sources"]), visibility = {p: True for p in visibility}.keys())
+    if (directory in state["contexts"] or directory in state["invocations"]) and state["invocations"].get(directory) != invocation:
+        fail("Kbuild producer reached %s with a different invocation context" % directory)
+    state["invocations"][directory] = invocation
+
 def _context(directory, state):
     if directory.startswith("arch/") and directory.split("/")[1] not in (state["arch"], state["setup"].architecture.header_arch):
         fail("Kbuild architecture mismatch: " + directory)
@@ -70,7 +76,8 @@ def _context(directory, state):
         statements = programs.get(prefix + "Kbuild", programs.get(prefix + "Makefile"))
         if statements == None:
             fail("No exported Make program for " + directory)
-        initial = dict(state["setup"].variables if directory == "." else state["invocation_environments"].get(directory, state["environment"]))
+        invocation = state["invocations"].get(directory)
+        initial = dict(state["setup"].variables if directory == "." else invocation.environment if invocation != None else state["environment"])
         if directory == ".":
             for name in ["core-y", "libs-y", "drivers-y", "drivers-m"]:
                 logical = _value(name, state["setup"].variables, state["setup"].sources).replace("__object__/", "").replace("__object__", ".")
@@ -281,12 +288,45 @@ def _recipe(path, directory, state):
             native["prerequisites"] = {p: True for p in prerequisites}.keys()
             return native
         child = native["dispatch"]
-        environment = _exported_environment(native["variables"], state["sources"])
-        if child in state["contexts"] and state["invocation_environments"].get(child) != environment:
-            fail("Kbuild producer reached %s with a different exported environment" % child)
-        state["invocation_environments"][child] = environment
+        parent = state["invocations"].get(directory)
+        visibility = (parent.visibility if parent != None else []) + native["prerequisites"]
+        _enter_invocation(child, native["variables"], visibility, state)
         directory = child
     fail("Recursive Kbuild producer exceeded 10000 invocations: " + path)
+
+def _architecture_invocations(roots, state):
+    """Retain the completed parent phase visible to a selected boot invocation."""
+    if not roots:
+        return
+    context = state["contexts"]["@architecture"]
+    selected = {}
+    for rule in context.rules:
+        if not any([term.get("op") == "reference" and term.get("name") == [{"op": "literal", "value": "MAKE"}] for terms in rule.get("recipes", []) for term in terms]):
+            continue
+        for goal in rule["targets"]:
+            if "%" in goal:
+                continue
+            variables = dict(_target_scope(goal, "@architecture", state).variables)
+            variables["@"] = {"value": goal}
+            preceding = []
+            for terms in rule["recipes"]:
+                text = evaluate(terms, variables, state["sources"]).lstrip("@+- ")
+                words = shell_words(text, allow_recipe = True) if text.startswith("__make_dispatch__") else None
+                if words != None and any([path in roots for path in words[2:]]):
+                    dispatch = _build_dispatch(words)
+                    if dispatch == None:
+                        fail("Unsupported architecture boot dispatch %s: %s" % (goal, text))
+                    if preceding:
+                        fail("Unsupported commands before architecture boot dispatch %s: %s" % (goal, preceding))
+                    prerequisites = [p for r in _rules_for_path(goal, context, state) for p in make_words(r["prerequisites"]) if p not in ("FORCE", "|")]
+                    _enter_invocation(dispatch.directory, variables, prerequisites, state)
+                    for path in dispatch.goals:
+                        if path in selected and selected[path] != dispatch.directory:
+                            fail("Multiple architecture invocations produce " + path)
+                        selected[path] = dispatch.directory
+                    break
+                if text and text != ":":
+                    preceding.append(text)
 
 def _link_descriptor(path, state):
     if path in ("built-in-fixup.a", "vmlinux.a"):
@@ -731,7 +771,7 @@ def _impl(ctx):
     state = {
         "catalog": ctx.attr.catalog[KbuildCatalogInfo],
         "contexts": {},
-        "invocation_environments": {},
+        "invocations": {},
         "target_scopes": {},
         "parents": {},
         "directory_modes": {},
@@ -780,6 +820,7 @@ def _impl(ctx):
         state["contexts"]["@postlink"] = post
         state["postlink_outputs"] = [_normalize(evaluate(expr, post.variables, state["sources"])) for expr in FLAG_PROGRAM["image_postlink_outputs"].get(postlink, [])]
     state["known_products"] = {p: True for p in ["built-in-fixup.a", "vmlinux.a", "vmlinux.o", "vmlinux.symvers", ".vmlinux.export.c", "vmlinux.unstripped", "vmlinux", "System.map", ".config", "include/config/auto.conf", "include/generated/autoconf.h"] + state["postlink_outputs"] + state["module_final"].keys() + [m[:-3] + suffix for m in modules for suffix in [".o", ".mod", ".mod.c"]]}
+    _architecture_invocations(ctx.attr.architecture_roots.get(config.architecture.srcarch, []), state)
     pending = [(path, None, {}) for path in reversed(list(ctx.attr.roots) + ctx.attr.architecture_roots.get(config.architecture.srcarch, []) + modules)]
     descriptors, producers = {}, {}
     for _ in range(100000):
@@ -792,12 +833,15 @@ def _impl(ctx):
         state["target_scopes"][path] = (owner, inherited)
         descriptor = _describe(path, state, owner)
         descriptor["deps"] = [_normalize(p) for p in descriptor["deps"]]
+        invocation = state["invocations"].get(descriptor["directory"])
+        descriptor["visibility"] = [_normalize(p) for p in invocation.visibility] if invocation != None else []
         descriptors[descriptor["target"]] = descriptor
         for out in descriptor["outs"]:
             if out in producers and producers[out] != descriptor["target"]:
                 fail("Multiple configured producers for " + out)
             producers[out] = descriptor["target"]
         descendants = _target_scope(path, descriptor["directory"], state).descendants
+        pending.extend([(dependency, None, {}) for dependency in reversed(descriptor["visibility"])])
         pending.extend([(dependency, descriptor["directory"], descendants) for dependency in reversed(descriptor["deps"])])
     if pending:
         fail("Kbuild graph exceeded 100000 dependency expansions")
@@ -836,13 +880,16 @@ def _impl(ctx):
         for target, d in descriptors.items():
             if target in finished:
                 continue
-            deps = {producers[p]: True for p in d["deps"] if p in producers and producers[p] != target}
+            deps = {producers[p]: True for p in d["deps"] + d["visibility"] if p in producers and producers[p] != target}
             if any([p not in finished for p in deps]):
                 continue
             closure = dict(common)
             for dep in deps:
                 closure.update(finished[dep])
             closure.update({p: external_tools[p] for p in d["deps"] if p in external_tools})
+
+            # Earlier invocation phases supply candidate generated includes.
+            # Only the target's own prerequisites are mandatory compiler inputs.
             direct = dict(common)
             direct.update({p: artifacts[p] for p in d["deps"] if p in producers and producers[p] != target})
             direct.update({p: external_tools[p] for p in d["deps"] if p in external_tools})
@@ -888,7 +935,7 @@ def _impl(ctx):
                 ancestry = ancestry,
                 memberships = memberships,
                 source_prerequisites = source_prerequisites,
-                invocation_environment = state["invocation_environments"].get(d["directory"]),
+                invocation_environment = state["invocations"][d["directory"]].environment if d["directory"] in state["invocations"] else None,
             )
             members.append({"target": target, "dependencies": sorted(deps), "outputs": {p: f.path for p, f in outputs.items()}})
             closure.update(outputs)
@@ -898,7 +945,7 @@ def _impl(ctx):
             break
         if not progress:
             blocked = {
-                t: [producers[p] for p in d["deps"] if p in producers and producers[p] != t and producers[p] not in finished]
+                t: [producers[p] for p in d["deps"] + d["visibility"] if p in producers and producers[p] != t and producers[p] not in finished]
                 for t, d in descriptors.items()
                 if t not in finished
             }
