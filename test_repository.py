@@ -89,7 +89,7 @@ def main():
     [files] = [keyword.value for keyword in options.value.keywords if keyword.arg == 'files']
     assert isinstance(files, ast.Call), files
     syntax = json.loads(ast.literal_eval(files.args[0]))
-    for path, symbol in [('init/Kconfig', 'BPF'), ('arch/x86/Kconfig', 'X86_64'),
+    for path, symbol in [('init/Kconfig', 'CC_VERSION_TEXT'), ('arch/x86/Kconfig', 'X86_64'),
                          ('arch/arm64/Kconfig', 'ARM64')]:
         entries = json.loads(syntax[path])
         assert any(entry['symbol'] == symbol and entry['source'] == path for entry in entries), (path, symbol, entries)

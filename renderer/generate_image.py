@@ -155,6 +155,29 @@ def image_selected(body, wanted):
     return result
 
 
+def target_rules(body, targets):
+    """Retain native recipes and conditionals for selected literal targets."""
+    result = []
+    active = False
+    for node in body:
+        if node['kind'] == 'conditional':
+            branches = [dict(branch, body=target_rules(branch['body'], targets))
+                        for branch in node['branches']]
+            if any(branch['body'] for branch in branches):
+                result.append(dict(node, branches=branches))
+            active = False
+        elif node['kind'] == 'rule':
+            names = backend.const(node['targets_expression'])
+            active = names is not None and bool(set(names.split()) & targets)
+            if active:
+                result.append(node)
+        elif node['kind'] == 'recipe' and active:
+            result.append(node)
+        else:
+            active = False
+    return result
+
+
 def main(argv=None):
     global _INCLUDE_DIRECTIVES, _INCLUDE_HEADER_RULES
     p = argparse.ArgumentParser(description=__doc__)
@@ -312,7 +335,19 @@ def main(argv=None):
     _INCLUDE_HEADER_RULES = False
     _INCLUDE_DIRECTIVES = False
     data['image_link'] = {}
-    for driver, roots in {'vmlinux_a': {'cmd_ar_builtin_fixup', 'cmd_copy'}, 'vmlinux_o': {'cmd_ld_vmlinux.o'}, 'vmlinux': {'cmd_strip_relocs', 'LDFLAGS_vmlinux'}}.items():
+    archive = bodies.get('scripts/Makefile.vmlinux_a')
+    if archive is None:
+        # Older sources own this action in the top Makefile. Its compiler and
+        # architecture setup has already run; retain only the archive phase.
+        first = next(n['line'] for n in top_nodes if n.get('name') == 'cmd_ar_vmlinux.a')
+        last = max(n['line'] for n, _ in walk(target_rules(top, {'vmlinux.a'}))
+                   if n['kind'] in ('rule', 'recipe'))
+        archive = backend.bounded(top, first, last)
+    rules = target_rules(archive, {'built-in-fixup.a', 'vmlinux.a'})
+    data['image_archive'] = backend.slice_program(
+        bodies['scripts/Makefile.lib'] + archive,
+        {'cmd_ar_builtin_fixup', 'cmd_ar_vmlinux.a', 'cmd_copy'} | backend.refs(rules)) + rules
+    for driver, roots in {'vmlinux_o': {'cmd_ld_vmlinux.o'}, 'vmlinux': {'cmd_strip_relocs', 'LDFLAGS_vmlinux'}}.items():
         data['image_link'][driver] = backend.slice_program(bodies['scripts/Makefile.lib'] + bodies['scripts/Makefile.' + driver], roots)
     modpost = bodies['scripts/Makefile.modpost']
     nodes = [n for n, _ in walk(modpost)]
