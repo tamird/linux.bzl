@@ -98,10 +98,10 @@ jobs:
         include:
           - example: x86_64
             test: //:x86_64_config_test
-            build: //:x86_64_kernel
+            build: //:x86_64_kernel //:x86_64_kernel_system_map //:x86_64_kernel_config_file
           - example: aarch64
             test: //:aarch64_config_test
-            build: //:aarch64_kernel
+            build: //:aarch64_kernel //:aarch64_kernel_system_map //:aarch64_kernel_config_file
           - example: debug
             test: //:debug_config_test
             build: //:x86_64_debug_kernel
