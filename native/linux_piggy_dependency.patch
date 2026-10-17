@@ -1,0 +1,16 @@
+The compressed payload is read directly by piggy.o through .incbin. Compiler
+dependency files omit that read. If the payload's contents change while its
+compressed and uncompressed sizes stay the same, mkpiggy emits unchanged
+assembly. Declare the direct Kbuild input so Bazel retains it independently
+of piggy.S.
+
+diff --git a/arch/x86/boot/compressed/Makefile b/arch/x86/boot/compressed/Makefile
+--- a/arch/x86/boot/compressed/Makefile
++++ b/arch/x86/boot/compressed/Makefile
+@@ -162,3 +162,6 @@
+ targets += piggy.S
+ $(obj)/piggy.S: $(obj)/vmlinux.bin.$(suffix-y) $(obj)/mkpiggy FORCE
+ 	$(call if_changed,mkpiggy)
++
++# The assembler reads the payload through .incbin in piggy.S.
++$(obj)/piggy.o: $(obj)/vmlinux.bin.$(suffix-y)

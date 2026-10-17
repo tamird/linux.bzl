@@ -40,6 +40,9 @@ jobs:
           path: _tmp/linux
           persist-credentials: false
 
+      - name: Declare the compressed image's assembler input
+        run: git -C _tmp/linux apply "$GITHUB_WORKSPACE/native/linux_piggy_dependency.patch"
+
       - name: Install tracing tool
         if: runner.os == 'Linux'
         run: |
@@ -159,6 +162,9 @@ jobs:
           ref: 0fcb05b72344f40806cbe810de8872f1698bf053
           path: _tmp/linux
           persist-credentials: false
+
+      - name: Declare the compressed image's assembler input
+        run: git -C _tmp/linux apply "$GITHUB_WORKSPACE/native/linux_piggy_dependency.patch"
 
       - uses: actions/download-artifact@v8
         with:

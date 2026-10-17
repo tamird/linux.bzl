@@ -119,6 +119,8 @@ http_archive(
     build_file = "//native:linux_source.BUILD.bazel",
     dev_dependency = True,
     integrity = "sha256-K2lWT31P6gyFmxlZujNwnubpE5vRAOMKhTtXFZqCIbg=",
+    patch_strip = 1,
+    patches = ["//native:linux_piggy_dependency.patch"],
     strip_prefix = "linux-6.18.52",
     urls = ["https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.52.tar.xz"],
 )
