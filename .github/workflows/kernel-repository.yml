@@ -64,7 +64,10 @@ jobs:
 
       - name: Check native Kconfig source APIs
         run: >-
-          bazel test //:kconfig_test //native/linux_5_10:kconfig_test //native/linux_6_12:kconfig_test //native/linux_6_18:kconfig_test
+          bazel test //:kconfig_test
+          //native/linux_5_10:kconfig_test //native/linux_5_15:kconfig_test
+          //native/linux_6_1:kconfig_test //native/linux_6_6:kconfig_test
+          //native/linux_6_12:kconfig_test //native/linux_6_18:kconfig_test
           --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4 --test_output=errors
 
       - name: Build generator from source
