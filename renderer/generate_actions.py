@@ -87,7 +87,7 @@ def catalog(tree, linux, arch, source_files):
                 assigned.setdefault(name, []).append((node, guards))
             if node['name'].startswith('hostprogs'):
                 for token in node.get('words', []):
-                    if artifact_path(token) and '/' not in token and '$' not in token:
+                    if artifact_path(token) and '$' not in token:
                         hostprogs.add(token)
         # Host tools: native Makefile.host determines flags and command syntax.
         for host in hostprogs:

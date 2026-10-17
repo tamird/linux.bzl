@@ -489,6 +489,11 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
         variables[str(i + 1)] = {"value": argument}
     command_sources = dict(setup.sources)
     command_sources["__shell_commands__"] = True
+    if native.get("final_link"):
+        # The adapted script has a declared timestamp prerequisite. Preserve
+        # its source-selected argument list; postlink is lowered separately.
+        variables["<"] = {"value": ctx.file._link_script.path}
+        variables["ARCH_POSTLINK"] = {"value": ""}
     if native["function"] == "script":
         lines = []
         for expression in native["scripts"]:
@@ -499,10 +504,9 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
         command = "\n".join(lines) + "\ntouch " + shell_quote(target)
     else:
         command = value(("filechk_" if native["function"] == "filechk" else "cmd_") + name, variables, command_sources).strip()
-    if native != None and native.get("final_link"):
-        command = shell_quote(setup.tools["CONFIG_SHELL"]) + " " + ctx.file._link_script.path + " " + " ".join([shell_quote(setup.tools["LD"]), shell_quote(value("KBUILD_LDFLAGS", variables, setup.sources)), shell_quote(value("LDFLAGS_vmlinux", variables, setup.sources)), shell_quote(target)])
-    if native.get("postlink") != None:
-        post = native["postlink"]
+    if native.get("final_link"):
+        command = shell_quote(setup.tools["CONFIG_SHELL"]) + " " + command
+    for post in native.get("postlink", []):
         post_variables = dict(variables)
         post_variables.update(post["variables"])
         for key in ["@", "@F", "@D", "<", "^", "*", "real-prereqs", "CONFIG_SHELL"] + list(setup.tools):

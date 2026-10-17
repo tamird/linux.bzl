@@ -84,19 +84,21 @@ jobs:
           path: bazel-bin/consumer-support.tar.gz
           retention-days: 7
 
-      - name: Build and audit LTS generator
+      - name: Build and audit LTS generators
         shell: bash
         run: |
           trace=()
           if [[ "$RUNNER_OS" == Linux ]]; then trace+=(--test_arg=--strace); fi
-          bazel build //native/linux_6_18:consumer_support --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4
+          bazel build //native/linux_6_12:consumer_support //native/linux_6_18:consumer_support --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4
           bazel test //native/linux_6_12:repository_test //native/linux_6_18:repository_test --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4 "${trace[@]}" --test_output=errors
 
       - name: Upload LTS consumer support
         uses: actions/upload-artifact@v7
         with:
-          name: kernel-repository-consumer-linux_6_18-${{ matrix.platform }}
-          path: bazel-bin/native/linux_6_18/consumer-support.tar.gz
+          name: kernel-repository-consumer-lts-${{ matrix.platform }}
+          path: |
+            bazel-bin/native/linux_6_12/consumer-support.tar.gz
+            bazel-bin/native/linux_6_18/consumer-support.tar.gz
           retention-days: 7
 
       - name: Upload generation diagnostics and executable
@@ -223,9 +225,13 @@ jobs:
           retention-days: 7
 
   lts-btf:
-    name: Linux 6.18 / ARM64 BTF, modules and boot image
+    name: ${{ matrix.source }} / ARM64 BTF, modules and boot image
     needs: static-generator
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [linux_6_12, linux_6_18]
     timeout-minutes: 90
     env:
       USE_BAZEL_VERSION: 9.1.0
@@ -235,20 +241,20 @@ jobs:
       - uses: bazel-contrib/setup-bazel@0.19.0
         with:
           bazelisk-cache: true
-          disk-cache: linux-6.18-arm64-btf
+          disk-cache: ${{ matrix.source }}-arm64-btf
           repository-cache: true
           cache-save: ${{ github.event_name != 'pull_request' }}
 
       - uses: actions/download-artifact@v8
         with:
-          name: kernel-repository-consumer-linux_6_18-linux_x86_64_musl
+          name: kernel-repository-consumer-lts-linux_x86_64_musl
           path: _tmp/kernel-repository
 
       - name: Configure the declared LTS source consumer
         run: |
-          source_anchor=$(bazel cquery @linux_6_18//:Makefile --output=files)
+          source_anchor=$(bazel cquery @${{ matrix.source }}//:Makefile --output=files)
           source_root="$(bazel info output_base)/$(dirname "$source_anchor")"
-          tar -xzf _tmp/kernel-repository/consumer-support.tar.gz -C _tmp/kernel-repository
+          tar -xzf _tmp/kernel-repository/${{ matrix.source }}/consumer-support.tar.gz -C _tmp/kernel-repository
           python3 example.py --linux "$source_root" --generated _tmp/kernel-repository/support
 
       - name: Build BTF kernel, native boot image and ingress module
@@ -263,7 +269,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: linux-6.18-arm64-btf-logs
+          name: ${{ matrix.source }}-arm64-btf-logs
           path: examples/bazel-testlogs/**/test.log
           if-no-files-found: ignore
           retention-days: 7
