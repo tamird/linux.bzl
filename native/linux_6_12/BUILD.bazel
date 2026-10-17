@@ -1,0 +1,5 @@
+load("//native:bootstrap.bzl", "kernel_repository_bootstrap")
+
+package(default_visibility = ["//visibility:public"])
+
+kernel_repository_bootstrap(source_repository = "@linux_6_12")

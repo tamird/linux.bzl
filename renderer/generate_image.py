@@ -239,8 +239,13 @@ def main(argv=None):
     high = max(n['line'] for n, _ in walk(bodies[owner]) if n.get('name') in graph_roots)
     graph_phase = backend.bounded(bodies[owner], low, high)
     if owner != 'scripts/Makefile.build':
-        include = next(n['line'] for n in flat if n['kind'] == 'directive' and
-                       n.get('arguments') == owner)
+        includes = [n['line'] for n in flat if n['kind'] == 'directive' and
+                    n.get('arguments', '').removeprefix('$(srctree)/') == owner]
+        match includes:
+            case [include]:
+                pass
+            case _:
+                raise ValueError(f'Expected one native include of {owner}, got {includes}')
         tail = next(n['line'] for n in flat if n.get('name') == 'subdir-modorder')
         graph_phase += backend.bounded(build, include + 1, tail)
     graph = backend.slice_program(graph_phase, graph_roots | backend.refs(data['helpers']))
@@ -400,11 +405,13 @@ def main(argv=None):
     data['image_modfinal'].extend(target_rules(modfinal, {'%.mod.o', '.module-common.o', '%.ko'}))
     single_modules = target_rules(top, {'single_modules'})
     order_recipes = [n['value_expression'] for n, _ in walk(single_modules)
-                     if n['kind'] == 'recipe' and any(backend.const(expr) == 'modules.order'
+                     if n['kind'] == 'recipe' and any(backend.const(expr) == 'modules.order' or
+                                                     expr == [{'op': 'reference', 'name': backend.literal('MODORDER')}]
                                                      for expr in output_redirections(n['value_expression']))]
     if len(order_recipes) != 1:
         raise ValueError(f'Expected one native selected-module order recipe, got {order_recipes}')
     data['image_modules_order'] = order_recipes
+    data['image_module_variables'] = [n for n in top_nodes if n.get('name') == 'MODORDER']
     # The timestamp object is a separate Bazel action. Remove just its recursive
     # Make dispatch; the native script still performs the native final link.
     link_script = (linux / 'scripts/link-vmlinux.sh').read_text()

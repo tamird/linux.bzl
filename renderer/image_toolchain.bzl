@@ -101,6 +101,7 @@ def _impl(ctx):
     variables = program(FLAG_PROGRAM["image_utilities"], variables, sources, cells = True).variables
     variables = program(FLAG_PROGRAM["image_version"], variables, sources, cells = True).variables
     variables = program(FLAG_PROGRAM["image_cpp"], variables, sources, cells = True).variables
+    variables = program(FLAG_PROGRAM["image_module_variables"], variables, sources, cells = True).variables
 
     link_sources = dict(sources)
     link_sources["__includes__"] = FLAG_PROGRAM["image_link_programs"]

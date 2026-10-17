@@ -64,7 +64,7 @@ jobs:
 
       - name: Check native Kconfig source APIs
         run: >-
-          bazel test //:kconfig_test //native/linux_5_10:kconfig_test //native/linux_6_18:kconfig_test
+          bazel test //:kconfig_test //native/linux_5_10:kconfig_test //native/linux_6_12:kconfig_test //native/linux_6_18:kconfig_test
           --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4 --test_output=errors
 
       - name: Build generator from source
@@ -90,7 +90,7 @@ jobs:
           trace=()
           if [[ "$RUNNER_OS" == Linux ]]; then trace+=(--test_arg=--strace); fi
           bazel build //native/linux_6_18:consumer_support --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4
-          bazel test //native/linux_6_18:repository_test --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4 "${trace[@]}" --test_output=errors
+          bazel test //native/linux_6_12:repository_test //native/linux_6_18:repository_test --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4 "${trace[@]}" --test_output=errors
 
       - name: Upload LTS consumer support
         uses: actions/upload-artifact@v7
@@ -111,6 +111,8 @@ jobs:
             bazel-bin/native/linux_6_18/kernel-repository
             bazel-testlogs/native/linux_6_18/repository_test/test.log
             bazel-testlogs/native/linux_6_18/repository_test/test.outputs/**
+            bazel-testlogs/native/linux_6_12/repository_test/test.log
+            bazel-testlogs/native/linux_6_12/repository_test/test.outputs/**
             bazel-testlogs/**/kconfig_test/test.log
           if-no-files-found: warn
           retention-days: 7
