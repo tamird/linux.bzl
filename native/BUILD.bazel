@@ -69,7 +69,7 @@ exports_files(glob([
     "*.patch",
     "*.inc",
     "*.c",
-]))
+]) + ["kconfig_test.py"])
 
 py_binary(
     name = "prepare",

@@ -62,6 +62,11 @@ jobs:
       - name: Test prototype helpers and formatting
         run: bazel test //... --jobs=4 --test_output=errors
 
+      - name: Check native Kconfig source APIs
+        run: >-
+          bazel test //:kconfig_test //native/linux_5_10:kconfig_test //native/linux_6_18:kconfig_test
+          --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4 --test_output=errors
+
       - name: Build generator from source
         run: bazel build //:consumer_support --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4
 
@@ -106,6 +111,7 @@ jobs:
             bazel-bin/native/linux_6_18/kernel-repository
             bazel-testlogs/native/linux_6_18/repository_test/test.log
             bazel-testlogs/native/linux_6_18/repository_test/test.outputs/**
+            bazel-testlogs/**/kconfig_test/test.log
           if-no-files-found: warn
           retention-days: 7
 

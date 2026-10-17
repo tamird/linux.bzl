@@ -12,18 +12,25 @@ static void syntax_walk(struct menu *menu, unsigned parent)
     for (; menu; menu = menu->next) {
         struct symbol *sym = menu->sym;
         unsigned id = (uintptr_t)menu->data;
+        /* Only the injected source entry has help without a symbol. Native
+         * comments accept dependencies, but not a help statement. */
+        int source = !sym && menu->help;
+        int transitional = 0;
+#ifdef SYMBOL_TRANS
+        transitional = sym && (sym->flags & SYMBOL_TRANS);
+#endif
         if (!first) putchar(',');
         first = 0;
         printf("{\"id\":%u,\"parent\":%u,\"kind\":", id, parent);
-        string(menu->help && menu->type == M_COMMENT ? "source" :
-               menu->type == M_CHOICE ? "choice" : sym ? "config" : "scope");
+        string(source ? "source" :
+               sym && sym_is_choice(sym) ? "choice" : sym ? "config" : "scope");
         fputs(",\"symbol\":", stdout); string(sym ? sym->name : "");
         fputs(",\"type\":", stdout); string(sym ? sym_type_name(sym->type) : "unknown");
-        fputs(",\"source\":", stdout); string(menu->filename);
+        fputs(",\"source\":", stdout); string(prototype_menu_filename(menu));
         printf(",\"line\":%d,\"modules\":%s,\"transitional\":%s", menu->lineno,
                sym && sym == modules_sym ? "true" : "false",
-               sym && (sym->flags & SYMBOL_TRANS) ? "true" : "false");
-        fputs(",\"path\":", stdout); string(menu->type == M_COMMENT ? menu->help : "");
+               transitional ? "true" : "false");
+        fputs(",\"path\":", stdout); string(source ? menu->help : "");
         fputs(",\"depends\":", stdout); bytecode(menu->dep, "y");
         fputs(",\"visibility\":", stdout); bytecode(menu->visibility, "y");
         fputs(",\"properties\":[", stdout);
