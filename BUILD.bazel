@@ -29,6 +29,7 @@ exports_files([
     "test_repository.py",
     "renderer/rules_bison_cstdlib.patch",
     "renderer/rules_cc_autoconf_no_host_shell.patch",
+    "renderer/rules_cc_autoconf_no_path_mapping.patch",
 ])
 
 py_library(
