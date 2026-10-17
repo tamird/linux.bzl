@@ -62,6 +62,8 @@ def _scope(setup, directory, target, objtree, source, ancestry = None, graph_var
         ancestry = [directory]
     for key, val in {
         "objtree": objtree,
+        "srctree": source,
+        "srcroot": source,
         "obj": directory,
         "src": source + "/" + directory,
         "@": target,
