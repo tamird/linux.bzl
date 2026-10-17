@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 import posixpath
 import shutil
 
-from generate import generate, literal, call, relative, walk, file_label
+from generate import generate, literal, call, relative, walk, file_label, source_layout
 
 HERE = Path(__file__).resolve().parent
 
@@ -46,7 +46,7 @@ def label(path):
     return '//actions' + ('/' + str(p.parent) if str(p.parent) != '.' else '') + ':' + p.name
 
 
-def catalog(tree, linux, arch):
+def catalog(tree, linux, arch, source_files):
     actions, prerequisites, diagnostics = {}, defaultdict(set), []
     # Lists of references to artifact outputs, never evaluated commands.
     def add(path, directory, outs=None, deps=(), kind='generate', headers=False, driver='build'):
@@ -63,7 +63,7 @@ def catalog(tree, linux, arch):
             continue
         directory = str(PurePosixPath(filename).parent)
         # Kbuild takes precedence. Other source files are still in the full AST.
-        if filename.endswith('/Makefile') and (linux / directory / 'Kbuild').exists():
+        if filename.endswith('/Makefile') and directory + '/Kbuild' in source_files:
             continue
         env = {'obj': directory, 'objtree': '.', 'src': '__source__/' + directory,
                'srctree': '__source__', 'srcroot': '__source__', 'SRCARCH': arch,
@@ -109,7 +109,7 @@ def catalog(tree, linux, arch):
             if dynamic or host + '-rust' in assigned:
                 diagnostics.append({'target': path, 'reason': 'Dynamic/Rust host tool graph not lowered'})
                 continue
-            if not members and not (linux / (path + '.c')).is_file():
+            if not members and path + '.c' not in source_files:
                 diagnostics.append({'target': path, 'reason': 'No single C source or concrete host object list'})
                 continue
             add(path, directory, deps=members or ([] if path == 'scripts/basic/fixdep' else ['scripts/basic/fixdep']), kind='host')
@@ -167,7 +167,7 @@ def catalog(tree, linux, arch):
         generated = header_list(arch_src + '/Kbuild', 'generated-y')
         headers = header_list(arch_src + '/Kbuild', 'generic-y')
         headers |= {h for h in header_list(generic + '/Kbuild', 'mandatory-y')
-                    if h not in generated and not (linux / arch_src / h).is_file()}
+                    if h not in generated and arch_src + '/' + h not in source_files}
         for header in sorted(headers):
             path = arch_out + '/' + header
             add(path, arch_out, driver='asm_headers')
@@ -184,7 +184,7 @@ def catalog(tree, linux, arch):
     # bounds.s and asm-offsets.s, without running a configured Make at generation.
     for target, deps in list(prerequisites.items()):
         for dep in deps:
-            if dep.endswith(('.o', '.s')) and (linux / PurePosixPath(dep).with_suffix('.c')).is_file():
+            if dep.endswith(('.o', '.s')) and str(PurePosixPath(dep).with_suffix('.c')) in source_files:
                 owner = str(PurePosixPath(dep).parent)
                 if dep in ('kernel/bounds.s', 'arch/' + arch + '/kernel/asm-offsets.s', 'kernel/sched/rq-offsets.s'):
                     owner = '.'
@@ -193,9 +193,8 @@ def catalog(tree, linux, arch):
     # Explicit header/source edges on .o rules connect consumers to generators.
     for target, deps in list(prerequisites.items()):
         if target.endswith('.o') and any(dep in producers for dep in deps):
-            source = linux / PurePosixPath(target).with_suffix('.c')
             generated_c = str(PurePosixPath(target).with_suffix('.c'))
-            if source.is_file() or generated_c in producers:
+            if generated_c in source_files or generated_c in producers:
                 add(target, str(PurePosixPath(target).parent), deps=['scripts/basic/fixdep'], kind='compile', headers=True)
                 producers[target] = target
                 if generated_c in producers:
@@ -213,7 +212,7 @@ def catalog(tree, linux, arch):
     for target, action in actions.items():
         for output in action['outs']:
             for dep in prerequisites[output]:
-                if dep in ('.config', 'include/config/auto.conf') or dep.startswith('__source__/') or (linux / dep).is_file():
+                if dep in ('.config', 'include/config/auto.conf') or dep.startswith('__source__/') or dep in source_files:
                     continue
                 if dep in producers and producers[dep] != target:
                     action['deps'].add(producers[dep])
@@ -258,11 +257,11 @@ def generate_actions(tree, linux, out, make, arch='x86', syntax=None,
         stream.write('load("//rules:toolchain.bzl", "kbuild_toolchain_setup")\n')
         stream.write(call('kbuild_toolchain_setup', setup_name))
         stream.write('package(default_visibility = ["//visibility:public"])\n')
-        stream.write(call('filegroup', 'source_tree', srcs=[':source/' + str(p.relative_to(linux))
-                                                        for p in sorted(linux.rglob('*')) if p.is_file() and '.git' not in p.parts]))
+        source_labels, _ = source_layout(linux)
+        stream.write(call('filegroup', 'source_tree', srcs=list(source_labels.values())))
         stream.write(call('label_flag', 'active_config', build_setting_default=default_config,
                           **({'scope': config_scope} if config_scope else {})))
-    actions, diagnostics = catalog(tree, linux, arch)
+    actions, diagnostics = catalog(tree, linux, arch, source_labels)
     with (out / 'BUILD.bazel').open('a') as stream:
         stream.write('load("//rules:resolved.bzl", "kbuild_catalog")\n')
         stream.write(call('kbuild_catalog', 'catalog',
