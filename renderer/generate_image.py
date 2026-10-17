@@ -215,16 +215,53 @@ def main(argv=None):
     for i, (n, _, field) in enumerate(entries):
         n[field] = expressions['x' + str(i)]
     bodies = {relative(f['file'], linux): lower_execution_paths(lower_compiler_queries(lower_text_transforms(backend.lower_probes(lower_body(f['body'], a.make))))) for f in tree['files']}
-    # The native build frontend supplies composite-object and archive semantics.
-    build = bodies['scripts/Makefile.build']
-    flat = [n for n, _ in walk(build)]
-    low = next(n['line'] for n in flat if n.get('name') == 'obj-m' and 'filter-out' in n.get('value', ''))
-    high = next(n['line'] for n in flat if n.get('name') == 'subdir-modorder')
-    graph = backend.slice_program(backend.bounded(build, low, high), {'obj-m', 'real-obj-y', 'real-obj-m', 'lib-y', 'always-y', 'extra-y', 'subdir-ym', 'subdir-builtin', 'subdir-modorder', 'multi-obj-y', 'multi-obj-m', 'multi-obj-ym'})
     program_file = out / 'rules/flag_program.bzl'
     import ast
     raw = program_file.read_text()
     data = json.loads(ast.literal_eval(raw[len('FLAG_PROGRAM = json.decode('):-2]))
+    # Kbuild moved the directory graph transformations from Makefile.lib into
+    # Makefile.build. Evaluate their native phase once, including helper inputs
+    # such as the older pre-prefix multi-used snapshot used by modname-multi.
+    build = bodies['scripts/Makefile.build']
+    flat = [n for n, _ in walk(build)]
+    graph_roots = {'obj-m', 'real-obj-y', 'real-obj-m', 'lib-y', 'always-y', 'extra-y',
+                   'subdir-ym', 'subdir-builtin', 'subdir-modorder',
+                   'multi-obj-y', 'multi-obj-m', 'multi-obj-ym'}
+    owners = [(path, n['line']) for path in ('scripts/Makefile.lib', 'scripts/Makefile.build')
+              for n, _ in walk(bodies[path])
+              if n.get('name') == 'obj-m' and 'filter-out' in n.get('value', '') and
+              'obj-y' in backend.refs(n['value_expression'])]
+    match owners:
+        case [(owner, low)]:
+            pass
+        case _:
+            raise ValueError(f'Expected one Kbuild object graph owner, got {owners}')
+    high = max(n['line'] for n, _ in walk(bodies[owner]) if n.get('name') in graph_roots)
+    graph_phase = backend.bounded(bodies[owner], low, high)
+    if owner != 'scripts/Makefile.build':
+        include = next(n['line'] for n in flat if n['kind'] == 'directive' and
+                       n.get('arguments') == owner)
+        tail = next(n['line'] for n in flat if n.get('name') == 'subdir-modorder')
+        graph_phase += backend.bounded(build, include + 1, tail)
+    graph = backend.slice_program(graph_phase, graph_roots | backend.refs(data['helpers']))
+    graph_nodes = {(n['file'], n['line']) for n, _ in walk(graph)
+                   if n['kind'] in ('assignment', 'define')}
+    def without_graph(body):
+        result = []
+        for n in body:
+            if n['kind'] == 'conditional':
+                branches = [dict(b, body=without_graph(b['body'])) for b in n['branches']]
+                if any(b['body'] for b in branches):
+                    result.append(dict(n, branches=branches))
+            elif n['kind'] not in ('assignment', 'define') or (n['file'], n['line']) not in graph_nodes:
+                result.append(n)
+        return result
+    # Standalone LLVM rules still evaluate the original helper program. Image
+    # compilers receive the graph's immutable variable cells instead.
+    data['image_helpers'] = without_graph(data['helpers'])
+    data['graph_variables'] = sorted({backend.const(n['name_expression']) or
+                                      n['name_expression'][0].get('value', '') + '*'
+                                      for n, _ in walk(graph) if n['kind'] in ('assignment', 'define')})
     backend.selected = image_selected
     def flag_body(body):
         result = []
@@ -271,9 +308,9 @@ def main(argv=None):
         'builtin': next(n['value_expression'] for n, _ in walk(bodies['scripts/Makefile.build']) if n.get('name') == 'cmd_ar_builtin'),
         'library': next(n['value_expression'] for n, _ in walk(bodies['scripts/Makefile.lib']) if n.get('name') == 'cmd_ar'),
     }
-    data['image_command_helpers'] = backend.slice_program(
+    data['image_command_helpers'] = without_graph(backend.slice_program(
         bodies['scripts/Kbuild.include'] + bodies['scripts/Makefile.lib'] + bodies['scripts/Makefile.host'] + bodies['scripts/Makefile.build'] + backend.selected(backend.bounded(top, next(n['line'] for n in top_nodes if n.get('name') == 'uts_len'), next(n['line'] for n in top_nodes if n.get('name') == 'filechk_compile.h')), {'filechk_*', 'uts_len'}),
-        {'cmd_*', 'filechk_*'})
+        {'cmd_*', 'filechk_*'}))
     data['image_utilities'] = [n for n in top_nodes if n.get('name') in {'AWK', 'PERL', 'PYTHON3', 'BASH', 'KGZIP', 'KBZIP2', 'KLZMA', 'LZOP', 'LZ4', 'XZ', 'ZSTD', 'LEX', 'YACC', 'CONFIG_SHELL'}]
     def host_fallback(value):
         if isinstance(value, list):
@@ -384,7 +421,7 @@ def main(argv=None):
     # These helpers run after the local Kbuild file. Do not replay the earlier
     # directory-variable initialization and erase its ccflags/asflags.
     local_include = next(n['line'] for n, _ in walk(build) if n['kind'] == 'directive' and n.get('arguments') == '$(kbuild-file)')
-    data['image_object_helpers'] = backend.slice_program(bodies['scripts/Makefile.lib'] + backend.bounded(build, local_include + 1, max(n['line'] for n, _ in walk(build))), {'cmd_objtool', 'objtool-enabled'})
+    data['image_object_helpers'] = without_graph(backend.slice_program(bodies['scripts/Makefile.lib'] + backend.bounded(build, local_include + 1, max(n['line'] for n, _ in walk(build))), {'cmd_objtool', 'objtool-enabled'}))
     data['image_cpp'] = [n for n in top_nodes if n.get('name') == 'CPP']
     def implicit_rules(body):
         result = []
