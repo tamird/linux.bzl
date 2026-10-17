@@ -11,13 +11,29 @@ mapping to all its objects. References between those objects remain consistent;
 undefined libc references are untouched. This avoids collisions between Linux,
 GNU Make and CPython helpers without changing their parser logic.
 
-The Python runtime comes from a pinned static musl distribution. Its metadata
+The Python runtime comes from a pinned platform-specific distribution. Its metadata
 supplies the core objects, builtin initializers and link dependencies. The
 generator includes Python's default bootstrap modules plus the extra modules
-listed once in `MODULE.bazel`. Bazel links that runtime with both parsers and
-the launcher, then appends a deterministic uncompressed ZIP containing the
-standard library, renderer and licenses. The resulting ELF has no interpreter
-or dynamic dependencies.
+listed once in `repositories.bzl`. A deterministic uncompressed ZIP contains
+the standard library, renderer and licenses. On Linux, Bazel links the static
+musl runtime with both parsers and the launcher, then appends that ZIP; the ELF
+has no interpreter or dynamic dependencies.
+
+On macOS, the ZIP is a read-only section included before the final link and its
+ad hoc code signature. Apple's [code-signing contract](https://developer.apple.com/library/archive/technotes/tn2206/)
+prohibits appending data to a Mach-O executable.
+The launcher writes the embedded ZIP to a temporary import archive for the
+Python process and removes it on completion. Parser subprocesses bypass this
+step. The executable may link only the declared macOS system libraries; no
+Python runtime or extension is loaded dynamically. The pinned Python debug
+distribution supplies native Mach-O objects, avoiding the optimized archive's
+LLVM-version-specific bitcode. It enables `Py_DEBUG`; its own headers carry
+the matching debug ABI.
+
+Generator targets use the requested Bazel platform: `linux_x86_64_musl` or
+`macos_aarch64` in `@llvm//platforms`. The consumer-support action also requires
+an execution platform matching the target binary's OS and CPU. Compiler
+cross-compilation support alone does not satisfy that execution requirement.
 
 The root bootstrap targets use the prototype checkout at `_tmp/linux`.
 `//native/linux_6_18:kernel_repository`, `:consumer_support`, and

@@ -10,7 +10,7 @@ prompts use the prototype's `allnoconfig` policy.
 From the repository root, first build and configure the prototype:
 
 ```sh
-bazel build //:consumer_support
+bazel build //:consumer_support --platforms=@llvm//platforms:linux_x86_64_musl
 mkdir -p _tmp/kernel-repository
 tar -xzf bazel-bin/consumer-support.tar.gz -C _tmp/kernel-repository
 python3 example.py --generated _tmp/kernel-repository/support

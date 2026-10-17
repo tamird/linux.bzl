@@ -39,8 +39,8 @@ jobs:
           repository-cache: true
       - name: Build and test the current generator
         run: |
-          bazel test //:prototype_test //:repository_test --jobs=4 --test_output=errors
-          bazel build //:consumer_support --jobs=4
+          bazel test //:prototype_test //:repository_test --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4 --test_output=errors
+          bazel build //:consumer_support --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4
       - uses: actions/upload-artifact@v7
         with:
           name: qualification-generator

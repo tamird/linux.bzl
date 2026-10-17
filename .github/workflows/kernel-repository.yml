@@ -17,7 +17,15 @@ concurrency:
 
 jobs:
   static-generator:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux_x86_64_musl
+          - os: macos-15
+            platform: macos_aarch64
     timeout-minutes: 45
     env:
       USE_BAZEL_VERSION: 9.1.0
@@ -33,6 +41,7 @@ jobs:
           persist-credentials: false
 
       - name: Install tracing tool
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y strace
@@ -41,7 +50,7 @@ jobs:
         uses: bazel-contrib/setup-bazel@0.19.0
         with:
           bazelisk-cache: true
-          disk-cache: kernel-repository
+          disk-cache: kernel-repository-${{ matrix.platform }}
           repository-cache: |
             - MODULE.bazel
             - MODULE.bazel.lock
@@ -50,23 +59,35 @@ jobs:
       - name: Test prototype helpers and formatting
         run: bazel test //... --jobs=4 --test_output=errors
 
-      - name: Build static generator from source
-        run: bazel build //:consumer_support //native/linux_6_18:consumer_support --jobs=4
+      - name: Build generator from source
+        run: bazel build //:consumer_support --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4
 
       - name: Audit standalone generation
-        run: bazel test //:repository_test //native/linux_6_18:repository_test --jobs=4 --test_arg=--strace --test_output=errors
+        shell: bash
+        run: |
+          trace=()
+          if [[ "$RUNNER_OS" == Linux ]]; then trace+=(--test_arg=--strace); fi
+          bazel test //:repository_test --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4 "${trace[@]}" --test_output=errors
 
       - name: Upload consumer support
         uses: actions/upload-artifact@v7
         with:
-          name: kernel-repository-consumer
+          name: kernel-repository-consumer-${{ matrix.platform }}
           path: bazel-bin/consumer-support.tar.gz
           retention-days: 7
+
+      - name: Build and audit LTS generator
+        shell: bash
+        run: |
+          trace=()
+          if [[ "$RUNNER_OS" == Linux ]]; then trace+=(--test_arg=--strace); fi
+          bazel build //native/linux_6_18:consumer_support --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4
+          bazel test //native/linux_6_18:repository_test --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4 "${trace[@]}" --test_output=errors
 
       - name: Upload LTS consumer support
         uses: actions/upload-artifact@v7
         with:
-          name: kernel-repository-consumer-linux_6_18
+          name: kernel-repository-consumer-linux_6_18-${{ matrix.platform }}
           path: bazel-bin/native/linux_6_18/consumer-support.tar.gz
           retention-days: 7
 
@@ -74,7 +95,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: kernel-repository-prototype
+          name: kernel-repository-prototype-${{ matrix.platform }}
           path: |
             bazel-bin/kernel-repository
             bazel-testlogs/repository_test/test.log
@@ -141,7 +162,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: kernel-repository-consumer
+          name: kernel-repository-consumer-linux_x86_64_musl
           path: _tmp/kernel-repository
 
       - name: Configure repository-rule consumer

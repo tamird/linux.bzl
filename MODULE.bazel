@@ -37,6 +37,8 @@ single_version_override(
 
 register_toolchains(
     "@llvm//toolchain:all",
+    "//native:generator_execution_linux_x86_64",
+    "//native:generator_execution_macos_aarch64",
     dev_dependency = True,
 )
 
@@ -45,25 +47,13 @@ python_runtime = use_repo_rule("//native:repositories.bzl", "python_runtime_repo
 python_runtime(
     name = "bootstrap_python",
     dev_dependency = True,
-    modules = [
-        "array",
-        "_bisect",
-        "_contextvars",
-        "_json",
-        "_random",
-        "_struct",
-        "math",
-        "binascii",
-        "_posixsubprocess",
-        "select",
-        "fcntl",
-        "grp",
-        "_md5",
-        "_sha1",
-        "_sha2",
-        "_sha3",
-        "_blake2",
-    ],
+    platform = "linux_x86_64_musl",
+)
+
+python_runtime(
+    name = "bootstrap_python_macos",
+    dev_dependency = True,
+    platform = "macos_aarch64",
 )
 
 make_parser = use_repo_rule("//native:repositories.bzl", "make_parser_repository")
