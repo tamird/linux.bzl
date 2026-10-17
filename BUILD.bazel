@@ -8,11 +8,11 @@ package(default_visibility = ["//visibility:public"])
 kernel_pahole(
     name = "pahole",
     binary = "@pahole//:pahole",
-    tags = ["manual"],
     exec_compatible_with = [
         "@platforms//os:linux",
         "@platforms//cpu:x86_64",
     ],
+    tags = ["manual"],
 )
 
 kernel_pahole_test(
