@@ -88,6 +88,7 @@ def _context(directory, state):
             "objtree": ".",
             "src": "__source__/" + directory,
             "srctree": "__source__",
+            "building_out_of_srctree": "1",
             "srcroot": "__source__",
             "SRCARCH": state["arch"],
             "ARCH": state["setup"].architecture.arch,

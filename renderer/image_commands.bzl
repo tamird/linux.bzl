@@ -64,6 +64,7 @@ def _scope(setup, directory, target, objtree, source, ancestry = None, graph_var
         "objtree": objtree,
         "srctree": source,
         "srcroot": source,
+        "building_out_of_srctree": "1",
         "obj": directory,
         "src": source + "/" + directory,
         "@": target,
