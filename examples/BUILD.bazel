@@ -1,5 +1,5 @@
 load("@kernel//rules:example_configs.bzl", "EXAMPLE_CONFIGS")
-load(":kernel.bzl", "btf_capability_test", "example_config_test", "example_initramfs", "kernel_example")
+load(":kernel.bzl", "btf_capability_test", "example_config_test", "example_initramfs", "kernel_btf_test", "kernel_example")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -63,6 +63,23 @@ kernel_example(
     name = "aarch64_kernel",
     platform = "@llvm//platforms:linux_aarch64",
     requested = EXAMPLE_CONFIGS["aarch64"],
+)
+
+kernel_example(
+    name = "aarch64_btf_declared",
+    architecture_roots = {"arm64": ["arch/arm64/boot/Image"]},
+    overrides = EXAMPLE_CONFIGS["btf"],
+    pahole = "@kernel//:pahole",
+    platform = "@llvm//platforms:linux_aarch64",
+    requested = EXAMPLE_CONFIGS["aarch64"],
+    required_options = {"DEBUG_INFO_BTF": "y"},
+    tags = ["manual"],
+)
+
+kernel_btf_test(
+    name = "aarch64_btf_image_test",
+    kernel = ":aarch64_btf_declared",
+    tags = ["manual"],
 )
 
 filegroup(

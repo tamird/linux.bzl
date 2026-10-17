@@ -96,6 +96,10 @@ generated `//:pahole` adapter derives the version from the selected encoder's
 C compilation definitions; the configuration carries that same tool for BTF
 generation. Without a declared encoder, its Kconfig version is zero. The
 generated `//:pahole_test` checks those definitions against `pahole --version`.
+When BTF is enabled, the image graph builds the selected kernel's
+`resolve_btfids` host program against declared libelf and libbpf libraries.
+The native final-link script receives that resolver, the same declared pahole,
+and flags evaluated from the kernel's `scripts/Makefile.btf`.
 
 `kernel_artifact`, loaded from the generated `//rules:image.bzl`, selects one
 declared output from a `kbuild_resolved_build` by its Kbuild path. For example:

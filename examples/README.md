@@ -30,7 +30,7 @@ bazel build //:x86_64_debug_kernel //:x86_64_lz4_kernel
 bazel build //:example_initramfs
 ```
 
-The kernel targets currently produce linked `vmlinux` ELF artifacts. Compression
+The regular kernel targets produce linked `vmlinux` ELF artifacts. Compression
 requests remain part of the resolved configuration; boot-image compression is
 not demonstrated by the ELF outputs. `example_initramfs` produces deterministic
 `newc` data with `/dev/console`, `/dev/null`, `/proc`, and this README as
@@ -41,11 +41,13 @@ Each kernel target has a corresponding `_config` target exposing its expanded
 now exposes the prototype's action manifest instead of the old graph-repository
 metadata format.
 
-The `x86_64_btf_vmlinux` target is retained as a manual target with an explicit
-`DEBUG_INFO_BTF=y` requirement. The current conservative capability policy does
-not supply the required pahole capabilities: this target reports the gap rather
-than quietly producing an ELF without BTF. Its requested fragment remains
-available through `x86_64_btf_vmlinux_config`.
+The `x86_64_btf_vmlinux` target has an explicit `DEBUG_INFO_BTF=y` requirement
+and no declared encoder; its analysis test expects that specific failure.
+The manual `x86_64_btf_declared` and `aarch64_btf_declared` targets supply the
+generated repository's pahole adapter. Their final link uses that executable,
+its source-selected flags, and the kernel's source-built `resolve_btfids`.
+`aarch64_btf_declared` also requests the native `arch/arm64/boot/Image` producer;
+build it with `--output_groups=kernel,boot` to request both outputs.
 
 The former module-output labels and release-specific graph repositories belong
 to the replaced implementation. The prototype currently proves configuration,
@@ -60,10 +62,13 @@ CI builds the static generator once, then runs independent example jobs:
 | debug | `//:x86_64_debug_kernel` | `//:debug_config_test` |
 | lz4 | `//:x86_64_lz4_kernel` | `//:lz4_config_test` |
 | btf-capability-gap | `//:x86_64_btf_vmlinux_config` | `//:btf_capability_test` |
+| btf-declared-tool | `//:x86_64_btf_declared_config` | `//:btf_declared_config_test`, `@kernel//:pahole_test` |
 | initramfs | `//:example_initramfs` | — |
 | graph-metadata | `//:x86_64_shared_graph_metadata` | — |
 
 A separate platform job runs the generated architecture tests, builds the
 multi-platform configs, and checks execution tools. Every example build blocks
-host tool directories. The BTF test expects the specific missing-capability
-analysis failure; it does not establish that a BTF kernel builds successfully.
+host tool directories. A separate Linux 6.18 job uses the declared LTS source and
+matching generator to build the ARM64 BTF kernel and native boot image, then
+runs `aarch64_btf_image_test` to require an ELF `.BTF` section. The encoder-free
+analysis test remains a separate check of missing-capability handling.

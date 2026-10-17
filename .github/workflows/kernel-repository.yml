@@ -207,3 +207,49 @@ jobs:
           path: examples/bazel-testlogs/**/test.log
           if-no-files-found: ignore
           retention-days: 7
+
+  lts-btf:
+    name: Linux 6.18 / ARM64 BTF and boot image
+    needs: static-generator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      USE_BAZEL_VERSION: 9.1.0
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: linux-6.18-arm64-btf
+          repository-cache: true
+          cache-save: ${{ github.event_name != 'pull_request' }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: kernel-repository-consumer-linux_6_18-linux_x86_64_musl
+          path: _tmp/kernel-repository
+
+      - name: Configure the declared LTS source consumer
+        run: |
+          source_anchor=$(bazel cquery @linux_6_18//:Makefile --output=files)
+          source_root="$(bazel info output_base)/$(dirname "$source_anchor")"
+          tar -xzf _tmp/kernel-repository/consumer-support.tar.gz -C _tmp/kernel-repository
+          python3 example.py --linux "$source_root" --generated _tmp/kernel-repository/support
+
+      - name: Build BTF kernel and native boot image
+        working-directory: examples
+        run: |
+          bazel build //:aarch64_btf_declared --output_groups=kernel,boot --jobs=4 \
+            --sandbox_block_path=/bin --sandbox_block_path=/usr/bin \
+            --sandbox_block_path=/usr/local/bin
+          bazel test //:aarch64_btf_image_test --jobs=4 --test_output=errors
+
+      - name: Upload LTS test logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-6.18-arm64-btf-logs
+          path: examples/bazel-testlogs/**/test.log
+          if-no-files-found: ignore
+          retention-days: 7

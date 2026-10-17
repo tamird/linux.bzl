@@ -5,7 +5,7 @@ load("@rules_cc//cc:find_cc_toolchain.bzl", "use_cc_toolchain")
 load(":commands.bzl", "register", "shell_words")
 load(":expressions.bzl", "evaluate", "make_words", "match", "program", "source_index")
 load(":flag_program.bzl", "FLAG_PROGRAM")
-load(":host_tools.bzl", "KernelObjtoolInfo")
+load(":host_tools.bzl", "KernelObjtoolInfo", "KernelResolveBtfidsInfo")
 load(":kbuild.bzl", "KbuildFileInfo")
 load(":resolved.bzl", "KbuildCatalogInfo")
 load(":rules.bzl", "KernelConfigInfo")
@@ -234,6 +234,11 @@ def _link_descriptor(path, state):
         scripts = _context("scripts", state)
         deps.extend(["scripts/" + name for name in make_words(_value("hostprogs-always-y", scripts.variables, state["sources"]))])
     variables = program(FLAG_PROGRAM["image_link"][driver], variables, state["sources"], cells = True).variables
+    if path == "vmlinux.unstripped" and state["pahole"] != None:
+        # Bazel schedules the action; keep pahole's internal worker count
+        # explicit instead of passing the native Makefile's empty -j argument.
+        variables["MAKEFLAGS"] = {"value": "-j1"}
+        variables = program(FLAG_PROGRAM["image_common"] + FLAG_PROGRAM["image_btf"], variables, state["sources"], cells = True).variables
     if driver == "modpost":
         variables["modpost-args"] = {"append": [variables["modpost-args"], {"value": "vmlinux.o"}]}
     native = {
@@ -245,6 +250,7 @@ def _link_descriptor(path, state):
         "assignments": [],
         "final_link": path == "vmlinux.unstripped",
         "postlink": _recipe(path, "@postlink", state) if path == "vmlinux.unstripped" and state["postlink_outputs"] else None,
+        "pahole": state["pahole"] if path == "vmlinux.unstripped" else None,
     }
     return {"target": outs[0], "directory": ".", "outs": outs, "deps": deps, "kind": "generate", "driver": "link", "native": native}
 
@@ -560,7 +566,13 @@ def _impl(ctx):
         "source_files": source_files,
         "sources": index,
         "setup": setup,
+        "pahole": config.pahole if config.values.get("DEBUG_INFO_BTF") == "y" else None,
     }
+    external_tools = {}
+    if config.values.get("DEBUG_INFO_BTF") == "y":
+        if config.pahole == None:
+            fail("CONFIG_DEBUG_INFO_BTF requires the declared pahole used to configure the kernel")
+        external_tools["tools/bpf/resolve_btfids/resolve_btfids"] = ctx.attr._resolve_btfids[KernelResolveBtfidsInfo].executable
 
     # Recursive Make expands only exported parent variables into a child's
     # environment. Unexported names such as core-y must not affect core.o.
@@ -588,7 +600,7 @@ def _impl(ctx):
         if not pending:
             break
         path = _normalize(pending.pop())
-        if path in (".config", "include/config/auto.conf", "include/generated/autoconf.h") or path.startswith("__source__/") or path == "tools/objtool/objtool" or path in source_files or path in producers:
+        if path in (".config", "include/config/auto.conf", "include/generated/autoconf.h") or path.startswith("__source__/") or path == "tools/objtool/objtool" or path in external_tools or path in source_files or path in producers:
             continue
         descriptor = _describe(path, state)
         descriptor["deps"] = [_normalize(p) for p in descriptor["deps"]]
@@ -641,8 +653,10 @@ def _impl(ctx):
             closure = dict(common)
             for dep in deps:
                 closure.update(finished[dep])
+            closure.update({p: external_tools[p] for p in d["deps"] if p in external_tools})
             direct = dict(common)
             direct.update({p: artifacts[p] for p in d["deps"] if p in producers and producers[p] != target})
+            direct.update({p: external_tools[p] for p in d["deps"] if p in external_tools})
 
             # Source prerequisites are mandatory inputs of this action, e.g.
             # assembler .incbin payloads which C preprocessor depfiles omit.
@@ -771,6 +785,7 @@ kbuild_resolved_build = rule(implementation = _impl, cfg = _transition, fragment
     "architecture_roots": attr.string_list_dict(),
     "_link_script": attr.label(default = "//rules:link-vmlinux.sh", allow_single_file = True),
     "_objtool": attr.label(default = "//:objtool", providers = [KernelObjtoolInfo]),
+    "_resolve_btfids": attr.label(default = "//:resolve_btfids", providers = [KernelResolveBtfidsInfo]),
     "_setup": attr.label(default = "//:toolchain", providers = [KernelToolchainInfo]),
     "_materialize": attr.label(default = "//rules:materialize.py", allow_single_file = True, cfg = "exec"),
     "_prepared_source": attr.label(default = "//:prepared_source", providers = [KernelSourceTreeInfo], cfg = "exec"),
