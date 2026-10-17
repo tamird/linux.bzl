@@ -10,7 +10,7 @@ load(":kbuild.bzl", "KbuildFileInfo")
 load(":resolved.bzl", "KbuildCatalogInfo")
 load(":rules.bzl", "KernelConfigInfo")
 load(":source_tree.bzl", "KernelSourceTreeInfo")
-load(":toolchain.bzl", "KernelToolchainInfo")
+load(":toolchain.bzl", "KernelToolchainInfo", "image_evaluation_setup")
 
 KernelBuildInfo = provider(
     "Declared artifacts of one configured kernel build.",
@@ -712,7 +712,7 @@ def _impl(ctx):
     for name, expected in ctx.attr.required_options.items():
         if config.values.get(name, "n") != expected:
             fail("Required kernel option %s=%s resolved to %s" % (name, expected, config.values.get(name, "n")))
-    setup = ctx.attr._setup[KernelToolchainInfo]
+    setup = image_evaluation_setup(ctx.attr._setup[KernelToolchainInfo])
     if setup.identity != config.identity:
         fail("Mixed native setup and kernel configuration")
     prepared = ctx.attr._prepared_source[KernelSourceTreeInfo]
@@ -726,6 +726,7 @@ def _impl(ctx):
     index["__host_machine__"] = setup.sources["__host_machine__"]
     index["__compiler_include__"] = setup.sources.get("__compiler_include__", "")
     index["__execution_tools__"] = setup.sources["__execution_tools__"]
+    index["__reported_probes__"] = setup.sources["__reported_probes__"]
     state = {
         "catalog": ctx.attr.catalog[KbuildCatalogInfo],
         "contexts": {},

@@ -12,7 +12,16 @@ load(":host_toolchain.bzl", "KernelHostToolchainInfo")
 load(":rules.bzl", "KernelConfigInfo")
 load(":source_tree.bzl", "KernelSourceTreeInfo")
 
-KernelToolchainInfo = provider(doc = "Kernel Toolchain Info.", fields = ["file", "files", "identity", "tools", "variables", "sources", "cc", "compiler", "features", "non_object_features", "host_cc", "host_features", "architecture", "host_architecture", "driver_tools"])
+_TOOLCHAIN_FIELDS = ["file", "files", "identity", "tools", "variables", "sources", "cc", "compiler", "features", "non_object_features", "host_cc", "host_features", "architecture", "host_architecture", "driver_tools"]
+
+KernelToolchainInfo = provider(doc = "Kernel Toolchain Info.", fields = _TOOLCHAIN_FIELDS)
+
+def image_evaluation_setup(setup):
+    """Give one image mutable diagnostic state beside the frozen setup data."""
+    fields = {name: getattr(setup, name) for name in _TOOLCHAIN_FIELDS}
+    fields["sources"] = dict(setup.sources)
+    fields["sources"]["__reported_probes__"] = {}
+    return KernelToolchainInfo(**fields)
 
 def _impl(ctx):
     config = ctx.attr._config[KernelConfigInfo]
