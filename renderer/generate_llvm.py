@@ -117,10 +117,7 @@ def flags_program(tree, linux, defer_arch=False):
                     # Retain the configuration-dependent include list as a
                     # program operation evaluated by the analysis interpreter.
                     out.append({'kind': 'flag_includes', 'files': {p: expand(bodies[p], stack + (p,)) for p in bodies
-                                if p.startswith('scripts/Makefile.') and p.rsplit('/', 1)[-1] in
-                                ['Makefile.warn', 'Makefile.debug', 'Makefile.btf', 'Makefile.kasan', 'Makefile.kcsan',
-                                 'Makefile.kmsan', 'Makefile.ubsan', 'Makefile.kcov', 'Makefile.randstruct',
-                                 'Makefile.kstack_erase', 'Makefile.autofdo', 'Makefile.propeller', 'Makefile.context-analysis', 'Makefile.gcc-plugins']}})
+                                if p.startswith('scripts/Makefile.')}})
                 elif arg in bodies and arg not in stack and arg != 'scripts/Makefile.compiler':
                     out.extend(expand(bodies[arg], stack + (arg,)))
             else:
