@@ -32,10 +32,12 @@ run the actual executables.
 
 ## Source-edit reuse
 
-The workflow builds the x86-64 example, repeats it unchanged, then makes three
-cumulative edits, rebuilding after each: a unique comment in `init/main.c`, a
-comment in `init/do_mounts.h`, and a directory entry in `usr/default_cpio_list`.
-All five phases use the same build options. The files are restored on exit.
+The workflow builds the x86-64 example and its compressed boot image, repeats
+it unchanged, then makes four cumulative edits, rebuilding after each:
+a unique comment in `init/main.c`, a
+comment in `init/do_mounts.h`, a directory entry in `usr/default_cpio_list`, and
+a native gzip recipe change that writes four run-specific MTIME header bytes.
+All six phases use the same build options. The files are restored on exit.
 
 Compact Bazel execution logs record executed actions and cache hits. A
 pinned BuildBuddy decoder projects them to JSONL without expanding each
@@ -51,6 +53,10 @@ object that embeds it through `.incbin`, while independent controls stay cached.
 The generated C source describing exported symbols and its object must remain
 byte-identical after this payload edit, and the compilation must stay cached even
 though the kernel object used to generate that source changes.
+The gzip header edit must preserve the compressed size, decompressed contents
+and generated `piggy.S`, while changing the compressed payload and raw `piggy.o`.
+Only the embedding compiler may execute in that phase. A cached embedding action
+makes the trial inconclusive, rather than proving input invalidation.
 The inventory includes native Bazel C and assembly actions and the original
 `KbuildCC` actions, excluding host-tool compilation. Broad recompilation produces
 a report and fails the qualification. This measures dependency invalidation;

@@ -9,14 +9,18 @@ import argparse
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
-import json
+import gzip
 import hashlib
+import json
 import os
 from pathlib import Path
 from typing import TypeAlias
 
 Outputs: TypeAlias = tuple[str, ...]
-PHASES = ("baseline", "unchanged", "edited", "header", "incbin")
+PHASES = ("baseline", "unchanged", "edited", "header", "incbin", "gzip")
+PIGGY_OBJECT = "arch/x86/boot/compressed/piggy.o"
+PIGGY_SOURCE = "arch/x86/boot/compressed/piggy.S"
+GZIP_PAYLOAD = "arch/x86/boot/compressed/vmlinux.bin.gz"
 
 
 def native_target(path: str) -> str | None:
@@ -87,13 +91,13 @@ def snapshot(directory: Path, name: str, workspace: Path) -> None:
     query = directory / f"{name}.aquery.json"
     expected = inventory(query)
     paths = {}
-    for target in ("init/main.o", "kernel/fork.o", "usr/initramfs_data.o", ".vmlinux.export.o"):
+    for target in ("init/main.o", "kernel/fork.o", "usr/initramfs_data.o", ".vmlinux.export.o", PIGGY_OBJECT):
         match [path for path in target_outputs(expected, target) if path.endswith(".o")]:
             case [path]:
                 paths[target] = path
             case other:
                 raise ValueError(f"Expected one raw object for {target}, found {other}")
-    for target in ("usr/initramfs_inc_data", ".vmlinux.export.c"):
+    for target in ("usr/initramfs_inc_data", ".vmlinux.export.c", PIGGY_SOURCE, GZIP_PAYLOAD):
         match [path for _, outputs in action_outputs(query) for path in outputs
                if path.endswith(".artifacts/" + target)]:
             case [path]:
@@ -101,7 +105,10 @@ def snapshot(directory: Path, name: str, workspace: Path) -> None:
             case other:
                 raise ValueError(f"Expected one generated {target}, found {other}")
     digests = {target: hashlib.sha256((workspace / path).read_bytes()).hexdigest() for target, path in paths.items()}
+    digests["decompressed_gzip"] = hashlib.sha256(gzip.decompress((workspace / paths[GZIP_PAYLOAD]).read_bytes())).hexdigest()
     (directory / f"{name}.digests.json").write_text(json.dumps(digests, indent=2) + "\n")
+    sizes = {target: (workspace / path).stat().st_size for target, path in paths.items()}
+    (directory / f"{name}.sizes.json").write_text(json.dumps(sizes, indent=2) + "\n")
 
 
 @dataclass
@@ -193,7 +200,7 @@ def report(directory: Path) -> dict[str, object]:
     if not expected or any(value != expected for value in inventories.values()):
         raise ValueError("Kernel compile output inventory changed between builds")
     controls = {target: target_outputs(expected, target) for target in (
-        "init/main.o", "kernel/fork.o", "init/do_mounts.o", "init/do_mounts_initrd.o", "init/initramfs.o", "usr/initramfs_data.o",
+        "init/main.o", "kernel/fork.o", "init/do_mounts.o", "init/do_mounts_initrd.o", "init/initramfs.o", "usr/initramfs_data.o", PIGGY_OBJECT,
     )}
     phases = {
         name: phase(directory / f"{name}.execution.jsonl", expected)
@@ -235,6 +242,24 @@ def report(directory: Path) -> dict[str, object]:
     for target in (".vmlinux.export.c", ".vmlinux.export.o"):
         if digests["header"][target] != digests["incbin"][target]:
             raise ValueError(f"The initramfs edit unexpectedly changed {target}")
+    if controls[PIGGY_OBJECT] not in phases["gzip"].executed:
+        raise ValueError(
+            "Assembly embedding the changed gzip payload did not execute; "
+            f"the trial is inconclusive: {phases['gzip'].outcome(controls[PIGGY_OBJECT])}"
+        )
+    sizes = {name: json.loads((directory / f"{name}.sizes.json").read_text()) for name in PHASES}
+    if sizes["incbin"][GZIP_PAYLOAD] != sizes["gzip"][GZIP_PAYLOAD]:
+        raise ValueError("The gzip header edit changed the payload size")
+    if digests["incbin"][PIGGY_SOURCE] != digests["gzip"][PIGGY_SOURCE]:
+        raise ValueError("The gzip header edit changed generated piggy.S")
+    if digests["incbin"]["decompressed_gzip"] != digests["gzip"]["decompressed_gzip"]:
+        raise ValueError("The gzip header edit changed the decompressed payload")
+    for target in (GZIP_PAYLOAD, PIGGY_OBJECT):
+        if digests["incbin"][target] == digests["gzip"][target]:
+            raise ValueError(f"The gzip header edit did not change {target}")
+    for target in ("init/main.o", "usr/initramfs_data.o", ".vmlinux.export.c", ".vmlinux.export.o"):
+        if digests["incbin"][target] != digests["gzip"][target]:
+            raise ValueError(f"The gzip header edit unexpectedly changed {target}")
     return {
         "measurement_complete": True,
         "compile_inventory_unchanged": True,
@@ -246,6 +271,7 @@ def report(directory: Path) -> dict[str, object]:
             "all_unrelated_compiles_reused": not unrelated_executed,
             "header_edit_recompiled_only_consumers": phases["header"].executed == header_consumers,
             "incbin_edit_recompiled_only_consumer": phases["incbin"].executed == {controls["usr/initramfs_data.o"]},
+            "gzip_edit_recompiled_only_consumer": phases["gzip"].executed == {controls[PIGGY_OBJECT]},
         },
         "phases": {name: value.report() for name, value in phases.items()},
         "controls": {
@@ -253,6 +279,7 @@ def report(directory: Path) -> dict[str, object]:
             for source, outputs in controls.items()
         },
         "digests": digests,
+        "sizes": sizes,
     }
 
 
@@ -278,7 +305,7 @@ def main() -> None:
     }
     print(json.dumps(result, indent=2))
     if not all(result["qualification"][key] for key in (
-        "all_unrelated_compiles_reused", "header_edit_recompiled_only_consumers", "incbin_edit_recompiled_only_consumer",
+        "all_unrelated_compiles_reused", "header_edit_recompiled_only_consumers", "incbin_edit_recompiled_only_consumer", "gzip_edit_recompiled_only_consumer",
     )):
         raise SystemExit("Kernel dependency reuse qualification failed; see reuse-report.json")
 
