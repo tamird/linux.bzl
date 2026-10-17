@@ -6,6 +6,7 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "build.py",
+    "linux.bzl",
     "repository.bzl",
     "launcher.c",
     "test_repository.py",
