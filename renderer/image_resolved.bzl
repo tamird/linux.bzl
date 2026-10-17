@@ -552,9 +552,10 @@ def _describe(path, state, owner = None):
     if static != None and (static["kind"] == "compile" or static.get("driver") == "asm_headers" or path in state["header_owners"] or path in state["preparation"]):
         static = None
     directory, _, name = path.rpartition("/")
-    if owner != None and any([r.get("recipes") for r in _rules_for_path(path, _context(owner, state), state)]):
+    if owner != None and any([r.get("recipes") and path in [_normalize(p) for p in r["targets"] if "%" not in p] for r in _context(owner, state).rules]):
         # A Makefile can own outputs outside its directory (for example a
-        # sibling generated header). Follow the selected prerequisite edge.
+        # sibling generated header). Only an explicit producer establishes
+        # that ownership; generic compiler patterns belong to each directory.
         directory, static = owner, None
     module_owner = state["module_owners"].get(path)
     if module_owner != None:
