@@ -49,17 +49,13 @@ def _impl(ctx):
         fail("Execution tools require a declared Python runtime, not interpreter_path")
     transitive.append(runtime.files)
     for name in ["python", "python3"]:
-        alias = ctx.actions.declare_file(ctx.label.name + "/bin/" + name)
-        ctx.actions.symlink(output = alias, target_file = runtime.interpreter, is_executable = True)
-        commands[name] = alias
-        files.append(alias)
+        # Python locates its standard library relative to the interpreter.
+        # Remote execution may materialize symlinks as regular files.
+        _alias(ctx, name, runtime.interpreter, commands, files, wrapper = True)
     perl = ctx.toolchains["@rules_perl//perl:exec_toolchain_type"].perl_runtime
     if perl.perlopt:
         fail("Execution tools require a Perl executable wrapper when perlopt is nonempty")
-    alias = ctx.actions.declare_file(ctx.label.name + "/bin/perl")
-    ctx.actions.symlink(output = alias, target_file = perl.interpreter, is_executable = True)
-    commands["perl"] = alias
-    files.extend([alias, perl.interpreter])
+    _alias(ctx, "perl", perl.interpreter, commands, files, wrapper = True)
     transitive.append(perl.runtime)
     for name in ["sh", "bash"]:
         if name not in commands:
