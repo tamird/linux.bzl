@@ -73,10 +73,11 @@ def main():
         assert set(executable_paths) == {str(tool)}, set(executable_paths)
         assert 'execveat(' not in trace, trace
         print(f'PASS: {len(executable_paths)} execs, all of the same static ELF')
-    for path in ('Makefile', 'scripts/kconfig/Makefile', 'arch/x86/Kconfig'):
+    for path in ('Makefile', 'scripts/kconfig/Makefile', 'arch/x86/Kconfig', 'tools/objtool/Build'):
         assert (repo / 'source' / path).resolve() == (linux / path).resolve(), path
     for name in ('BUILD', 'BUILD.bazel'):
         assert not (repo / 'source' / name).exists(), name
+    assert (repo / 'source/tools/objtool/BUILD.bazel').is_file()
     assert not list(repo.glob('.generation-*')), 'Temporary generation files leaked'
     assert not (repo / 'rules/native_make').exists()
     assert '${MAKE}' not in (repo / 'rules/link-vmlinux.sh').read_text()
