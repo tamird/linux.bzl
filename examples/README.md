@@ -49,9 +49,11 @@ its source-selected flags, and the kernel's source-built `resolve_btfids`.
 `aarch64_btf_declared` also requests the native `arch/arm64/boot/Image` producer;
 build it with `--output_groups=kernel,boot` to request both outputs.
 
-The former module-output labels and release-specific graph repositories belong
-to the replaced implementation. The prototype currently proves configuration,
-individual object actions, native code generation, and kernel build/link.
+The manual `aarch64_modules` target adds the source-selected ingress module to
+the BTF kernel and native boot image. Build it with
+`--output_groups=kernel,boot,modules`; its module selector is
+`aarch64_modules_net_sched_sch_ingress`. This exercises native modpost and
+module finalization, including the shared version-magic object.
 
 CI builds the static generator once, then runs independent example jobs:
 
@@ -69,6 +71,6 @@ CI builds the static generator once, then runs independent example jobs:
 A separate platform job runs the generated architecture tests, builds the
 multi-platform configs, and checks execution tools. Every example build blocks
 host tool directories. A separate Linux 6.18 job uses the declared LTS source and
-matching generator to build the ARM64 BTF kernel and native boot image, then
-runs `aarch64_btf_image_test` to require an ELF `.BTF` section. The encoder-free
+matching generator to build the ARM64 BTF kernel, native boot image and ingress
+module, then runs `aarch64_modules_btf_test` to require an ELF `.BTF` section. The encoder-free
 analysis test remains a separate check of missing-capability handling.

@@ -112,6 +112,13 @@ kernel_artifact(name = "kernel_config", build = ":kernel", path = ".config")
 The selected path must be produced by that build. Selectors share the build's
 action graph and report missing outputs during analysis.
 
+The build's `modules` attribute requests source-relative `.ko` paths selected by
+the configured Kbuild graph. Kernel and module objects share one native modpost
+action, and each module links its generated `.mod.c` and the kernel's shared
+`module-common.c` object. `kernel_artifact` selects those outputs by the same
+paths. The current module path rejects `MODVERSIONS` and
+`MODULE_SRCVERSION_ALL`: their native `.cmd` metadata is not exported yet.
+
 ## Initramfs archives
 
 The independent `initramfs` rule builds deterministic, root-owned `newc`
