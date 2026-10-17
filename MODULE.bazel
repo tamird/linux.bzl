@@ -126,6 +126,17 @@ http_archive(
 )
 
 http_archive(
+    name = "linux_6_12",
+    build_file = "//native:linux_source.BUILD.bazel",
+    dev_dependency = True,
+    integrity = "sha256-jO4Z4YObtv9NUlTXYZM65qtnBJLV7QMOCagFODINXEw=",
+    patch_strip = 1,
+    patches = ["//native:linux_piggy_dependency.patch"],
+    strip_prefix = "linux-6.12.110",
+    urls = ["https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.110.tar.xz"],
+)
+
+http_archive(
     name = "linux_6_18",
     build_file = "//native:linux_source.BUILD.bazel",
     dev_dependency = True,
