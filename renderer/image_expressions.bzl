@@ -197,8 +197,12 @@ def evaluate(terms, variables, sources = {}):
             key = probe + ":" + option
             supported = sources.get("__capabilities__", {}).get(key)
             if supported == None:
-                # buildifier: disable=print
-                print("WARNING: unresolved Kbuild compiler capability %r; using the fallback branch" % key)
+                reported = sources.get("__reported_probes__")
+                if reported == None or key not in reported:
+                    # buildifier: disable=print
+                    print("WARNING: unresolved Kbuild compiler capability %r; using the fallback branch" % key)
+                    if reported != None:
+                        reported[key] = True
                 supported = False
             if probe in ("cc-option-yn", "rustc-option-yn"):
                 values.append("y" if supported else "n")
