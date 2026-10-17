@@ -149,7 +149,7 @@ def _rewrite_flags(flags, tree, source, generated):
         rewritten.append(f)
     return rewritten
 
-def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies, directory_marker, source_tree, source_prerequisites, setup, host):
+def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies, directory_marker, source_tree, source_prerequisites, setup, host, compiler_inputs):
     # Let Bazel's C++ action discover includes from the compiler's depfile.
     # Candidate source files belong in the prunable header context, including
     # textual includes without a .h suffix. Making them additional_inputs (or
@@ -184,9 +184,11 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
     # headers through ../ paths. That directory must exist even when it has no
     # generated input files. A stable marker preserves it in the sandbox and
     # stays mandatory because an empty search directory is absent from depfiles.
-    _, compilation = cc_common.compile(
+    split = compiler_inputs.experiment.enabled and not host and source_file.extension == "c" and "-S" not in flags and "-E" not in flags
+    name = ctx.label.name + (".host-compile/" if host else ".compile/") + target
+    options = dict(
         actions = ctx.actions,
-        name = ctx.label.name + (".host-compile/" if host else ".compile/") + target,
+        name = ctx.label.name + ".integrated/" + target if split else name,
         feature_configuration = features,
         cc_toolchain = setup.host_cc if host else setup.cc,
         srcs = [source_file],
@@ -195,9 +197,42 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
         user_compile_flags = flags,
         disallow_pic_outputs = True,
     )
+    _, compilation = cc_common.compile(**options)
     if len(compilation.objects) != 1:
         fail("Expected one compiler output for %s, got %s" % (target, compilation.objects))
-    return compilation.objects[0]
+    integrated = compilation.objects[0]
+    if not split:
+        return integrated
+
+    # Temporary qualification plumbing: let the selected Clang frontend own
+    # preprocessing and IR semantics, then compare the actual native objects.
+    if setup.compiler != "clang":
+        fail("IR qualification requires the selected Clang toolchain")
+    options["name"] = ctx.label.name + ".frontend/" + target
+    options["user_compile_flags"] = flags + ["-emit-llvm", "-Xclang", "-disable-llvm-passes"]
+    _, frontend = cc_common.compile(**options)
+    if len(frontend.objects) != 1:
+        fail("Expected one LLVM bitcode output for " + target)
+    bitcode = ctx.actions.declare_file(ctx.label.name + ".ir/" + target.removesuffix(".o") + ".bc")
+    ctx.actions.symlink(output = bitcode, target_file = frontend.objects[0])
+    _, backend = cc_common.compile(
+        actions = ctx.actions,
+        name = ctx.label.name + ".backend/" + target,
+        feature_configuration = features,
+        cc_toolchain = setup.cc,
+        srcs = [bitcode],
+        additional_inputs = [source_file, directory_marker] + compiler_inputs.native_direct.values() + source_prerequisites.values() + setup.files.to_list(),
+        # Frontend diagnostics remain enabled in the preceding action. The
+        # backend does not consume preprocessing flags, but must retain native
+        # code-generation options and assembler include search paths.
+        user_compile_flags = flags + ["-Wno-unused-command-line-argument"],
+        disallow_pic_outputs = True,
+    )
+    if len(backend.objects) != 1:
+        fail("Expected one LLVM backend output for " + target)
+    result = backend.objects[0]
+    compiler_inputs.experiment.records[target] = struct(source = source_file, bitcode = bitcode, integrated = integrated, object = result, flags = flags)
+    return result
 
 def _compiler_flags(command, compiler, source, target):
     """Recognize a single native compiler invocation without interpreting recipes."""
@@ -261,7 +296,7 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, source
                 source_file = dependencies.get(path, source_tree.logical.get(path))
                 compile_flags = shell_words(value("hostc_flags", variables, setup.sources))
                 compile_flags = _rewrite_flags(compile_flags, generated_root, source, dependencies)
-                obj = _compile(ctx, target, source_file, compile_flags, compiler_dependencies, direct_dependencies, compiler_inputs.directory_marker, source_tree, source_prerequisites, setup, host = True)
+                obj = _compile(ctx, target, source_file, compile_flags, compiler_dependencies, direct_dependencies, compiler_inputs.directory_marker, source_tree, source_prerequisites, setup, host = True, compiler_inputs = compiler_inputs)
                 objects.append(obj)
             if link:
                 flags = _host_link_flags(setup) + shell_words(value("KBUILD_HOSTLDFLAGS", variables, setup.sources))
@@ -306,7 +341,7 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, source
         # .incbin, including inline assembly in C. Preserve Kbuild's generated
         # and source namespaces without a private copy of the source tree.
         flags.extend(["-I" + generated_root, "-I" + source])
-        raw = _compile(ctx, target, source_file, flags, compiler_dependencies, direct_dependencies, compiler_inputs.directory_marker, source_tree, source_prerequisites, setup, host = False)
+        raw = _compile(ctx, target, source_file, flags, compiler_dependencies, direct_dependencies, compiler_inputs.directory_marker, source_tree, source_prerequisites, setup, host = False, compiler_inputs = compiler_inputs)
         postprocess = ""
         postprocess_inputs = [raw]
         if target.endswith(".o"):
@@ -541,7 +576,7 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
         direct_dependencies.update(compiler_inputs.config)
         flags = _rewrite_flags(flags, compiler_inputs.root, source, compiler_dependencies)
         flags.extend(["-I" + compiler_inputs.root, "-I" + source])
-        compiled = _compile(ctx, target, source_file, flags, compiler_dependencies, direct_dependencies, compiler_inputs.directory_marker, source_tree, source_prerequisites, setup, host = False)
+        compiled = _compile(ctx, target, source_file, flags, compiler_dependencies, direct_dependencies, compiler_inputs.directory_marker, source_tree, source_prerequisites, setup, host = False, compiler_inputs = compiler_inputs)
         ctx.actions.symlink(output = outputs[target], target_file = compiled)
         return
     if native.get("compile"):

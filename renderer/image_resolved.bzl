@@ -714,6 +714,7 @@ def _describe(path, state, owner = None):
             kind = "compile"
     if not has_recipe:
         fail("No native action producer for " + path)
+    compiler_prerequisites = list(dependencies)
     if kind == "compile" or (native != None and native.get("compile")) or path.endswith(".lds"):
         # Root Kbuild already declares the ordering among bootstrap assembly
         # generators. Other objects consume the configured preparation outputs.
@@ -727,7 +728,7 @@ def _describe(path, state, owner = None):
 
         # The final version header is also consumed by native boot wrappers.
         dependencies.append("include/generated/utsversion.h")
-    return {"target": path, "directory": "." if directory == "@vmlinux" else directory, "outs": outs, "deps": dependencies, "kind": kind, "driver": "build", "native": native if kind in ("generate", "compile") else None}
+    return {"target": path, "directory": "." if directory == "@vmlinux" else directory, "outs": outs, "deps": dependencies, "compiler_prerequisites": compiler_prerequisites, "kind": kind, "driver": "build", "native": native if kind in ("generate", "compile") else None}
 
 def _select_modules(state):
     """Follow the configured recursive Kbuild graph to each requested owner."""
@@ -915,6 +916,7 @@ def _impl(ctx):
         common["tools/objtool/objtool"] = objtool.executable
     finished = {}
     members = []
+    experiment = struct(enabled = getattr(ctx.attr, "ir_pipeline", False), records = {})
     for _ in range(len(descriptors) + 1):
         progress = False
         for target, d in descriptors.items():
@@ -933,6 +935,9 @@ def _impl(ctx):
             direct = dict(common)
             direct.update({p: artifacts[p] for p in d["deps"] if p in producers and producers[p] != target})
             direct.update({p: external_tools[p] for p in d["deps"] if p in external_tools})
+            native_prerequisites = d.get("compiler_prerequisites", d["deps"])
+            native_direct = {p: artifacts[p] for p in native_prerequisites if p in producers and producers[p] != target}
+            native_direct.update({p: external_tools[p] for p in native_prerequisites if p in external_tools and p != "tools/objtool/objtool"})
 
             # Source prerequisites are mandatory inputs of this action, e.g.
             # assembler .incbin payloads which C preprocessor depfiles omit.
@@ -968,7 +973,7 @@ def _impl(ctx):
                 prepared,
                 config,
                 setup,
-                struct(root = generated_root, directory_marker = compiler_directories[d["directory"]], direct = direct, config = config_files),
+                struct(root = generated_root, directory_marker = compiler_directories[d["directory"]], direct = direct, native_direct = native_direct, config = config_files, experiment = experiment),
                 d.get("members", [p for p in d["deps"] if p.endswith(".o")] if d["kind"] == "host" and not target.endswith(".o") else []),
                 native = d.get("native"),
                 ancestry = ancestry,
@@ -1005,6 +1010,22 @@ def _impl(ctx):
         "members": members,
         "artifacts": {p: f.path for p, f in artifacts.items()},
     }))
+    experiment_files = []
+    if experiment.enabled:
+        report = ctx.actions.declare_file(ctx.label.name + ".ir.json")
+        ctx.actions.write(report, json.encode({
+            target: {
+                "source": record.source.short_path,
+                "bitcode": record.bitcode.short_path,
+                "integrated": record.integrated.short_path,
+                "object": record.object.short_path,
+                "flags": record.flags,
+            }
+            for target, record in experiment.records.items()
+        }))
+        experiment_files.append(report)
+        for record in experiment.records.values():
+            experiment_files.extend([record.bitcode, record.integrated, record.object])
     return [
         KernelBuildInfo(
             artifacts = dict(artifacts, **{".config": config.config}),
@@ -1012,7 +1033,7 @@ def _impl(ctx):
             architecture = config.architecture,
         ),
         DefaultInfo(files = depset([manifest, config.report, setup.file] + artifacts.values())),
-        OutputGroupInfo(boot = depset([artifacts[p] for p in ctx.attr.architecture_roots.get(config.architecture.srcarch, [])]), kernel = depset([artifacts["vmlinux"]] if "vmlinux" in artifacts else []), modules = depset([artifacts[p] for p in modules]), manifest = depset([manifest])),
+        OutputGroupInfo(boot = depset([artifacts[p] for p in ctx.attr.architecture_roots.get(config.architecture.srcarch, [])]), kernel = depset([artifacts["vmlinux"]] if "vmlinux" in artifacts else []), modules = depset([artifacts[p] for p in modules]), manifest = depset([manifest]), ir_experiment = depset(experiment_files)),
     ]
 
 def _artifact_impl(ctx):
@@ -1053,8 +1074,7 @@ kbuild_resolved_setup = rule(implementation = _setup_impl, cfg = _transition, at
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
 })
 
-kbuild_resolved_build = rule(implementation = _impl, cfg = _transition, fragments = ["cpp"], toolchains = use_cc_toolchain() + [EXECUTION_TOOLS_TYPE], attrs = {
-    "config": attr.label(mandatory = True, providers = [KernelConfigInfo]),
+_BUILD_ATTRS = {
     "catalog": attr.label(mandatory = True, providers = [KbuildCatalogInfo]),
     "required_options": attr.string_dict(),
     "roots": attr.string_list(mandatory = True),
@@ -1067,5 +1087,18 @@ kbuild_resolved_build = rule(implementation = _impl, cfg = _transition, fragment
     "_materialize": attr.label(default = "//rules:materialize.py", allow_single_file = True, cfg = "exec"),
     "_prepared_source": attr.label(default = "//:prepared_source", providers = [KernelSourceTreeInfo], cfg = "exec"),
     "_anchor": attr.label(default = "//:source/Makefile", allow_single_file = True),
-    "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
-})
+}
+
+kbuild_resolved_build = rule(implementation = _impl, cfg = _transition, fragments = ["cpp"], toolchains = use_cc_toolchain() + [EXECUTION_TOOLS_TYPE], attrs = dict(
+    _BUILD_ATTRS,
+    config = attr.label(mandatory = True, providers = [KernelConfigInfo]),
+    _allowlist_function_transition = attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
+))
+
+# Temporary qualification core: outgoing transitions can select several
+# configurations of this same label, preserving paths after Bazel mapping.
+kbuild_ir_experiment = rule(implementation = _impl, fragments = ["cpp"], toolchains = use_cc_toolchain() + [EXECUTION_TOOLS_TYPE], attrs = dict(
+    _BUILD_ATTRS,
+    config = attr.label(default = "//:active_config", providers = [KernelConfigInfo]),
+    ir_pipeline = attr.bool(default = True),
+))
