@@ -1,11 +1,11 @@
 """Independent native compiler-fact checks; no fallback substitutions."""
 
+load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
 load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load(":architecture.bzl", "KernelArchitectureInfo")
 load(":compiler_metadata.bzl", "KernelCompilerMetadataInfo")
-load(":execution_tools.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
 load(":source_tree.bzl", "KernelSourceTreeInfo")
 
 def _impl(ctx):

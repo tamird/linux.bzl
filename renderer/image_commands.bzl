@@ -1,8 +1,8 @@
 """Analysis-time command lowering with explicit inputs and direct LLVM actions."""
 
+load("@linux.bzl//execution_tools:defs.bzl", "execution_tools", "run_recipe")
 load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
-load(":execution_tools.bzl", "execution_tools", "run_recipe")
 load(":expressions.bzl", "evaluate", "make_words", "match", "program")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 

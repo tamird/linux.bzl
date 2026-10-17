@@ -1,8 +1,8 @@
 """Resolve configured prerequisite programs and register one action per artifact."""
 
+load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "use_cc_toolchain")
 load(":commands.bzl", "register", "shell_words")
-load(":execution_tools.bzl", "EXECUTION_TOOLS_TYPE")
 load(":expressions.bzl", "evaluate", "make_words", "match", "program", "source_index")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 load(":host_tools.bzl", "KernelObjtoolInfo")

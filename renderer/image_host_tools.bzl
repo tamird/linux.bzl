@@ -1,11 +1,11 @@
 """Host objtool built with the selected C++ toolchain and Bazel libelf."""
 
+load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load(":architecture.bzl", "KernelArchitectureInfo")
 load(":commands.bzl", "shell_quote", "shell_words", "value")
-load(":execution_tools.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
 load(":expressions.bzl", "evaluate", "make_words", "program", "source_index")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 load(":host_libraries.bzl", "KernelHostLibraryInfo")

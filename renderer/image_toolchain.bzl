@@ -1,11 +1,11 @@
 """Resolve compiler flags in analysis, using Bazel's registered LLVM toolchains."""
 
+load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools")
 load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load(":compiler_capabilities.bzl", "KernelCompilerCapabilitiesInfo")
 load(":compiler_metadata.bzl", "KernelCompilerMetadataInfo")
-load(":execution_tools.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools")
 load(":expressions.bzl", "evaluate", "program", "source_index")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 load(":host_toolchain.bzl", "KernelHostToolchainInfo")

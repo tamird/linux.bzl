@@ -148,10 +148,17 @@ test is explicit because it requires the Linux checkout and native execution.
 For a build/link check of the repository rule's output, run in the example:
 
 ```sh
-bazel build //:x86_64_kernel //:aarch64_kernel @kernel//execution_tools:check \
+bazel build //:x86_64_kernel //:aarch64_kernel @linux.bzl//execution_tools:check \
   --sandbox_block_path=/bin --sandbox_block_path=/usr/bin \
   --sandbox_block_path=/usr/local/bin
 ```
+
+`execution_tools/` owns the shared execution toolchain and recipe environment.
+Consumers register `@linux.bzl//execution_tools:linux_x86_64` once for all kernel
+sources. LLVM version metadata is declared through
+`@linux.bzl//metadata:repositories.bzl`; neither interface fetches a kernel
+repository. Generated repositories depend on the matching `linux.bzl` module;
+the maintained examples select this checkout with a local module override.
 
 `native/` owns parser integration and bootstrap inputs; `renderer/` is the
 independent renderer/runtime snapshot. `launcher.c` owns the executable's

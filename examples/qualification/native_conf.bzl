@@ -1,9 +1,9 @@
 """Build pristine native conf and compare its output with the prototype."""
 
-load("@kernel//rules:execution_tools.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
 load("@kernel//rules:expressions.bzl", "evaluate")
 load("@kernel//rules:rules.bzl", "KernelConfigInfo")
 load("@kernel//rules:toolchain.bzl", "KernelToolchainInfo")
+load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 
