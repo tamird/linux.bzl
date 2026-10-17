@@ -206,15 +206,17 @@ def _recipe(path, directory, state):
     return None
 
 def _link_descriptor(path, state):
+    if path in ("built-in-fixup.a", "vmlinux.a"):
+        native = _recipe(path, "@archive", state)
+        if native == None:
+            fail("No native kernel archive producer for " + path)
+        return {"target": path, "directory": ".", "outs": [path], "deps": native["prerequisites"], "kind": "generate", "driver": "link", "native": native}
     variables = dict(_context(".", state).variables)
     for name, val in {"objtree": ".", "srctree": "__source__", "srcroot": "__source__"}.items():
         variables[name] = {"value": val}
     libs = make_words(_value("KBUILD_VMLINUX_LIBS", variables, state["sources"]))
-    objects = make_words(_value("KBUILD_VMLINUX_OBJS", variables, state["sources"]))
     lds = _value("KBUILD_LDS", variables, state["sources"])
     stages = {
-        "built-in-fixup.a": ("vmlinux_a", "ar_builtin_fixup", objects + ["__source__/scripts/head-object-list.txt"], [path]),
-        "vmlinux.a": ("vmlinux_a", "copy", ["built-in-fixup.a"], [path]),
         "vmlinux.o": ("vmlinux_o", "ld_vmlinux.o", ["vmlinux.a"] + libs, [path]),
         "vmlinux.symvers": ("modpost", "modpost", ["vmlinux.o", "scripts/mod/modpost"], ["vmlinux.symvers", ".vmlinux.export.c"]),
         ".vmlinux.export.c": ("modpost", "modpost", ["vmlinux.o", "scripts/mod/modpost"], ["vmlinux.symvers", ".vmlinux.export.c"]),
@@ -569,6 +571,7 @@ def _impl(ctx):
     arch_context = program(FLAG_PROGRAM["image_programs"]["arch/" + config.architecture.srcarch + "/Makefile"], dispatch, state["sources"], cells = True)
     state["known_products"] = {}
     _prepare_contexts(state, arch_context)
+    state["contexts"]["@archive"] = program(FLAG_PROGRAM["image_archive"], _context(".", state).variables, state["sources"], cells = True)
     link_context = program(FLAG_PROGRAM["image_programs"]["scripts/Makefile.vmlinux"], _context(".", state).variables, state["sources"], cells = True)
     state["contexts"]["@vmlinux"] = link_context
     state["link_owners"] = {p: True for p in make_words(_value("targets", link_context.variables, state["sources"]))}
