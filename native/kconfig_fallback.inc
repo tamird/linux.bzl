@@ -23,6 +23,16 @@ static char *prototype_probe_fallback(const char *name, int argc, char *argv[])
 	if (!strcmp(name, "rustc-version") || !strcmp(name, "rustc-llvm-version"))
 		return xstrdup("0");
 
+	/* Older Kconfig uses these queries instead of cc-name and ld-name. */
+	if (!strcmp(name, "success") && argc) {
+		if (!strcmp(argv[0], "echo \"__KCONFIG_CC_VERSION_TEXT\" | grep -q gcc"))
+			return prototype_input("__KCONFIG_CC_IS_GCC");
+		if (!strcmp(argv[0], "echo \"__KCONFIG_CC_VERSION_TEXT\" | grep -q clang"))
+			return prototype_input("__KCONFIG_CC_IS_CLANG");
+		if (!strcmp(argv[0], "__selected_ld__ -v | head -n 1 | grep -q LLD"))
+			return prototype_input("__KCONFIG_LD_IS_LLD");
+	}
+
 	if ((!strcmp(name, "success") || !strcmp(name, "failure")) && argc &&
 	    sscanf(argv[0], "test \"%63[^\"]\" = %31s %c", actual, expected, &extra) == 2) {
 		if (!strcmp(actual, "__KCONFIG_CC_NAME")) {
@@ -69,12 +79,29 @@ static char *prototype_probe_fallback(const char *name, int argc, char *argv[])
 	return xstrdup(fallback);
 }
 
+static int prototype_source_query(const char *command, const char *suffix)
+{
+	const char *root = getenv("srctree");
+	return root && !strncmp(command, root, strlen(root)) &&
+		!strcmp(command + strlen(root), suffix);
+}
+
 static char *prototype_shell_fallback(int argc, char *argv[])
 {
 	unsigned int version;
 	int end = 0;
 	char major[32];
 	(void)argc;
+	if (prototype_source_query(argv[0], "/scripts/gcc-version.sh __selected_cc__"))
+		return prototype_input("__KCONFIG_GCC_VERSION");
+	if (prototype_source_query(argv[0], "/scripts/clang-version.sh __selected_cc__"))
+		return prototype_input("__KCONFIG_CLANG_VERSION");
+	if (prototype_source_query(argv[0], "/scripts/lld-version.sh __selected_ld__"))
+		return prototype_input("__KCONFIG_LLD_VERSION");
+	const char ld_version[] = "__selected_ld__ --version | ";
+	if (!strncmp(argv[0], ld_version, sizeof(ld_version) - 1) &&
+	    prototype_source_query(argv[0] + sizeof(ld_version) - 1, "/scripts/ld-version.sh"))
+		return prototype_input("__KCONFIG_LD_LEGACY_VERSION");
 	const char *pahole = strstr(argv[0], "/scripts/pahole-version.sh ");
 	if (pahole && !strcmp(pahole, "/scripts/pahole-version.sh __selected_pahole__"))
 		return prototype_input("__KCONFIG_PAHOLE_VERSION");
