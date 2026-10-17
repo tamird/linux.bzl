@@ -67,6 +67,7 @@ register_toolchains(
     "//execution_tools:linux_x86_64",
     "//native:generator_execution_linux_x86_64",
     "//native:generator_execution_macos_aarch64",
+    "//native:static_musl_tests",
     dev_dependency = True,
 )
 

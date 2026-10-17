@@ -12,6 +12,23 @@ config_setting(
     ],
 )
 
+# The audited static musl generator runs on a Linux host with either libc.
+# Keep OS and CPU matching while allowing the native GNU/Linux CI host.
+toolchain(
+    name = "static_musl_tests",
+    exec_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+        "@llvm//constraints/libc:musl",
+    ],
+    toolchain = "@bazel_tools//tools/test:empty_toolchain",
+    toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
+)
+
 # Support generation executes the target binary, so its execution platform must
 # match that binary even when the C++ toolchain also supports cross-compilation.
 toolchain_type(name = "generator_execution_toolchain_type")
