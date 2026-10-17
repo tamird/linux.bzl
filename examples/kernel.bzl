@@ -28,7 +28,7 @@ _configured = rule(implementation = _configured_impl, attrs = {
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
 })
 
-def kernel_example(name, requested, platform, overrides = {}, required_options = {}, pahole = None, tags = []):
+def kernel_example(name, requested, platform, overrides = {}, required_options = {}, pahole = None, architecture_roots = {}, tags = []):
     kernel_config(
         name = name + "_requested",
         options = "@kernel//options:options",
@@ -43,6 +43,7 @@ def kernel_example(name, requested, platform, overrides = {}, required_options =
         config = ":" + name + "_requested",
         catalog = "@kernel//:catalog",
         roots = ["vmlinux"],
+        architecture_roots = architecture_roots,
         required_options = required_options,
         tags = ["manual"],
     )
@@ -65,6 +66,24 @@ def _config_test_impl(ctx):
 example_config_test = rule(implementation = _config_test_impl, test = True, attrs = {
     "config": attr.label(mandatory = True, providers = [KernelConfigInfo]),
     "expected": attr.string_dict(mandatory = True),
+})
+
+def _btf_image_test_impl(ctx):
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, """#!/bin/sh
+set -eu
+sections=$("$TEST_SRCDIR/$TEST_WORKSPACE/llvm-readelf" --sections --wide "$TEST_SRCDIR/$TEST_WORKSPACE/vmlinux")
+case "$sections" in
+    *" .BTF "*) ;;
+    *) printf 'Kernel image lacks its requested BTF section:\\n%s\\n' "$sections" >&2; exit 1 ;;
+esac
+""", is_executable = True)
+    runfiles = ctx.runfiles(symlinks = {"llvm-readelf": ctx.file._readelf, "vmlinux": ctx.file.kernel})
+    return [DefaultInfo(executable = script, runfiles = runfiles.merge(ctx.attr._readelf[DefaultInfo].default_runfiles))]
+
+kernel_btf_test = rule(implementation = _btf_image_test_impl, test = True, attrs = {
+    "kernel": attr.label(mandatory = True, allow_single_file = True),
+    "_readelf": attr.label(default = "@llvm//tools:llvm-readelf", cfg = "exec", allow_single_file = True),
 })
 
 def _initramfs_impl(ctx):

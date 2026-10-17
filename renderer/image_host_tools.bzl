@@ -6,13 +6,15 @@ load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load(":architecture.bzl", "KernelArchitectureInfo")
 load(":commands.bzl", "shell_quote", "shell_words", "value")
-load(":expressions.bzl", "evaluate", "make_words", "program", "source_index")
+load(":expressions.bzl", "evaluate", "make_words", "match", "program", "source_index")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 load(":host_libraries.bzl", "KernelHostLibraryInfo")
 load(":host_toolchain.bzl", "KernelHostToolchainInfo")
 load(":source_tree.bzl", "KernelSourceTreeInfo")
+load(":toolchain.bzl", "KernelToolchainInfo")
 
 KernelObjtoolInfo = provider(doc = "Kernel Objtool Info.", fields = ["executable", "architecture"])
+KernelResolveBtfidsInfo = provider(doc = "Source-built BTF ID resolver.", fields = ["executable"])
 
 def _normal(path):
     parts = []
@@ -22,6 +24,16 @@ def _normal(path):
         elif p and p != ".":
             parts.append(p)
     return "/".join(parts)
+
+def _host_capabilities(host, libraries):
+    answers = {}
+    for library in libraries:
+        answers.update(library[KernelHostLibraryInfo].probe_answers)
+
+    # This source query asks for compiler identity, available from the selected
+    # host toolchain; it does not require guessing a compiler capability.
+    answers["$(CC) -dM -E -x c /dev/null | grep -Fq \"__clang__\"; echo $$?"] = "0" if host.compiler == "clang" else "1"
+    return answers
 
 def _impl(ctx):
     architecture = ctx.attr._architecture[KernelArchitectureInfo]
@@ -41,9 +53,7 @@ def _impl(ctx):
     # library contract, rather than an execution-time compiler/header probe.
     index["__libelf_modern_api__"] = "elf_getshdr" in ctx.attr.libelf[KernelHostLibraryInfo].apis
     libraries = [ctx.attr.libelf] + ctx.attr.optional_libraries
-    index["__host_capabilities__"] = {}
-    for library in libraries:
-        index["__host_capabilities__"].update(library[KernelHostLibraryInfo].probe_answers)
+    index["__host_capabilities__"] = _host_capabilities(host, libraries)
     variables = program(FLAG_PROGRAM["image_utilities"], {"SRCARCH": architecture.srcarch, "HOSTARCH": host_architecture.srcarch, "srctree": source, "OUTPUT": ""}, index).variables
     variables["AWK"] = {"value": execution.commands["awk"].path}
     variables = program(FLAG_PROGRAM["image_host_objtool"], variables, index, cells = True).variables
@@ -126,5 +136,102 @@ kernel_objtool = rule(implementation = _impl, fragments = ["cpp"], toolchains = 
     "_host_toolchain": attr.label(default = "//:host_toolchain", providers = [KernelHostToolchainInfo], cfg = "exec"),
     "libelf": attr.label(default = "//host_libraries:libelf", providers = [CcInfo, KernelHostLibraryInfo], cfg = "exec"),
     "optional_libraries": attr.label_list(providers = [CcInfo, KernelHostLibraryInfo], cfg = "exec"),
+    "_prepared_source": attr.label(default = "//:prepared_source", providers = [KernelSourceTreeInfo], cfg = "exec"),
+})
+
+def _resolve_btfids_impl(ctx):
+    prepared = ctx.attr._prepared_source[KernelSourceTreeInfo]
+    setup = ctx.attr._setup[KernelToolchainInfo]
+    host = ctx.attr._host_toolchain[KernelHostToolchainInfo]
+    source = prepared.source_root
+    index = source_index([source + "/" + p for p in prepared.logical])
+    index["__execution_tools__"] = {n: f.path for n, f in execution_tools(ctx).commands.items()}
+    index["__host_capabilities__"] = _host_capabilities(host, [ctx.attr.libelf])
+    directory = "tools/bpf/resolve_btfids"
+    initial = dict(setup.variables)
+    for name, text in {
+        "srctree": source,
+        "CURDIR": source + "/" + directory,
+        "OUTPUT": "",
+        "HOSTARCH": setup.host_architecture.srcarch,
+    }.items():
+        initial[name] = {"value": text}
+    variables = program(FLAG_PROGRAM["image_host_btfids"], initial, index, cells = True).variables
+
+    # The declared libbpf exports its installed public header namespace.
+    # Recover that root from its actual virtual header, not a repository path.
+    libbpf = ctx.attr.libbpf[CcInfo]
+    headers = [f for f in libbpf.compilation_context.headers.to_list() if f.path.endswith("/bpf/btf.h")]
+    if len(headers) != 1:
+        fail("Declared libbpf must expose exactly one public bpf/btf.h, got %s" % headers)
+    variables["LIBBPF_INCLUDE"] = {"value": headers[0].dirname.rpartition("/")[0]}
+    variables["SUBCMD_INCLUDE"] = {"value": source + "/tools/lib"}
+    variables["srctree"] = {"value": source}
+    build = program(FLAG_PROGRAM["image_host_btfids_build"], variables, index, cells = True)
+    variables = build.variables
+
+    # The library's recursive Make invocation forwards HOSTCFLAGS as
+    # EXTRA_CFLAGS; resolve_btfids-specific flags belong to its own objects.
+    library_variables = dict(variables)
+    for assignment in shell_words(value("HOST_OVERRIDES", variables, index)):
+        name, separator, text = assignment.partition("=")
+        if not separator:
+            fail("Native resolver library override is not an assignment: " + assignment)
+        library_variables[name] = {"value": text}
+    subcmd = program(FLAG_PROGRAM["image_host_subcmd"], library_variables, index, cells = True).variables
+    objects = [(directory + "/" + obj, "resolve_btfids", variables, "host_c_flags") for obj in make_words(value("resolve_btfids-y", variables, index))]
+    objects.extend([("tools/lib/subcmd/" + obj, "libsubcmd", subcmd, "c_flags") for obj in make_words(value("libsubcmd-y", subcmd, index))])
+    libraries = [ctx.attr.libelf[CcInfo], libbpf]
+    compilations = []
+    for obj, owner, scope, flag_name in objects:
+        src = obj[:-2] + ".c"
+        if src not in prepared.logical:
+            for rule in build.rules:
+                for pattern in rule["targets"]:
+                    stem = match(pattern, obj.removeprefix(directory + "/"))
+                    if stem == None:
+                        continue
+                    prerequisites = make_words(rule["prerequisites"])
+                    if prerequisites:
+                        candidate = _normal(directory + "/" + prerequisites[0].replace("%", stem, 1))
+                        if candidate in prepared.logical:
+                            src = candidate
+        if src not in prepared.logical:
+            fail("No native source for resolve_btfids object " + obj)
+        local = dict(scope)
+        local.update({"@": {"value": obj}, "obj": {"value": owner}})
+        local = program(FLAG_PROGRAM["image_host_cflags"], local, index, cells = True).variables
+
+        # Bazel owns depfile generation and include discovery for these actions.
+        flags = [f for f in shell_words(value(flag_name, local, index)) if not f.startswith(("-Wp,-MD,", "-Wp,-MMD,", "-Wp,-MT,"))]
+        _, compiled = cc_common.compile(
+            actions = ctx.actions,
+            name = ctx.label.name + ".objects/" + obj,
+            feature_configuration = setup.host_features,
+            cc_toolchain = setup.host_cc,
+            srcs = [prepared.logical[src]],
+            compilation_contexts = [prepared.compilation_context] + [library.compilation_context for library in libraries],
+            user_compile_flags = flags,
+        )
+        compilations.append(compiled)
+    linked = cc_common.link(
+        actions = ctx.actions,
+        name = ctx.label.name,
+        feature_configuration = setup.host_features,
+        cc_toolchain = setup.host_cc,
+        compilation_outputs = cc_common.merge_compilation_outputs(compilation_outputs = compilations),
+        linking_contexts = [library.linking_context for library in libraries],
+        user_link_flags = shell_words(value("KBUILD_HOSTLDFLAGS", variables, index)),
+        output_type = "executable",
+        link_deps_statically = True,
+        stamp = 0,
+    )
+    return [KernelResolveBtfidsInfo(executable = linked.executable), DefaultInfo(files = depset([linked.executable]))]
+
+kernel_resolve_btfids = rule(implementation = _resolve_btfids_impl, fragments = ["cpp"], toolchains = use_cc_toolchain() + [EXECUTION_TOOLS_TYPE], attrs = {
+    "libelf": attr.label(default = "//host_libraries:libelf", providers = [CcInfo, KernelHostLibraryInfo], cfg = "exec"),
+    "libbpf": attr.label(default = "@libbpf//:bpf", providers = [CcInfo], cfg = "exec"),
+    "_setup": attr.label(default = "//:toolchain", providers = [KernelToolchainInfo]),
+    "_host_toolchain": attr.label(default = "//:host_toolchain", providers = [KernelHostToolchainInfo], cfg = "exec"),
     "_prepared_source": attr.label(default = "//:prepared_source", providers = [KernelSourceTreeInfo], cfg = "exec"),
 })

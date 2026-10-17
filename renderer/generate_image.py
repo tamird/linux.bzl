@@ -196,7 +196,7 @@ def main(argv=None):
     tree = json.loads(a.ast.read_text())
     extras = [p for pattern in ('Makefile*', 'Kbuild.*', 'Platform')
               for p in sorted(linux.rglob(pattern)) if p.is_file()]
-    extras += [linux / 'scripts/Kbuild.include', linux / 'tools/objtool/Build', *sorted(linux.glob('tools/objtool/arch/*/Build')), linux / 'tools/lib/subcmd/Build']
+    extras += [linux / 'scripts/Kbuild.include', linux / 'tools/objtool/Build', *sorted(linux.glob('tools/objtool/arch/*/Build')), linux / 'tools/lib/subcmd/Build', linux / 'tools/bpf/resolve_btfids/Build', linux / 'tools/build/Build.include']
     existing = {Path(f['file']).resolve() for f in tree['files']}
     tree['files'].extend(parse_events(native_events(a.make, [p for p in extras if p.resolve() not in existing], expressions=True))['files'])
     entries = []
@@ -290,11 +290,15 @@ def main(argv=None):
     data['image_host_objtool'] = host_fallback(backend.slice_program(bodies['tools/objtool/Makefile'], {'OBJTOOL_CFLAGS', 'BUILD_ORC', 'BUILD_KLP'}))
     data['image_host_build'] = backend.slice_program(bodies['tools/objtool/Build'], {'objtool-y'}) + [n for n in bodies['tools/objtool/Build'] if n['kind'] == 'rule']
     data['image_host_arch'] = bodies
-    data['image_host_subcmd'] = backend.slice_program(bodies['tools/lib/subcmd/Makefile'] + bodies['tools/lib/subcmd/Build'], {'libsubcmd-y', 'CFLAGS'})
+    data['image_host_subcmd'] = host_fallback(backend.slice_program(bodies['tools/scripts/Makefile.include'] + bodies['tools/lib/subcmd/Makefile'] + bodies['tools/lib/subcmd/Build'], {'libsubcmd-y', 'CFLAGS'}))
+    data['image_host_btfids'] = host_fallback(backend.slice_program(bodies['tools/bpf/resolve_btfids/Makefile'], {'HOSTCFLAGS_resolve_btfids', 'HOST_OVERRIDES'}))
+    data['image_host_btfids_build'] = bodies['tools/bpf/resolve_btfids/Build']
+    data['image_host_cflags'] = backend.slice_program(bodies['tools/build/Build.include'], {'c_flags', 'host_c_flags'})
+    data['image_btf'] = bodies['scripts/Makefile.btf']
     _INCLUDE_DIRECTIVES = True
     data['image_link_global'] = backend.slice_program(backend.bounded(top, min(n['line'] for n in top_nodes if n.get('name') == 'LDFLAGS_vmlinux'), max(n['line'] for n in top_nodes if n.get('name') == 'LDFLAGS_vmlinux')), {'LDFLAGS_vmlinux'})
     data['image_link_programs'] = {p: backend.slice_program(body, {'LDFLAGS_vmlinux'}) for p, body in bodies.items()}
-    backend.ROOTS |= {'core-y', 'libs-y', 'drivers-y', 'drivers-m'}
+    backend.ROOTS |= {'core-y', 'libs-y', 'drivers-y', 'drivers-m', 'RESOLVE_BTFIDS'}
     global_program, _, helpers, _ = backend.flags_program(tree, linux, defer_arch=True)
     data['global'] = lower_compiler_queries(lower_text_transforms(backend.lower_probes(global_program)))
     def export_names(body):
@@ -394,7 +398,7 @@ def main(argv=None):
     shutil.copyfile(HERE / 'host_toolchain.bzl', out / 'rules/host_toolchain.bzl')
     with (out / 'BUILD.bazel').open('a') as stream:
         stream.write('load("//rules:host_toolchain.bzl","kernel_host_toolchain")\nkernel_host_toolchain(name="host_toolchain")\n')
-        stream.write('load("//rules:host_tools.bzl","kernel_objtool")\nkernel_objtool(name="objtool")\n')
+        stream.write('load("//rules:host_tools.bzl","kernel_objtool","kernel_resolve_btfids")\nkernel_objtool(name="objtool")\nkernel_resolve_btfids(name="resolve_btfids")\n')
         stream.write('''load("//rules:pahole.bzl", "kernel_pahole", "kernel_pahole_test")
 kernel_pahole(name="pahole", binary="@pahole//:pahole", exec_compatible_with=["@platforms//os:linux", "@platforms//cpu:x86_64"])
 kernel_pahole_test(name="pahole_test", pahole=":pahole")

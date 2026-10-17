@@ -430,6 +430,9 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
     variables.update(native["variables"])
     for name, tool in setup.tools.items():
         variables[name] = {"value": tool}
+    pahole = native.get("pahole")
+    if pahole != None:
+        variables["PAHOLE"] = {"value": pahole.executable.path}
     prerequisites = []
     for path in native["prerequisites"]:
         if path.startswith("__source__/"):
@@ -533,6 +536,8 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
     )
 
     exports = dict(setup.tools)
+    if pahole != None:
+        exports["PAHOLE"] = pahole.executable.path
     for name in ["KBUILD_VMLINUX_LIBS", "KBUILD_LDS", "KERNELRELEASE", "SRCARCH"] + (FLAG_PROGRAM["image_link_exports"] if native.get("final_link") else []):
         if name not in ("KBUILD_VMLINUX_LIBS", "KBUILD_LDS", "KERNELRELEASE", "SRCARCH") and name not in variables.get("__exports__", {}):
             continue
@@ -556,14 +561,15 @@ cd "$work"
 %s
 %s
 %s
-""" % (shell_quote(stage.path), _stage_links(source_tree.files.to_list() + setup.files.to_list() + [ctx.file._link_script]), "mkdir -p " + " ".join([shell_quote(p.rpartition("/")[0] or ".") for p in outputs]), command)
+""" % (shell_quote(stage.path), _stage_links(source_tree.files.to_list() + setup.files.to_list() + [ctx.file._link_script] + (pahole.files.to_list() if pahole != None else [])), "mkdir -p " + " ".join([shell_quote(p.rpartition("/")[0] or ".") for p in outputs]), command)
     for path, output in outputs.items():
         script += "cp %s %s\n" % (shell_quote(path), shell_quote(output.path))
     run_recipe(
         ctx,
         execution_tools(ctx),
         command = script,
-        inputs = depset([stage, config.config, ctx.file._link_script] + dependencies.values(), transitive = [source_tree.files, setup.files]),
+        inputs = depset([stage, config.config, ctx.file._link_script] + dependencies.values(), transitive = [source_tree.files, setup.files] + ([pahole.files] if pahole != None else [])),
+        tools = [pahole.files_to_run] if pahole != None else [],
         outputs = outputs.values(),
         mnemonic = "KbuildGenerate",
         progress_message = "Native generator %s" % target,
