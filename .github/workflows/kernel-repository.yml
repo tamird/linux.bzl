@@ -148,7 +148,7 @@ jobs:
               @kernel//architecture_tests:aarch64_test
               @kernel//architecture_tests:riscv64_test
               @kernel//architecture_tests:conflicting_width_test
-            build: '@kernel//multi_platform:configs @kernel//execution_tools:check'
+            build: '@kernel//multi_platform:configs @linux.bzl//execution_tools:check'
     steps:
       - uses: actions/checkout@v5
 

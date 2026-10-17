@@ -1,9 +1,9 @@
 """Examples built from generated Kconfig/Make data and selected Bazel platforms."""
 
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
-load("@kernel//rules:execution_tools.bzl", "EXECUTION_TOOLS_TYPE")
 load("@kernel//rules:image.bzl", "kbuild_resolved_build", "kernel_artifact")
 load("@kernel//rules:rules.bzl", "KernelConfigInfo", "kernel_config")
+load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE")
 
 # Bazel supplies this fixed transition callback signature.
 # buildifier: disable=unused-variable

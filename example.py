@@ -28,11 +28,10 @@ def create(linux, tool, generated, out):
     all_backends = json.loads((generated / 'repository-tool.json').read_text())['all_backends']
     fragments = ['//configs:' + path.name for path in sorted((out / 'configs').glob('*.config'))]
     (support / 'setup.MODULE.bazel').write_text('''new_local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
-local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
-local_repository(name="prototype", path=%r)
+local_path_override(module_name="linux.bzl", path=%r)
 new_local_repository(name="linux_source", path=%r, build_file_content='exports_files(["Makefile"])')
 new_local_repository(name="generator", path=%r, build_file_content=%r)
-kernel_repository = use_repo_rule("@prototype//:repository.bzl", "kernel_repository")
+kernel_repository = use_repo_rule("@linux.bzl//:repository.bzl", "kernel_repository")
 kernel_repository(name="kernel", source="@linux_source//:Makefile", generator="@generator//:%s", all_backends=%s, config_fragments=%r)
 include("//:.generated/dependencies.MODULE.bazel")
 ''' % (str(HERE), str(linux), str(tool.parent), 'exports_files([' + repr(tool.name) + '])', tool.name, all_backends, fragments))

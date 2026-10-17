@@ -5,7 +5,7 @@ import shutil
 HERE = Path(__file__).resolve().parent
 
 MODULE = '''
-kernel_compiler_versions = use_repo_rule("//rules:compiler_versions_repo.bzl", "llvm_compiler_versions")
+kernel_compiler_versions = use_repo_rule("@linux.bzl//metadata:repositories.bzl", "llvm_compiler_versions")
 kernel_compiler_versions(name="kernel_llvm_versions")
 '''
 
@@ -19,7 +19,7 @@ def configure(repo, kernel_prefix=None):
 
 
 def generate(repo):
-    for name in ['compiler_metadata.bzl', 'compiler_versions_repo.bzl', 'llvm_metadata.bzl', 'compiler_metadata_checks.bzl', 'check_compiler_metadata.py']:
+    for name in ['compiler_metadata.bzl', 'llvm_metadata.bzl', 'compiler_metadata_checks.bzl', 'check_compiler_metadata.py']:
         shutil.copyfile(HERE / name, repo / 'rules' / name)
     configure(repo)
     with (repo / 'architecture_tests/BUILD.bazel').open('a') as stream:

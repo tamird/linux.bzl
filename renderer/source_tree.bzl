@@ -1,7 +1,7 @@
 """Source tree with interpreter paths supplied by the execution toolchain."""
 
+load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
-load(":execution_tools.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools")
 
 KernelSourceTreeInfo = provider(
     doc = "Original source artifacts and the separate interpreter-bound tree for executing scripts.",
