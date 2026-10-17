@@ -2,7 +2,7 @@
 """Integration checks for the single-binary generation boundary.
 
 The generator under test gets an empty environment. Optional strace diagnostics
-also verify that every subprocess executes that same ELF.
+also verify that every subprocess executes that same executable.
 """
 import argparse
 import ast
@@ -13,7 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from build import assert_static
+from build import assert_self_contained
 
 
 def read_program(repo):
@@ -48,7 +48,7 @@ def main():
     # repository links the entire kernel source tree, so only retain audit logs.
     diagnostics = Path(os.environ.get('TEST_UNDECLARED_OUTPUTS_DIR', out)).resolve()
     diagnostics.mkdir(parents=True, exist_ok=True)
-    assert_static(tool)
+    assert_self_contained(tool)
     result = subprocess.run([tool, 'version'], env={'PATH': ''}, capture_output=True, text=True, check=True)
     assert json.loads(result.stdout)['make'] == '4.4.1', result.stdout
     # Only syntax export is allowed; the linked Make must never run recipes.
@@ -114,7 +114,7 @@ def main():
         result = subprocess.run([tool, 'generate', '--linux', directory, '--out', out / 'invalid'],
                                 env={'PATH': ''}, capture_output=True, text=True)
         assert result.returncode and 'Kconfig parser source changed' in result.stderr
-    print('PASS: empty-PATH generation, symbolic inputs, static linkage, and input/output guards')
+    print('PASS: empty-PATH generation, symbolic inputs, self-contained linkage, and input/output guards')
     print(repo)
 
 

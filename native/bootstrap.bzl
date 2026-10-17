@@ -26,6 +26,7 @@ def _namespace(ctx, compilation_outputs, identity = None):
         "nm": ctx.file._nm.path,
         "objcopy": ctx.file._objcopy.path,
         "namespace": ctx.attr.namespace,
+        "symbol_prefix": "_" if ctx.target_platform_has_constraint(ctx.attr._macos[platform_common.ConstraintValueInfo]) else "",
         "objects": [[source.path, output.path] for source, output in outputs.items()],
     }))
     ctx.actions.run(
@@ -89,6 +90,7 @@ make_parser = rule(
         "_builder": attr.label(default = "//:bootstrap_builder", executable = True, cfg = "exec"),
         "_nm": attr.label(default = "@llvm//tools:llvm-nm", allow_single_file = True, cfg = "exec"),
         "_objcopy": attr.label(default = "@llvm//tools:llvm-objcopy", allow_single_file = True, cfg = "exec"),
+        "_macos": attr.label(default = "@platforms//os:macos"),
     },
 )
 
@@ -156,17 +158,34 @@ kconfig_parser = rule(
         "_m4_deny_shell": attr.label(default = "@rules_bison//bison/internal:m4_deny_shell", executable = True, cfg = "exec"),
         "_nm": attr.label(default = "@llvm//tools:llvm-nm", allow_single_file = True, cfg = "exec"),
         "_objcopy": attr.label(default = "@llvm//tools:llvm-objcopy", allow_single_file = True, cfg = "exec"),
+        "_macos": attr.label(default = "@platforms//os:macos"),
     },
 )
-
-def _generator_platform_impl(_settings, _attr):
-    return {"//command_line_option:platforms": str(Label("@llvm//platforms:linux_x86_64_musl"))}
-
-_generator_platform = transition(implementation = _generator_platform_impl, inputs = [], outputs = ["//command_line_option:platforms"])
 
 def _kernel_repository_impl(ctx):
     toolchain = find_cc_toolchain(ctx)
     features = _features(ctx, toolchain)
+    macos = ctx.target_platform_has_constraint(ctx.attr._macos[platform_common.ConstraintValueInfo])
+    payload = ctx.actions.declare_file(ctx.label.name + ".zip")
+    specification = ctx.actions.declare_file(ctx.label.name + ".payload.json")
+    identity = ctx.attr.kconfig[NativeParserInfo].identity
+    ctx.actions.write(specification, json.encode({
+        "output": payload.path,
+        "python_metadata": ctx.file.python_metadata.path,
+        "make_module": ctx.file.make_module.path,
+        "identity": identity.path,
+        "stdlib": [file.path for file in ctx.files.stdlib],
+        "renderer": [file.path for file in ctx.files.renderer],
+        "license_files": [file.path for file in ctx.files.license_files],
+    }))
+    ctx.actions.run(
+        executable = ctx.executable._builder,
+        arguments = ["payload", specification.path],
+        inputs = [specification, ctx.file.python_metadata, ctx.file.make_module, identity] + ctx.files.stdlib + ctx.files.renderer + ctx.files.license_files,
+        tools = [ctx.attr._builder[DefaultInfo].files_to_run],
+        outputs = [payload],
+        mnemonic = "PackageGeneratorResources",
+    )
     _, launcher = cc_common.compile(
         actions = ctx.actions,
         name = ctx.label.name,
@@ -188,25 +207,27 @@ def _kernel_repository_impl(ctx):
         linking_contexts = [ctx.attr.python[CcInfo].linking_context],
         output_type = "executable",
         link_deps_statically = True,
-        user_link_flags = ["-static"],
+        # Mach-O signatures cover the linked payload. Appending bytes after the
+        # final link would invalidate the executable's code-signing envelope.
+        user_link_flags = [
+            "-Wl,-sectcreate,__TEXT,__pythonzip," + payload.path,
+            # The C++ toolchain adds Foundation and libc++; this C executable
+            # must retain only libraries referenced by the embedded runtime.
+            "-Wl,-dead_strip_dylibs",
+        ] if macos else ["-static"],
+        additional_inputs = [payload] if macos else [],
     )
     output = ctx.actions.declare_file("kernel-repository")
     specification = ctx.actions.declare_file(ctx.label.name + ".bundle.json")
-    identity = ctx.attr.kconfig[NativeParserInfo].identity
     ctx.actions.write(specification, json.encode({
         "binary": linked.executable.path,
         "output": output.path,
-        "python_metadata": ctx.file.python_metadata.path,
-        "make_module": ctx.file.make_module.path,
-        "identity": identity.path,
-        "stdlib": [file.path for file in ctx.files.stdlib],
-        "renderer": [file.path for file in ctx.files.renderer],
-        "license_files": [file.path for file in ctx.files.license_files],
+        "payload": payload.path,
     }))
     ctx.actions.run(
         executable = ctx.executable._builder,
         arguments = ["bundle", specification.path],
-        inputs = [specification, linked.executable, ctx.file.python_metadata, ctx.file.make_module, identity] + ctx.files.stdlib + ctx.files.renderer + ctx.files.license_files,
+        inputs = [specification, linked.executable, payload],
         tools = [ctx.attr._builder[DefaultInfo].files_to_run],
         outputs = [output],
         mnemonic = "BundleKernelRepository",
@@ -216,7 +237,6 @@ def _kernel_repository_impl(ctx):
 kernel_repository_binary = rule(
     implementation = _kernel_repository_impl,
     executable = True,
-    cfg = _generator_platform,
     fragments = ["cpp"],
     toolchains = use_cc_toolchain(),
     attrs = {
@@ -230,7 +250,7 @@ kernel_repository_binary = rule(
         "renderer": attr.label_list(allow_files = True),
         "license_files": attr.label_list(allow_files = True),
         "_builder": attr.label(default = "//:bootstrap_builder", executable = True, cfg = "exec"),
-        "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
+        "_macos": attr.label(default = "@platforms//os:macos"),
     },
 )
 
@@ -255,8 +275,9 @@ def _consumer_support_impl(ctx):
 
 consumer_support = rule(
     implementation = _consumer_support_impl,
+    toolchains = ["//native:generator_execution_toolchain_type"],
     attrs = {
-        "generator": attr.label(executable = True, cfg = "exec", mandatory = True),
+        "generator": attr.label(executable = True, cfg = "target", mandatory = True),
         "sources": attr.label(default = "@bootstrap_linux//:sources"),
         "anchor": attr.label(default = "@bootstrap_linux//:Makefile", allow_single_file = True),
         "fragments": attr.label_list(allow_files = True),
@@ -264,7 +285,18 @@ consumer_support = rule(
     },
 )
 
+def _generator_execution_impl(_ctx):
+    return [platform_common.ToolchainInfo()]
+
+generator_execution = rule(implementation = _generator_execution_impl)
+
 # Each package exposes the same bootstrap targets for one kernel source set.
+def _python_input(name):
+    return select({
+        Label("//native:linux_x86_64_musl"): "@bootstrap_python//:" + name,
+        Label("//native:macos_aarch64"): "@bootstrap_python_macos//:" + name,
+    }, no_match_error = "Generator builds require @llvm//platforms:linux_x86_64_musl or @llvm//platforms:macos_aarch64")
+
 # buildifier: disable=unnamed-macro
 def kernel_repository_bootstrap(source_repository):
     """Build and audit a standalone generator from the selected kernel sources."""
@@ -286,12 +318,17 @@ def kernel_repository_bootstrap(source_repository):
     kernel_repository_binary(
         name = "kernel_repository",
         kconfig = ":kconfig_parser",
+        python = _python_input("runtime"),
+        python_metadata = _python_input("PYTHON.json"),
+        stdlib = _python_input("stdlib"),
         license_files = [
-            "@bootstrap_python//:licenses",
             "@bootstrap_make//:COPYING",
             source_repository + "//:COPYING",
             source_repository + "//:LICENSES/preferred/GPL-2.0",
-        ],
+        ] + select({
+            Label("//native:linux_x86_64_musl"): ["@bootstrap_python//:licenses"],
+            Label("//native:macos_aarch64"): ["@bootstrap_python_macos//:licenses"],
+        }),
         make = "//:make_parser",
         renderer = ["//:renderer"],
         tags = ["manual"],
@@ -299,10 +336,6 @@ def kernel_repository_bootstrap(source_repository):
     consumer_support(
         name = "consumer_support",
         anchor = anchor,
-        exec_compatible_with = [
-            "@platforms//os:linux",
-            "@platforms//cpu:x86_64",
-        ],
         fragments = fragments,
         generator = ":kernel_repository",
         sources = sources,
@@ -322,8 +355,4 @@ def kernel_repository_bootstrap(source_repository):
         data = [":kernel_repository", anchor, sources] + fragments,
         main = "//:test_repository.py",
         tags = ["manual"],
-        target_compatible_with = [
-            "@platforms//os:linux",
-            "@platforms//cpu:x86_64",
-        ],
     )
