@@ -118,15 +118,26 @@ jobs:
           source_file="$GITHUB_WORKSPACE/_tmp/linux/init/main.c"
           header_file="$GITHUB_WORKSPACE/_tmp/linux/init/do_mounts.h"
           payload_file="$GITHUB_WORKSPACE/_tmp/linux/usr/default_cpio_list"
+          gzip_makefile="$GITHUB_WORKSPACE/_tmp/linux/scripts/Makefile.lib"
           cp "$source_file" "$results/main.c.original"
           cp "$header_file" "$results/do_mounts.h.original"
           cp "$payload_file" "$results/default_cpio_list.original"
-          trap 'cp "$results/main.c.original" "$source_file"; cp "$results/do_mounts.h.original" "$header_file"; cp "$results/default_cpio_list.original" "$payload_file"' EXIT
-          for phase in baseline unchanged edited header incbin; do
+          cp "$gzip_makefile" "$results/Makefile.lib.original"
+          trap 'cp "$results/main.c.original" "$source_file"; cp "$results/do_mounts.h.original" "$header_file"; cp "$results/default_cpio_list.original" "$payload_file"; cp "$results/Makefile.lib.original" "$gzip_makefile"' EXIT
+          for phase in baseline unchanged edited header incbin gzip; do
             case "$phase" in
               edited) printf '\n/* prototype reuse experiment %s/%s */\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$source_file" ;;
               header) printf '\n/* prototype header experiment %s/%s */\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$header_file" ;;
               incbin) printf '\ndir /linux-bzl-incbin-%s-%s 0755 0 0\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$payload_file" ;;
+              gzip)
+                # Change only gzip's four MTIME bytes. The compressed length,
+                # decompressed contents and generated piggy.S must stay equal.
+                gzip_nonce=$(printf '%s/%s' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" | cksum | cut -d' ' -f1)
+                printf -v gzip_bytes '\\%03o\\%03o\\%03o\\%03o' \
+                  "$((gzip_nonce & 255))" "$(((gzip_nonce >> 8) & 255))" \
+                  "$(((gzip_nonce >> 16) & 255))" "$(((gzip_nonce >> 24) & 255))"
+                printf '\ncmd_gzip += ; printf "%s" | dd of=$@ bs=1 seek=4 conv=notrunc status=none\n' "$gzip_bytes" >> "$gzip_makefile"
+                ;;
             esac
             bazel build //:x86_64_kernel --output_groups=+boot --jobs=4 \
               --sandbox_block_path=/bin --sandbox_block_path=/usr/bin --sandbox_block_path=/usr/local/bin \
@@ -146,7 +157,7 @@ jobs:
                 })}
                 else empty end
               ' > "$results/$phase.execution.jsonl"
-            bazel aquery 'mnemonic("CppCompile|Assemble|KbuildCC", deps(//:x86_64_kernel)) union outputs(".*[.]artifacts/(usr/initramfs_inc_data|[.]vmlinux.export.c)", deps(//:x86_64_kernel))' \
+            bazel aquery 'mnemonic("CppCompile|Assemble|KbuildCC", deps(//:x86_64_kernel)) union outputs(".*[.]artifacts/(usr/initramfs_inc_data|[.]vmlinux.export.c|arch/x86/boot/compressed/(piggy[.]S|vmlinux[.]bin[.]gz))", deps(//:x86_64_kernel))' \
               --output=jsonproto --include_commandline=false > "$results/$phase.aquery.json"
             bazel run //qualification:reuse_report -- snapshot "$results" "$phase"
           done

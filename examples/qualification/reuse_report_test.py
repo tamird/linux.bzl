@@ -11,7 +11,7 @@ from qualification import reuse_report
 
 _OUTPUTS = [f"bazel-out/bin/_objs/kernel.compile/{target}/source/{target}" for target in (
     "init/main.o", "kernel/fork.o", "lib/string.o", "init/do_mounts.o", "init/do_mounts_initrd.o", "usr/initramfs_data.o",
-    "init/initramfs.o", ".vmlinux.export.o",
+    "init/initramfs.o", ".vmlinux.export.o", reuse_report.PIGGY_OBJECT,
 )]
 
 
@@ -64,23 +64,29 @@ class ReuseReportTest(unittest.TestCase):
             (self.directory / f"{name}.digests.json").write_text(json.dumps({
                 "kernel/fork.o": "unchanged",
                 "init/main.o": "unchanged",
-                "usr/initramfs_data.o": "modified" if name == "incbin" else "original",
-                "usr/initramfs_inc_data": "modified" if name == "incbin" else "original",
+                "usr/initramfs_data.o": "modified" if name in ("incbin", "gzip") else "original",
+                "usr/initramfs_inc_data": "modified" if name in ("incbin", "gzip") else "original",
                 ".vmlinux.export.c": "unchanged",
                 ".vmlinux.export.o": "unchanged",
+                reuse_report.PIGGY_SOURCE: "unchanged",
+                reuse_report.PIGGY_OBJECT: "gzip-modified" if name == "gzip" else "original",
+                reuse_report.GZIP_PAYLOAD: "gzip-modified" if name == "gzip" else "original",
+                "decompressed_gzip": "unchanged",
             }))
+            (self.directory / f"{name}.sizes.json").write_text(json.dumps({reuse_report.GZIP_PAYLOAD: 1024}))
         self.log("baseline", [spawn(index) for index in range(len(_OUTPUTS))])
         self.log("unchanged", [])
         self.log("edited", edited)
         self.log("header", [spawn(3), spawn(4), spawn(6)])
         self.log("incbin", [spawn(5)])
+        self.log("gzip", [spawn(8)])
         return reuse_report.report(self.directory)
 
     def test_execution_cache_and_omitted_actions_are_distinct(self) -> None:
         result = reuse_report.phase(self.log("baseline", [spawn(0), spawn(1, cache_hit=True)]), self.expected)
         self.assertEqual(result.executed, {(_OUTPUTS[0],)})
         self.assertEqual(result.cached, {(_OUTPUTS[1],)})
-        self.assertEqual(result.report()["absent_from_execution_log"], 6)
+        self.assertEqual(result.report()["absent_from_execution_log"], 7)
         self.assertEqual(result.outcome((_OUTPUTS[2],)), "absent_from_execution_log")
 
     def test_invocation_only_log_is_valid(self) -> None:
@@ -108,11 +114,11 @@ class ReuseReportTest(unittest.TestCase):
 
     def test_qualification_distinguishes_selective_from_broad_recompilation(self) -> None:
         selective = self.trial([spawn(0)])
-        self.assertEqual(selective["phases"]["edited"]["total_kernel_compiles"], 8)
+        self.assertEqual(selective["phases"]["edited"]["total_kernel_compiles"], 9)
         self.assertEqual(selective["qualification"]["all_unrelated_compiles_reused"], True)
         broad = self.trial([spawn(index) for index in range(len(_OUTPUTS))])
         self.assertEqual(broad["measurement_complete"], True)
-        self.assertEqual(broad["qualification"]["unrelated_executed_after_edit"], 7)
+        self.assertEqual(broad["qualification"]["unrelated_executed_after_edit"], 8)
         self.assertEqual(broad["qualification"]["all_unrelated_compiles_reused"], False)
 
     def test_missing_edited_compile_is_inconclusive(self) -> None:
@@ -176,6 +182,41 @@ class ReuseReportTest(unittest.TestCase):
         path.write_text(json.dumps(digests))
         with self.assertRaisesRegex(ValueError, "initramfs edit unexpectedly changed"):
             reuse_report.report(self.directory)
+
+    def test_gzip_trial_requires_actual_embedding_execution(self) -> None:
+        for spawns in ([], [spawn(8, cache_hit=True)]):
+            with self.subTest(spawns=spawns):
+                self.trial([spawn(0)])
+                self.log("gzip", spawns)
+                with self.assertRaisesRegex(ValueError, "changed gzip payload did not execute"):
+                    reuse_report.report(self.directory)
+
+    def test_gzip_trial_preserves_source_and_changes_payload(self) -> None:
+        for target, value, message in (
+            (reuse_report.PIGGY_SOURCE, "modified", "changed generated piggy.S"),
+            (reuse_report.GZIP_PAYLOAD, "original", "did not change.*vmlinux.bin.gz"),
+            (reuse_report.PIGGY_OBJECT, "original", "did not change.*piggy.o"),
+            ("decompressed_gzip", "modified", "changed the decompressed payload"),
+            ("init/main.o", "modified", "unexpectedly changed init/main.o"),
+        ):
+            with self.subTest(target=target):
+                self.trial([spawn(0)])
+                path = self.directory / "gzip.digests.json"
+                digests = json.loads(path.read_text())
+                digests[target] = value
+                path.write_text(json.dumps(digests))
+                with self.assertRaisesRegex(ValueError, message):
+                    reuse_report.report(self.directory)
+        self.trial([spawn(0)])
+        (self.directory / "gzip.sizes.json").write_text(json.dumps({reuse_report.GZIP_PAYLOAD: 2048}))
+        with self.assertRaisesRegex(ValueError, "changed the payload size"):
+            reuse_report.report(self.directory)
+
+    def test_gzip_trial_rejects_unrelated_compilation(self) -> None:
+        self.trial([spawn(0)])
+        self.log("gzip", [spawn(2), spawn(8)])
+        result = reuse_report.report(self.directory)
+        self.assertEqual(result["qualification"]["gzip_edit_recompiled_only_consumer"], False)
 
 
 if __name__ == "__main__":
