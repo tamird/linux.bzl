@@ -58,7 +58,7 @@ def _impl(ctx):
         "HOSTCXX": cc_common.get_tool_for_action(feature_configuration = host_features, action_name = ACTION_NAMES.cpp_compile),
     })
     execution = execution_tools(ctx)
-    for name, command in {"CONFIG_SHELL": "sh", "BASH": "bash", "PYTHON3": "python3", "PERL": "perl", "AWK": "awk", "LEX": "flex", "YACC": "bison", "KGZIP": "gzip", "KBZIP2": "bzip2", "KLZMA": "lzma", "LZOP": "lzop", "XZ": "xz", "ZSTD": "zstd"}.items():
+    for name, command in {"CONFIG_SHELL": "sh", "BASH": "bash", "PYTHON3": "python3", "PERL": "perl", "AWK": "awk", "LEX": "flex", "YACC": "bison", "KGZIP": "gzip", "KBZIP2": "bzip2", "KLZMA": "lzma", "LZOP": "lzop", "LZ4": "lz4", "XZ": "xz", "ZSTD": "zstd"}.items():
         if command in execution.commands:
             tools[name] = execution.commands[command].path
     prepared = ctx.attr._prepared_source[KernelSourceTreeInfo]

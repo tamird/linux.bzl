@@ -168,6 +168,7 @@ printf 'payload\\n' | xz -c | xz -dc | grep -qx payload
 printf 'payload\\n' | lzma -c | xz --format=lzma -dc | grep -qx payload
 printf 'payload\\n' | bzip2 -c | bzip2 -dc | grep -qx payload
 printf 'payload\\n' | lzop -c | lzop -dc | grep -qx payload
+printf 'payload\\n' | lz4 -l -9 - - | lz4 -dc | grep -qx payload
 printf 'payload\\n' | zstd -q -c | zstd -q -dc | grep -qx payload
 python3 -I -c 'import json, pathlib; assert json.loads("[1]") == [1]'
 perl -Mstrict -Mwarnings -e 'print "declared perl\\n"' | grep -qx 'declared perl'
