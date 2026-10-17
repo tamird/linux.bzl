@@ -39,6 +39,8 @@ def compiler_inputs(cc, compiler, metadata = None):
         "__KCONFIG_CC_IS_CLANG": ["y" if clang else "n", "tristate"],
         "__KCONFIG_CC_IS_GCC": ["y" if gcc else "n", "tristate"],
         "__KCONFIG_CC_VERSION": [str(version), "int"],
+        "__KCONFIG_GCC_VERSION": [str(version if gcc else 0), "int"],
+        "__KCONFIG_CLANG_VERSION": [str(version if clang else 0), "int"],
         "__KCONFIG_CC_MAJOR_VERSION": [str(int(version) // 10000), "int"],
         "__KCONFIG_CC_VERSION_TEXT": [compiler + " (Bazel toolchain " + cc.toolchain_id + ")", "string"],
         # Image builds take assembler mode from their paired metadata provider.
@@ -50,6 +52,10 @@ def compiler_inputs(cc, compiler, metadata = None):
         "__KCONFIG_LD_IS_LLD": ["y" if lld else "n", "tristate"],
         "__KCONFIG_LD_IS_BFD": ["y" if bfd else "n", "tristate"],
         "__KCONFIG_LD_VERSION": [str(ld_version), "int"],
+        "__KCONFIG_LLD_VERSION": [str(ld_version if lld else 0), "int"],
+        # The older stdin-based ld-version.sh scales the canonical GNU ld
+        # version by another 10000; its first-word parse yields zero for LLD.
+        "__KCONFIG_LD_LEGACY_VERSION": [str(ld_version * 10000 if bfd else 0), "int"],
     }
 
 def _bind(code, inputs):
