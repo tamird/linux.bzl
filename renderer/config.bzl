@@ -6,9 +6,10 @@ load(":compiler_capabilities.bzl", "KernelCompilerCapabilitiesInfo")
 load(":compiler_inputs.bzl", "bind_compiler_inputs", "compiler_inputs")
 load(":compiler_metadata.bzl", "KernelCompilerMetadataInfo")
 load(":kconfig_link.bzl", "link_sources")
+load(":pahole.bzl", "KernelPaholeInfo")
 load(":solver.bzl", "resolve_options")
 
-KernelConfigInfo = provider(doc = "Kernel Config Info.", fields = ["identity", "values", "make_values", "config", "header", "headers", "includes", "arch", "architecture", "report"])
+KernelConfigInfo = provider(doc = "Kernel Config Info.", fields = ["identity", "values", "make_values", "config", "header", "headers", "includes", "arch", "architecture", "report", "pahole"])
 
 KernelOptionsInfo = provider(doc = "Kernel Options Info.", fields = ["records", "sources"])
 
@@ -152,6 +153,8 @@ def _kernel_config_impl(ctx):
         ctx.attr._compiler_metadata[KernelCompilerMetadataInfo],
     )
     inputs.update(ctx.attr._compiler_capabilities[KernelCompilerCapabilitiesInfo].inputs)
+    pahole = ctx.attr.pahole[KernelPaholeInfo] if ctx.attr.pahole else None
+    inputs["__KCONFIG_PAHOLE_VERSION"] = [str(pahole.version if pahole else 0), "int"]
     inputs["__KCONFIG_ARCH"] = [architecture.arch, "string"]
     inputs["__KCONFIG_SRCARCH"] = [architecture.srcarch, "string"]
     inputs["__KCONFIG_SUBARCH"] = [architecture.subarch, "string"]
@@ -221,6 +224,7 @@ def _kernel_config_impl(ctx):
             arch = arch,
             architecture = architecture,
             report = report,
+            pahole = pahole,
         ),
         DefaultInfo(files = depset([config, header, report])),
     ]
@@ -238,6 +242,7 @@ _kernel_config = rule(
         "request_order": attr.string_list(),
         "strict": attr.bool(default = False),
         "allnoconfig": attr.bool(default = False),
+        "pahole": attr.label(providers = [KernelPaholeInfo]),
         "_architecture": attr.label(default = "//:architecture", providers = [KernelArchitectureInfo]),
     },
 )

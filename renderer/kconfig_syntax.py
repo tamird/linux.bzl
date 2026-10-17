@@ -18,7 +18,8 @@ def export_syntax(linux, output):
     env.update(srctree=str(linux), SRCARCH='__KCONFIG_SRCARCH', ARCH='__KCONFIG_ARCH',
                SUBARCH='__KCONFIG_SUBARCH', HEADER_ARCH='__KCONFIG_HEADER_ARCH',
                KERNELVERSION='prototype', CC='__selected_cc__', LD='__selected_ld__',
-               CC_VERSION_TEXT='__KCONFIG_CC_VERSION_TEXT', PAHOLE_VERSION='0')
+               CC_VERSION_TEXT='__KCONFIG_CC_VERSION_TEXT', PAHOLE='__selected_pahole__',
+               PAHOLE_VERSION='__KCONFIG_PAHOLE_VERSION')
     files, warnings = {}, set()
     for path in sorted(linux.rglob('Kconfig*')):
         relative = path.relative_to(linux).as_posix()

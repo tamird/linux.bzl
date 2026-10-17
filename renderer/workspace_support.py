@@ -10,6 +10,7 @@ bazel_dep(name="rules_cc", version="0.2.25")
 bazel_dep(name="platforms", version="1.1.0")
 bazel_dep(name="llvm", version="0.8.24")
 bazel_dep(name="elfutils", version="0.195")
+bazel_dep(name="pahole", version="1.31")
 bazel_dep(name="bazel_skylib", version="1.9.0")
 llvm = use_extension("@llvm//extensions:llvm.bzl", "llvm")
 '''

@@ -75,6 +75,12 @@ existing BCR dependency/toolchain setup, not another copy of the parser tool.
 `//...` in a consumer addresses its own packages; use `@kernel//...` to address
 the generated repository.
 
+Generated `kernel_config` rules accept an optional `pahole` label. The
+generated `//:pahole` adapter derives the version from the selected encoder's
+C compilation definitions; the configuration carries that same tool for BTF
+generation. Without a declared encoder, its Kconfig version is zero. The
+generated `//:pahole_test` checks those definitions against `pahole --version`.
+
 ## Initramfs archives
 
 The independent `initramfs` rule builds deterministic, root-owned `newc`

@@ -75,6 +75,9 @@ static char *prototype_shell_fallback(int argc, char *argv[])
 	int end = 0;
 	char major[32];
 	(void)argc;
+	const char *pahole = strstr(argv[0], "/scripts/pahole-version.sh ");
+	if (pahole && !strcmp(pahole, "/scripts/pahole-version.sh __selected_pahole__"))
+		return prototype_input("__KCONFIG_PAHOLE_VERSION");
 	if (strstr(argv[0], "__KCONFIG_CC_VERSION"))
 		return prototype_input("__KCONFIG_CC_MAJOR_VERSION");
 	/* During reference resolution cc-version has already been bound to its

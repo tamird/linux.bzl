@@ -33,8 +33,7 @@ kernel_example(
     requested = EXAMPLE_CONFIGS["x86_64"],
 )
 
-# Kept as an explicit check of the requested BTF behavior. The current prototype
-# must fail if its declared capability policy cannot enable DEBUG_INFO_BTF.
+# A BTF request without a declared encoder must fail during analysis.
 kernel_example(
     name = "x86_64_btf_vmlinux",
     overrides = EXAMPLE_CONFIGS["btf"],
@@ -42,6 +41,22 @@ kernel_example(
     requested = EXAMPLE_CONFIGS["x86_64"],
     required_options = {"DEBUG_INFO_BTF": "y"},
     tags = ["manual"],
+)
+
+kernel_example(
+    name = "x86_64_btf_declared",
+    overrides = EXAMPLE_CONFIGS["btf"],
+    pahole = "@kernel//:pahole",
+    platform = "@llvm//platforms:linux_x86_64",
+    requested = EXAMPLE_CONFIGS["x86_64"],
+    required_options = {"DEBUG_INFO_BTF": "y"},
+    tags = ["manual"],
+)
+
+example_config_test(
+    name = "btf_declared_config_test",
+    config = ":x86_64_btf_declared_config",
+    expected = {"DEBUG_INFO_BTF": "y"},
 )
 
 kernel_example(
