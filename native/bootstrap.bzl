@@ -3,6 +3,7 @@
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+load("@rules_python//python:defs.bzl", "py_test")
 
 NativeParserInfo = provider(
     "Namespaced native parser objects and optional source identity metadata.",
@@ -262,3 +263,67 @@ consumer_support = rule(
         "_builder": attr.label(default = "//:bootstrap_builder", executable = True, cfg = "exec"),
     },
 )
+
+# Each package exposes the same bootstrap targets for one kernel source set.
+# buildifier: disable=unnamed-macro
+def kernel_repository_bootstrap(source_repository):
+    """Build and audit a standalone generator from the selected kernel sources."""
+    anchor = source_repository + "//:Makefile"
+    sources = source_repository + "//:sources"
+    fragments = ["@example_fixtures//configs:" + name + ".config" for name in [
+        "x86_64",
+        "aarch64",
+        "debug",
+        "btf",
+        "lz4",
+    ]]
+    kconfig_parser(
+        name = "kconfig_parser",
+        anchor = anchor,
+        sources = source_repository + "//:kconfig",
+        tags = ["manual"],
+    )
+    kernel_repository_binary(
+        name = "kernel_repository",
+        kconfig = ":kconfig_parser",
+        license_files = [
+            "@bootstrap_python//:licenses",
+            "@bootstrap_make//:COPYING",
+            source_repository + "//:COPYING",
+            source_repository + "//:LICENSES/preferred/GPL-2.0",
+        ],
+        make = "//:make_parser",
+        renderer = ["//:renderer"],
+        tags = ["manual"],
+    )
+    consumer_support(
+        name = "consumer_support",
+        anchor = anchor,
+        exec_compatible_with = [
+            "@platforms//os:linux",
+            "@platforms//cpu:x86_64",
+        ],
+        fragments = fragments,
+        generator = ":kernel_repository",
+        sources = sources,
+        tags = ["manual"],
+    )
+    py_test(
+        name = "repository_test",
+        srcs = ["//:build.py", "//:test_repository.py"],
+        args = [
+            "--tool",
+            "$(rootpath :kernel_repository)",
+            "--linux",
+            "$(rootpath " + anchor + ")",
+            "--config-dir",
+            "$(rootpath @example_fixtures//configs:x86_64.config)",
+        ],
+        data = [":kernel_repository", anchor, sources] + fragments,
+        main = "//:test_repository.py",
+        tags = ["manual"],
+        target_compatible_with = [
+            "@platforms//os:linux",
+            "@platforms//cpu:x86_64",
+        ],
+    )

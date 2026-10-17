@@ -82,6 +82,17 @@ def main():
     assert requests['x86_64']['MODULES'] == 'n'
     assert requests['debug']['LOCALVERSION'] == '"-debug"'
     assert requests['lz4']['KERNEL_GZIP'] == 'n'
+    # Every parser invocation first reads Kconfig.include. A scanner left at
+    # EOF can silently omit the requested file; check actual exported symbols.
+    options = ast.parse((repo / 'options/BUILD.bazel').read_text()).body[-1]
+    assert isinstance(options, ast.Expr) and isinstance(options.value, ast.Call), options
+    [files] = [keyword.value for keyword in options.value.keywords if keyword.arg == 'files']
+    assert isinstance(files, ast.Call), files
+    syntax = json.loads(ast.literal_eval(files.args[0]))
+    for path, symbol in [('init/Kconfig', 'BPF'), ('arch/x86/Kconfig', 'X86_64'),
+                         ('arch/arm64/Kconfig', 'ARM64')]:
+        entries = json.loads(syntax[path])
+        assert any(entry['symbol'] == symbol and entry['source'] == path for entry in entries), (path, symbol, entries)
     program = read_program(repo)
     assert 'CONFIG_' in json.dumps(program) and 'SRCARCH' in json.dumps(program)
     assert '/tmp/tmp' not in json.dumps(program), 'Unstable temporary provenance in Make programs'
