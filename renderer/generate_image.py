@@ -332,7 +332,7 @@ def main(argv=None):
     data['image_host_objtool'] = host_fallback(backend.slice_program(bodies['tools/objtool/Makefile'], {'OBJTOOL_CFLAGS', 'BUILD_ORC', 'BUILD_KLP'}))
     data['image_host_build'] = backend.slice_program(bodies['tools/objtool/Build'], {'objtool-y'}) + [n for n in bodies['tools/objtool/Build'] if n['kind'] == 'rule']
     data['image_host_arch'] = bodies
-    data['image_host_subcmd'] = host_fallback(backend.slice_program(bodies['tools/scripts/Makefile.include'] + bodies['tools/lib/subcmd/Makefile'] + bodies['tools/lib/subcmd/Build'], {'libsubcmd-y', 'CFLAGS'}))
+    data['image_host_subcmd'] = host_fallback(backend.slice_program(bodies['tools/scripts/Makefile.include'] + bodies['tools/lib/subcmd/Makefile'] + bodies['tools/lib/subcmd/Build'], {'libsubcmd-y', 'CFLAGS', 'INSTALL_HDRS'}))
     data['image_host_btfids'] = host_fallback(backend.slice_program(bodies['tools/bpf/resolve_btfids/Makefile'], {'HOSTCFLAGS_resolve_btfids', 'HOST_OVERRIDES'}))
     data['image_host_btfids_build'] = bodies['tools/bpf/resolve_btfids/Build']
     data['image_host_cflags'] = backend.slice_program(bodies['tools/build/Build.include'], {'c_flags', 'host_c_flags'})

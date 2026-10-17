@@ -54,16 +54,18 @@ def _impl(ctx):
     index["__libelf_modern_api__"] = "elf_getshdr" in ctx.attr.libelf[KernelHostLibraryInfo].apis
     libraries = [ctx.attr.libelf] + ctx.attr.optional_libraries
     index["__host_capabilities__"] = _host_capabilities(host, libraries)
-    variables = program(FLAG_PROGRAM["image_utilities"], {"SRCARCH": architecture.srcarch, "HOSTARCH": host_architecture.srcarch, "srctree": source, "OUTPUT": ""}, index).variables
+
+    # Native simple assignments capture the output namespace while computing
+    # OBJTOOL_CFLAGS, before the architecture's generated tables are selected.
+    probe = ctx.actions.declare_file(ctx.label.name + ".generated/.root")
+    prefix = probe.dirname + "/"
+    ctx.actions.write(probe, "")
+    variables = program(FLAG_PROGRAM["image_utilities"], {"SRCARCH": architecture.srcarch, "HOSTARCH": host_architecture.srcarch, "srctree": source, "CURDIR": source + "/tools/objtool", "OUTPUT": prefix}, index).variables
     variables["AWK"] = {"value": execution.commands["awk"].path}
     variables = program(FLAG_PROGRAM["image_host_objtool"], variables, index, cells = True).variables
     generated = []
 
     # Native Build rules describe the architecture's two generated C tables.
-    probe = ctx.actions.declare_file(ctx.label.name + ".generated/.root")
-    prefix = probe.dirname + "/"
-    ctx.actions.write(probe, "")
-    variables["OUTPUT"] = {"value": prefix}
     architecture_program = program(FLAG_PROGRAM["image_host_arch"]["tools/objtool/arch/" + architecture.srcarch + "/Build"], variables, index, cells = True)
     variables = architecture_program.variables
     for rule in architecture_program.rules:
@@ -97,7 +99,27 @@ def _impl(ctx):
         if tail and tail[0].startswith("../"):
             for target in rule["targets"]:
                 aliases[_normal("tools/objtool/" + target.removeprefix(prefix))] = _normal("tools/objtool/" + tail[0])
-    subcmd = program(FLAG_PROGRAM["image_host_subcmd"], variables, index, cells = True).variables
+    library_variables = dict(variables)
+    library_variables.update({
+        "DESTDIR": {"value": value("LIBSUBCMD_OUTPUT", variables, index)},
+        "prefix": {"value": ""},
+        "EXTRA_CFLAGS": {"value": value("OBJTOOL_CFLAGS", variables, index)},
+    })
+    subcmd = program(FLAG_PROGRAM["image_host_subcmd"], library_variables, index, cells = True).variables
+
+    # Objtool consumes subcmd's installed public headers. Declare the native
+    # install inventory individually so compiler dependency discovery can prune
+    # headers without depending on an entire generated directory.
+    installed_headers = []
+    install_prefix = value("INSTALL_HDRS_PFX", subcmd, index) + "/"
+    for target in make_words(value("INSTALL_HDRS", subcmd, index)):
+        if not target.startswith(prefix) or not target.startswith(install_prefix):
+            fail("Native subcmd header install escapes the declared objtool output: " + target)
+        source_header = "tools/lib/subcmd/" + target.removeprefix(install_prefix)
+        header = ctx.actions.declare_file(ctx.label.name + ".generated/" + target.removeprefix(prefix))
+        ctx.actions.symlink(output = header, target_file = prepared.logical[source_header])
+        installed_headers.append(header)
+    header_context = cc_common.create_compilation_context(headers = depset(installed_headers))
     objects.extend([("tools/lib/subcmd/" + p, "subcmd") for p in make_words(value("libsubcmd-y", subcmd, index))])
     outputs = []
     for obj, group in objects:
@@ -114,7 +136,7 @@ def _impl(ctx):
             cc_toolchain = cc,
             srcs = [sources[source + "/" + src]],
             additional_inputs = generated,
-            compilation_contexts = [prepared.compilation_context] + [library[CcInfo].compilation_context for library in libraries],
+            compilation_contexts = [prepared.compilation_context, header_context] + [library[CcInfo].compilation_context for library in libraries],
             user_compile_flags = flags,
         )
         outputs.append(compilation)
