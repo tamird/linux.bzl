@@ -220,7 +220,7 @@ def main(argv=None):
     flat = [n for n, _ in walk(build)]
     low = next(n['line'] for n in flat if n.get('name') == 'obj-m' and 'filter-out' in n.get('value', ''))
     high = next(n['line'] for n in flat if n.get('name') == 'subdir-modorder')
-    graph = backend.slice_program(backend.bounded(build, low, high), {'real-obj-y', 'lib-y', 'always-y', 'extra-y', 'subdir-ym', 'multi-obj-y'})
+    graph = backend.slice_program(backend.bounded(build, low, high), {'obj-m', 'real-obj-y', 'real-obj-m', 'lib-y', 'always-y', 'extra-y', 'subdir-ym', 'subdir-builtin', 'subdir-modorder', 'multi-obj-y', 'multi-obj-m', 'multi-obj-ym'})
     program_file = out / 'rules/flag_program.bzl'
     import ast
     raw = program_file.read_text()
@@ -354,10 +354,20 @@ def main(argv=None):
     for driver, roots in {'vmlinux_o': {'cmd_ld_vmlinux.o'}, 'vmlinux': {'cmd_strip_relocs', 'LDFLAGS_vmlinux'}}.items():
         data['image_link'][driver] = backend.slice_program(bodies['scripts/Makefile.lib'] + bodies['scripts/Makefile.' + driver], roots)
     modpost = bodies['scripts/Makefile.modpost']
-    nodes = [n for n, _ in walk(modpost)]
-    high = next(n['line'] for n in nodes if n.get('name') == 'modpost-deps')
-    data['image_link']['modpost'] = backend.slice_program(backend.bounded(modpost, 1, high), {'MODPOST', 'modpost-args'})
-    data['image_link']['modpost'].extend(backend.selected(modpost, {'cmd_modpost'}))
+    data['image_link']['modpost'] = backend.slice_program(modpost, {'cmd_modpost', 'modpost-deps', 'output-symdump', 'missing-input'})
+    modfinal = bodies['scripts/Makefile.modfinal']
+    data['image_modfinal'] = backend.slice_program(
+        bodies['scripts/Makefile.lib'] + modfinal,
+        {'cmd_cc_o_c', 'cmd_ld_single', 'cmd_objtool', 'objtool-enabled', 'cmd_ld_ko_o', 'cmd_btf_ko',
+         'modname', 'part-of-module', 'GCOV_PROFILE', 'ccflags-remove-y'})
+    data['image_modfinal'].extend(target_rules(modfinal, {'%.mod.o', '.module-common.o', '%.ko'}))
+    single_modules = target_rules(top, {'single_modules'})
+    order_recipes = [n['value_expression'] for n, _ in walk(single_modules)
+                     if n['kind'] == 'recipe' and any(backend.const(expr) == 'modules.order'
+                                                     for expr in output_redirections(n['value_expression']))]
+    if len(order_recipes) != 1:
+        raise ValueError(f'Expected one native selected-module order recipe, got {order_recipes}')
+    data['image_modules_order'] = order_recipes
     # The timestamp object is a separate Bazel action. Remove just its recursive
     # Make dispatch; the native script still performs the native final link.
     link_script = (linux / 'scripts/link-vmlinux.sh').read_text()

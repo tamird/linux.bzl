@@ -54,19 +54,24 @@ def shell_words(text, allow_recipe = False):
         words.append(current)
     return words
 
-def _scope(setup, directory, target, objtree, source, ancestry = None, memberships = {}):
+def _scope(setup, directory, target, objtree, source, ancestry = None, memberships = {}, native = None):
     variables = dict(setup.variables)
     for key, val in {
         "objtree": objtree,
         "obj": directory,
         "src": source + "/" + directory,
         "@": target,
+        "*": native["stem"] if native != None else "",
         "KGZIP": setup.tools["KGZIP"],
         "LEX": setup.tools["LEX"],
         "YACC": setup.tools["YACC"],
         "AWK": setup.tools["AWK"],
     }.items():
         variables[key] = {"value": val}
+    if native != None and native.get("phase") != None:
+        # Final module objects belong to Makefile.modfinal's root invocation,
+        # not the source module's directory Kbuild or Makefile.build helpers.
+        return program(FLAG_PROGRAM["image_" + native["phase"]], variables, setup.sources, cells = True).variables
     inherited_c, inherited_a = [], []
     target_assignments = []
     parts = [] if directory == "." else directory.split("/")
@@ -234,7 +239,7 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, source
         compiler_dependencies = {p: f for p, f in dependencies.items() if p != "tools/objtool/objtool"}
         direct_dependencies = {p: f for p, f in compiler_inputs.direct.items() if p != "tools/objtool/objtool"}
         generated_root = compiler_inputs.root
-        variables = _scope(setup, directory, target, generated_root, source, ancestry, memberships)
+        variables = _scope(setup, directory, target, generated_root, source, ancestry, memberships, native)
         if kind == "host":
             link = not target.endswith(".o")
             path = target[:-2] + ".c" if target.endswith(".o") else target + ".c"
@@ -488,6 +493,8 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
         post_variables.update(post["variables"])
         for key in ["@", "@F", "@D", "<", "^", "*", "real-prereqs", "CONFIG_SHELL"] + list(setup.tools):
             post_variables[key] = variables[key]
+        if pahole != None:
+            post_variables["PAHOLE"] = variables["PAHOLE"]
         post_name = evaluate(post["arguments"][0], post_variables, setup.sources).strip()
         command += "\n" + value("cmd_" + post_name, post_variables, command_sources)
     if not command:

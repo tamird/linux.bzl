@@ -209,7 +209,7 @@ jobs:
           retention-days: 7
 
   lts-btf:
-    name: Linux 6.18 / ARM64 BTF and boot image
+    name: Linux 6.18 / ARM64 BTF, modules and boot image
     needs: static-generator
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -237,13 +237,13 @@ jobs:
           tar -xzf _tmp/kernel-repository/consumer-support.tar.gz -C _tmp/kernel-repository
           python3 example.py --linux "$source_root" --generated _tmp/kernel-repository/support
 
-      - name: Build BTF kernel and native boot image
+      - name: Build BTF kernel, native boot image and ingress module
         working-directory: examples
         run: |
-          bazel build //:aarch64_btf_declared --output_groups=kernel,boot --jobs=4 \
+          bazel build //:aarch64_modules --output_groups=kernel,boot,modules --jobs=4 \
             --sandbox_block_path=/bin --sandbox_block_path=/usr/bin \
             --sandbox_block_path=/usr/local/bin
-          bazel test //:aarch64_btf_image_test --jobs=4 --test_output=errors
+          bazel test //:aarch64_modules_btf_test --jobs=4 --test_output=errors
 
       - name: Upload LTS test logs
         if: ${{ !cancelled() }}

@@ -82,6 +82,36 @@ kernel_btf_test(
     tags = ["manual"],
 )
 
+kernel_example(
+    name = "aarch64_modules",
+    architecture_roots = {"arm64": ["arch/arm64/boot/Image"]},
+    modules = ["net/sched/sch_ingress.ko"],
+    overrides = dict(
+        EXAMPLE_CONFIGS["btf"],
+        INET = "y",
+        MODULES = "y",
+        NET = "y",
+        NET_CLS_ACT = "y",
+        NET_SCHED = "y",
+        NET_SCH_INGRESS = "m",
+    ),
+    pahole = "@kernel//:pahole",
+    platform = "@llvm//platforms:linux_aarch64",
+    requested = EXAMPLE_CONFIGS["aarch64"],
+    required_options = {
+        "DEBUG_INFO_BTF": "y",
+        "MODULES": "y",
+        "NET_SCH_INGRESS": "m",
+    },
+    tags = ["manual"],
+)
+
+kernel_btf_test(
+    name = "aarch64_modules_btf_test",
+    kernel = ":aarch64_modules",
+    tags = ["manual"],
+)
+
 filegroup(
     name = "x86_64_shared_graph_metadata",
     srcs = [":x86_64_kernel"],

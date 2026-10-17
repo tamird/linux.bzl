@@ -28,7 +28,7 @@ _configured = rule(implementation = _configured_impl, attrs = {
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
 })
 
-def kernel_example(name, requested, platform, overrides = {}, required_options = {}, pahole = None, architecture_roots = {}, tags = []):
+def kernel_example(name, requested, platform, overrides = {}, required_options = {}, pahole = None, architecture_roots = {}, modules = [], tags = []):
     kernel_config(
         name = name + "_requested",
         options = "@kernel//options:options",
@@ -44,6 +44,7 @@ def kernel_example(name, requested, platform, overrides = {}, required_options =
         catalog = "@kernel//:catalog",
         roots = ["vmlinux"],
         architecture_roots = architecture_roots,
+        modules = modules,
         required_options = required_options,
         tags = ["manual"],
     )
@@ -51,6 +52,10 @@ def kernel_example(name, requested, platform, overrides = {}, required_options =
     _configured(name = name + "_config", target = ":" + name + "_requested", platform = platform)
     for suffix, path in {"system_map": "System.map", "config_file": ".config"}.items():
         kernel_artifact(name = name + "_" + suffix + "_unconfigured", build = ":" + name + "_unconfigured", path = path)
+        _configured(name = name + "_" + suffix, target = ":" + name + "_" + suffix + "_unconfigured", platform = platform)
+    for module in modules:
+        suffix = module.removesuffix(".ko").replace("/", "_")
+        kernel_artifact(name = name + "_" + suffix + "_unconfigured", build = ":" + name + "_unconfigured", path = module)
         _configured(name = name + "_" + suffix, target = ":" + name + "_" + suffix + "_unconfigured", platform = platform)
 
 def _config_test_impl(ctx):
