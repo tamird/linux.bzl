@@ -35,6 +35,7 @@ kernel_repository_tool = repository_rule(
 def _kernel_repository_impl(ctx):
     source = ctx.path(ctx.attr.source).realpath.dirname
     tool = ctx.path(ctx.attr.generator)
+    consumer_build = ctx.path(ctx.attr.consumer_build_file) if ctx.attr.consumer_build_file else None
 
     # These are the actual inputs to the native parsers and source catalogue.
     # A local checkout changing must invalidate generation, not keep stale BUILD
@@ -61,6 +62,8 @@ def _kernel_repository_impl(ctx):
     )
     if result.return_code:
         fail("Kernel repository generation failed:\n" + result.stderr)
+    if consumer_build != None:
+        ctx.symlink(consumer_build, "consumer/BUILD.bazel")
 
 kernel_repository = repository_rule(
     implementation = _kernel_repository_impl,
@@ -76,6 +79,7 @@ kernel_repository = repository_rule(
             doc = "Prebuilt kernel-repository executable, not a build-action output.",
         ),
         "config_fragments": attr.label_list(allow_files = [".config"], doc = "Requested config fragments, rendered as data without resolving options."),
+        "consumer_build_file": attr.label(allow_single_file = True, doc = "Optional BUILD file for a consumer package using this repository's generated rules."),
         "all_backends": attr.bool(default = False),
         "timeout": attr.int(default = 600),
     },
