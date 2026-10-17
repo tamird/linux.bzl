@@ -136,7 +136,11 @@ def flags_program(tree, linux, defer_arch=False):
     # Derive setup boundaries from native assignment events instead of copying
     # flag values or configuring Linux during BUILD generation.
     nodes = list(walk(bodies['Makefile']))
-    low = next(n['line'] for n, _ in nodes if n.get('name') == 'KBUILD_USERHOSTCFLAGS')
+    compiler_flags = [n['line'] for n, _ in nodes
+                      if n.get('name', '').startswith('KBUILD_') and n.get('name', '').endswith('CFLAGS')]
+    if not compiler_flags:
+        raise ValueError('Top Makefile has no KBUILD compiler flag definitions')
+    low = min(compiler_flags)
     high = next(n['line'] for n, _ in nodes if n.get('name') == 'KBUILD_LDFLAGS' and '-z noexecstack' in n.get('value', ''))
     top = expand(bounded(bodies['Makefile'], low, high))
     # Compiler helper definitions are symbolic analysis intrinsics. Unknown
