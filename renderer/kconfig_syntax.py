@@ -11,9 +11,9 @@ from compiler_capabilities import native_capabilities
 HERE = Path(__file__).resolve().parent
 
 
-def export_syntax(linux, output):
+def export_syntax(linux, output, *, executable: Path | None = None):
     output.mkdir(parents=True, exist_ok=True)
-    executable = Path(sys.executable)
+    executable = Path(sys.executable) if executable is None else executable
     env = {'LC_ALL': 'C', 'PATH': ''}
     env.update(srctree=str(linux), SRCARCH='__KCONFIG_SRCARCH', ARCH='__KCONFIG_ARCH',
                SUBARCH='__KCONFIG_SUBARCH', HEADER_ARCH='__KCONFIG_HEADER_ARCH',

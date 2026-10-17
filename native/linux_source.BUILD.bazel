@@ -13,8 +13,12 @@ filegroup(
         "scripts/kconfig/*.h",
         "scripts/kconfig/*.l",
         "scripts/kconfig/*.y",
-        "scripts/include/**/*.h",
-    ]),
+    ]) + glob(["scripts/include/**/*.h"], allow_empty = True),
+)
+
+filegroup(
+    name = "configuration",
+    srcs = glob(["**/Kconfig*"]),
 )
 
 filegroup(

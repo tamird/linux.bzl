@@ -47,3 +47,15 @@ same process to parse `scripts/Kconfig.include` followed by the requested file,
 including kernels whose `file_lookup` signature differs. The audit checks
 exported symbols from common, x86, and ARM64 Kconfig files as well as the
 empty-PATH and parser-source identity contracts.
+
+The syntax adapter derives the menu entry, finalization and source-location
+interfaces from the selected parser sources. It preserves kernels that include
+`menu.c` in the parser translation unit and those that compile it separately.
+The exporter uses native choice detection and retains the same syntax schema
+when older sources have no transitional-symbol flag.
+
+Each bootstrap package exposes `:kconfig_test`, which exports every declared
+Kconfig file through its native generator and checks source locations and the
+second scanner input. `//native/linux_5_10:kconfig_test` also qualifies this
+boundary against the pinned 5.10 source. Its full Kbuild generation and image
+build are not yet qualified.

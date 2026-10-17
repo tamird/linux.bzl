@@ -38,6 +38,13 @@ py_library(
     imports = ["renderer"],
 )
 
+py_library(
+    name = "kconfig_syntax_support",
+    srcs = ["renderer/kconfig_syntax.py"],
+    imports = ["renderer"],
+    deps = [":compiler_capability_support"],
+)
+
 py_binary(
     name = "bootstrap_builder",
     srcs = ["build.py"],
