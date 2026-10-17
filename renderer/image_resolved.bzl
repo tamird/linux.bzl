@@ -437,8 +437,8 @@ def _describe(path, state):
             generated = path[:-2] + ".c"
             if generated in state["catalog"].aliases:
                 result["deps"].append(generated)
-        if static["kind"] == "generate" and static.get("driver") != "asm_headers" and directory in state["catalog"].programs:
-            result["native"] = _recipe(path, directory, state)
+        if static["kind"] == "generate" and static.get("driver") != "asm_headers" and static["directory"] in state["catalog"].programs:
+            result["native"] = _recipe(path, static["directory"], state)
             if result["native"] != None:
                 result["deps"].extend(result["native"]["prerequisites"])
         return result
