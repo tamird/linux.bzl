@@ -201,7 +201,7 @@ jobs:
           BUILD_TARGETS: ${{ matrix.build }}
         run: |
           read -r -a targets <<< "$BUILD_TARGETS"
-          bazel build "${targets[@]}" --jobs=4 \
+          bazel build "${targets[@]}" --output_groups=+boot --jobs=4 \
             --sandbox_block_path=/bin --sandbox_block_path=/usr/bin \
             --sandbox_block_path=/usr/local/bin
 

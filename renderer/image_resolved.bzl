@@ -49,6 +49,18 @@ def _normalize(path):
             parts.append(p)
     return "/".join(parts)
 
+def _exported_environment(variables, sources):
+    environment = {name: {"value": _value(name, variables, sources)} for name in variables.get("__exports__", {}) if name in variables}
+    environment["__exports__"] = {name: True for name in environment}
+    return environment
+
+def _build_dispatch(words):
+    if len(words) < 3 or words[0] != "__make_dispatch__" or not words[1].startswith("__build_dispatch__="):
+        return None
+    if any(["=" in word or word.startswith("-") for word in words[2:]]):
+        fail("Unsupported recursive Kbuild arguments: " + str(words))
+    return struct(directory = _normalize(words[1].split("=", 1)[1]), goals = words[2:])
+
 def _context(directory, state):
     if directory.startswith("arch/") and directory.split("/")[1] not in (state["arch"], state["setup"].architecture.header_arch):
         fail("Kbuild architecture mismatch: " + directory)
@@ -58,7 +70,7 @@ def _context(directory, state):
         statements = programs.get(prefix + "Kbuild", programs.get(prefix + "Makefile"))
         if statements == None:
             fail("No exported Make program for " + directory)
-        initial = dict(state["setup"].variables if directory == "." else state["environment"])
+        initial = dict(state["setup"].variables if directory == "." else state["invocation_environments"].get(directory, state["environment"]))
         if directory == ".":
             for name in ["core-y", "libs-y", "drivers-y", "drivers-m"]:
                 logical = _value(name, state["setup"].variables, state["setup"].sources).replace("__object__/", "").replace("__object__", ".")
@@ -171,8 +183,33 @@ def _rules_for_path(path, context, state):
     # preferring the most specific applicable pattern (shortest stem).
     return explicit + ([candidate] if candidate != None and not any([r.get("recipes") for r in explicit]) else [])
 
-def _recipe(path, directory, state):
+def _target_scope(path, directory, state):
+    """Keep the first-reached scope within its native Make invocation."""
     context = _context(directory, state)
+    owner, inherited = state["target_scopes"].get(path, (None, {}))
+    inherited = inherited if owner == directory else {}
+    variables = dict(context.variables)
+    variables.update(inherited)
+    descendants = dict(inherited)
+    for patterns_first in [True, False]:
+        for assignment in context.target_assignments:
+            patterns = make_words(evaluate(assignment["targets_expression"], context.variables, state["sources"]))
+            if any(["%" in p for p in patterns]) != patterns_first:
+                continue
+            if any([match(_normalize(p), path) != None for p in patterns]):
+                node = dict(assignment)
+                node["kind"] = "assignment"
+                variables = program([node], variables, state["sources"], cells = True).variables
+                name = evaluate(node["name_expression"], variables, state["sources"])
+                if not node.get("private"):
+                    descendants[name] = variables[name]
+                    if node.get("export"):
+                        descendants["__exports__"] = variables["__exports__"]
+    return struct(variables = variables, inherited = inherited, descendants = descendants)
+
+def _local_recipe(path, directory, state):
+    context = _context(directory, state)
+    scope = _target_scope(path, directory, state)
     prerequisites = []
     for rule in _rules_for_path(path, context, state):
         for pattern in rule["targets"]:
@@ -206,6 +243,7 @@ def _recipe(path, directory, state):
                                 continue
                         own_prerequisites = [_normalize(p.replace("%", stem, 1)) for p in make_words(tail) if p not in ("FORCE", "|")]
                         return {
+                            "directory": directory,
                             "first": own_prerequisites[0] if own_prerequisites else "",
                             "function": function,
                             "arguments": term["arguments"][1:],
@@ -213,8 +251,42 @@ def _recipe(path, directory, state):
                             "prerequisites": prerequisites,
                             "stem": stem,
                             "assignments": context.target_assignments,
+                            "inherited_variables": scope.inherited,
                         }
+            variables = dict(scope.variables)
+            for name, text in {"MAKE": "__make_dispatch__", "build": "__build_dispatch__", "Q": "", "@": path}.items():
+                variables[name] = {"value": text}
+            for terms in rule["recipes"]:
+                text = evaluate(terms, variables, state["sources"]).lstrip("@+- ")
+                if not text.startswith("__make_dispatch__"):
+                    continue
+                dispatch = _build_dispatch(shell_words(text))
+                if dispatch == None or dispatch.goals != [path]:
+                    fail("Unsupported recursive producer for %s: %s" % (path, text))
+                return {"dispatch": dispatch.directory, "prerequisites": prerequisites, "variables": scope.variables}
     return None
+
+def _recipe(path, directory, state):
+    """Follow recursive producers while retaining one artifact identity."""
+    prerequisites, visited = [], {}
+    for _ in range(10000):
+        if directory in visited:
+            fail("Recursive Kbuild producer cycle for %s: %s" % (path, visited.keys()))
+        visited[directory] = True
+        native = _local_recipe(path, directory, state)
+        if native == None:
+            return None
+        prerequisites.extend(native["prerequisites"])
+        if "dispatch" not in native:
+            native["prerequisites"] = {p: True for p in prerequisites}.keys()
+            return native
+        child = native["dispatch"]
+        environment = _exported_environment(native["variables"], state["sources"])
+        if child in state["contexts"] and state["invocation_environments"].get(child) != environment:
+            fail("Kbuild producer reached %s with a different exported environment" % child)
+        state["invocation_environments"][child] = environment
+        directory = child
+    fail("Recursive Kbuild producer exceeded 10000 invocations: " + path)
 
 def _link_descriptor(path, state):
     if path in ("built-in-fixup.a", "vmlinux.a"):
@@ -388,13 +460,14 @@ def _prepare_contexts(state, arch_context):
                         if "=" not in child_goal and child_goal != "asm-generic":
                             work.append((child, child_directory, child_goal, late))
                     continue
-                if len(words) < 3 or words[0] != "__make_dispatch__" or not words[1].startswith("__build_dispatch__="):
+                dispatch = _build_dispatch(words)
+                if dispatch == None:
                     fail("Unsupported native architecture preparation dispatch: " + text)
-                child = words[1].split("=", 1)[1]
+                child = dispatch.directory
                 child_context = _context(child, state)
                 if late:
                     state["late_directories"][child] = True
-                for child_goal in words[2:]:
+                for child_goal in dispatch.goals:
                     hostnames = make_words(_value("hostprogs", child_context.variables, state["sources"]) + " " + _value("hostprogs-always-y", child_context.variables, state["sources"]))
                     if child_goal in hostnames:
                         state["preparation"].append(child + "/" + child_goal)
@@ -404,7 +477,7 @@ def _prepare_contexts(state, arch_context):
         fail("Architecture preparation graph exceeded 10000 goals")
     state["preparation"] = {p: True for p in state["preparation"]}.keys()
 
-def _describe(path, state):
+def _describe(path, state, owner = None):
     if path in state["preparation_checks"]:
         return state["preparation_checks"][path]
     if path in state["postlink_outputs"] or path == "System.map":
@@ -479,6 +552,10 @@ def _describe(path, state):
     if static != None and (static["kind"] == "compile" or static.get("driver") == "asm_headers" or path in state["header_owners"] or path in state["preparation"]):
         static = None
     directory, _, name = path.rpartition("/")
+    if owner != None and any([r.get("recipes") for r in _rules_for_path(path, _context(owner, state), state)]):
+        # A Makefile can own outputs outside its directory (for example a
+        # sibling generated header). Follow the selected prerequisite edge.
+        directory, static = owner, None
     module_owner = state["module_owners"].get(path)
     if module_owner != None:
         directory = module_owner
@@ -498,6 +575,7 @@ def _describe(path, state):
         if static["kind"] == "generate" and static.get("driver") != "asm_headers" and static["directory"] in state["catalog"].programs:
             result["native"] = _recipe(path, static["directory"], state)
             if result["native"] != None:
+                result["directory"] = result["native"]["directory"]
                 result["deps"].extend(result["native"]["prerequisites"])
         return result
     if path == "include/generated/utsversion.h":
@@ -570,6 +648,9 @@ def _describe(path, state):
             dependencies.extend([_normalize(d.replace("%", stem, 1)) for d in make_words(tail) if d not in ("FORCE", "|")])
     native = _recipe(path, directory, state)
     if native != None:
+        if native["directory"] != directory:
+            directory = native["directory"]
+            dependencies.extend(native["prerequisites"])
         command = evaluate(native["arguments"][0], native["variables"], state["sources"]).strip()
         if kind != "host" and command in FLAG_PROGRAM["image_compile_commands"]:
             native["compile"] = True
@@ -648,6 +729,8 @@ def _impl(ctx):
     state = {
         "catalog": ctx.attr.catalog[KbuildCatalogInfo],
         "contexts": {},
+        "invocation_environments": {},
+        "target_scopes": {},
         "parents": {},
         "directory_modes": {},
         "modules": modules,
@@ -670,6 +753,7 @@ def _impl(ctx):
     # Recursive Make expands only exported parent variables into a child's
     # environment. Unexported names such as core-y must not affect core.o.
     state["environment"] = {name: {"expr": [{"op": "reference", "name": [{"op": "literal", "value": name}]}], "scope": setup.variables, "raw": ""} for name in setup.variables.get("__exports__", {}) if name in setup.variables}
+    state["environment"]["__exports__"] = dict(setup.variables.get("__exports__", {}))
     dispatch = dict(setup.variables)
     for name, text in {"MAKE": "__make_dispatch__", "build": "__build_dispatch__", "Q": "", "KCONFIG_CONFIG": ".config", "srctree": "__source__", "srcroot": "__source__", "objtree": "."}.items():
         dispatch[name] = {"value": text}
@@ -694,22 +778,25 @@ def _impl(ctx):
         state["contexts"]["@postlink"] = post
         state["postlink_outputs"] = [_normalize(evaluate(expr, post.variables, state["sources"])) for expr in FLAG_PROGRAM["image_postlink_outputs"].get(postlink, [])]
     state["known_products"] = {p: True for p in ["built-in-fixup.a", "vmlinux.a", "vmlinux.o", "vmlinux.symvers", ".vmlinux.export.c", "vmlinux.unstripped", "vmlinux", "System.map", ".config", "include/config/auto.conf", "include/generated/autoconf.h"] + state["postlink_outputs"] + state["module_final"].keys() + [m[:-3] + suffix for m in modules for suffix in [".o", ".mod", ".mod.c"]]}
-    pending = list(ctx.attr.roots) + ctx.attr.architecture_roots.get(config.architecture.srcarch, []) + modules
+    pending = [(path, None, {}) for path in reversed(list(ctx.attr.roots) + ctx.attr.architecture_roots.get(config.architecture.srcarch, []) + modules)]
     descriptors, producers = {}, {}
     for _ in range(100000):
         if not pending:
             break
-        path = _normalize(pending.pop())
+        path, owner, inherited = pending.pop()
+        path = _normalize(path)
         if path in (".config", "include/config/auto.conf", "include/generated/autoconf.h") or path.startswith("__source__/") or path == "tools/objtool/objtool" or path in external_tools or path in source_files or path in producers:
             continue
-        descriptor = _describe(path, state)
+        state["target_scopes"][path] = (owner, inherited)
+        descriptor = _describe(path, state, owner)
         descriptor["deps"] = [_normalize(p) for p in descriptor["deps"]]
         descriptors[descriptor["target"]] = descriptor
         for out in descriptor["outs"]:
             if out in producers and producers[out] != descriptor["target"]:
                 fail("Multiple configured producers for " + out)
             producers[out] = descriptor["target"]
-        pending.extend(descriptor["deps"])
+        descendants = _target_scope(path, descriptor["directory"], state).descendants
+        pending.extend([(dependency, descriptor["directory"], descendants) for dependency in reversed(descriptor["deps"])])
     if pending:
         fail("Kbuild graph exceeded 100000 dependency expansions")
 
@@ -799,6 +886,7 @@ def _impl(ctx):
                 ancestry = ancestry,
                 memberships = memberships,
                 source_prerequisites = source_prerequisites,
+                invocation_environment = state["invocation_environments"].get(d["directory"]),
             )
             members.append({"target": target, "dependencies": sorted(deps), "outputs": {p: f.path for p, f in outputs.items()}})
             closure.update(outputs)

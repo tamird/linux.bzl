@@ -10,6 +10,7 @@ prompts use the prototype's `allnoconfig` policy.
 From the repository root, first build and configure the prototype:
 
 ```sh
+git -C _tmp/linux apply "$PWD/native/linux_piggy_dependency.patch"
 bazel build //:consumer_support --platforms=@llvm//platforms:linux_x86_64_musl
 mkdir -p _tmp/kernel-repository
 tar -xzf bazel-bin/consumer-support.tar.gz -C _tmp/kernel-repository
@@ -27,12 +28,17 @@ Then, from `examples/`:
 bazel test //...
 bazel build //:x86_64_kernel //:aarch64_kernel
 bazel build //:x86_64_debug_kernel //:x86_64_lz4_kernel
+bazel build //:x86_64_kernel //:x86_64_lz4_kernel --output_groups=kernel,boot
 bazel build //:example_initramfs
 ```
 
-The regular kernel targets produce linked `vmlinux` ELF artifacts. Compression
-requests remain part of the resolved configuration; boot-image compression is
-not demonstrated by the ELF outputs. `example_initramfs` produces deterministic
+The regular kernel targets produce linked `vmlinux` ELF artifacts. The base and
+LZ4 x86 examples also declare the native `arch/x86/boot/bzImage` producer; request
+the `boot` output group to build their GZIP and LZ4 compressed images. The source
+patch above preserves the payload's direct assembler dependency. The declared
+LTS archive and CI checkouts already apply it.
+
+`example_initramfs` produces deterministic
 `newc` data with `/dev/console`, `/dev/null`, `/proc`, and this README as
 `/etc/motd`, using the declared Python execution runtime.
 
@@ -69,8 +75,9 @@ CI builds the static generator once, then runs independent example jobs:
 | graph-metadata | `//:x86_64_shared_graph_metadata` | — |
 
 A separate platform job runs the generated architecture tests, builds the
-multi-platform configs, and checks execution tools. Every example build blocks
-host tool directories. A separate Linux 6.18 job uses the declared LTS source and
+multi-platform configs, and checks execution tools. Every example build requests
+its declared boot outputs and blocks host tool directories. A separate Linux
+6.18 job uses the declared LTS source and
 matching generator to build the ARM64 BTF kernel, native boot image and ingress
 module, then runs `aarch64_modules_btf_test` to require an ELF `.BTF` section. The encoder-free
 analysis test remains a separate check of missing-capability handling.

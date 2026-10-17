@@ -54,8 +54,12 @@ def shell_words(text, allow_recipe = False):
         words.append(current)
     return words
 
-def _scope(setup, directory, target, objtree, source, ancestry = None, memberships = {}, native = None):
+def _scope(setup, directory, target, objtree, source, ancestry = None, memberships = {}, native = None, invocation_environment = None):
     variables = dict(setup.variables)
+    if invocation_environment != None:
+        variables = {name: {"value": cell["value"].replace("__source__", source).replace("__object__", objtree)} for name, cell in invocation_environment.items() if name != "__exports__"}
+        variables["__config__"] = setup.variables["__config__"]
+        ancestry = [directory]
     for key, val in {
         "objtree": objtree,
         "obj": directory,
@@ -68,6 +72,8 @@ def _scope(setup, directory, target, objtree, source, ancestry = None, membershi
         "AWK": setup.tools["AWK"],
     }.items():
         variables[key] = {"value": val}
+    if invocation_environment != None:
+        variables = program(FLAG_PROGRAM["graph_init"] + FLAG_PROGRAM["image_common"], variables, setup.sources, cells = True).variables
     if native != None and native.get("phase") != None:
         # Final module objects belong to Makefile.modfinal's root invocation,
         # not the source module's directory Kbuild or Makefile.build helpers.
@@ -95,6 +101,8 @@ def _scope(setup, directory, target, objtree, source, ancestry = None, membershi
     variables = object_scope.variables
     for name, text in memberships.items():
         variables[name] = {"value": text}
+    if native != None:
+        variables.update(native.get("inherited_variables", {}))
     target_assignments.extend(object_scope.target_assignments)
     for patterns_first in [True, False]:
         for assignment in target_assignments:
@@ -120,7 +128,7 @@ def _rewrite_flags(flags, tree, source, generated):
     for f in flags:
         if f.startswith(("-Wp,-MMD,", "-Wp,-MD,")):
             continue
-        f = f.replace("__object__", tree)
+        f = f.replace("__object__", tree).replace("__source__", source)
         if f in ("-I", "-include", "-imacros", "-iquote", "-isystem"):
             include_next = f
         elif include_next or f.startswith("-I"):
@@ -210,7 +218,7 @@ def _compiler_flags(command, compiler, source, target):
 
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
-def register(ctx, target, directory, kind, driver, outputs, dependencies, source_tree, config, setup, compiler_inputs, object_members = [], native = None, ancestry = None, memberships = {}, source_prerequisites = {}):
+def register(ctx, target, directory, kind, driver, outputs, dependencies, source_tree, config, setup, compiler_inputs, object_members = [], native = None, ancestry = None, memberships = {}, source_prerequisites = {}, invocation_environment = None):
     source = source_tree.source_root
     if kind == "archive":
         variables = dict(setup.variables)
@@ -239,7 +247,7 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, source
         compiler_dependencies = {p: f for p, f in dependencies.items() if p != "tools/objtool/objtool"}
         direct_dependencies = {p: f for p, f in compiler_inputs.direct.items() if p != "tools/objtool/objtool"}
         generated_root = compiler_inputs.root
-        variables = _scope(setup, directory, target, generated_root, source, ancestry, memberships, native)
+        variables = _scope(setup, directory, target, generated_root, source, ancestry, memberships, native, invocation_environment)
         if kind == "host":
             link = not target.endswith(".o")
             path = target[:-2] + ".c" if target.endswith(".o") else target + ".c"
@@ -325,16 +333,16 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, source
     if driver == "asm_headers":
         ctx.actions.write(outputs[target], "#include <asm-generic/%s>\n" % target.rsplit("/", 1)[-1])
         return
-    codegen(ctx, target, directory, outputs, dependencies, source_tree, config, setup, compiler_inputs, native, ancestry, source_prerequisites)
+    codegen(ctx, target, directory, outputs, dependencies, source_tree, config, setup, compiler_inputs, native, ancestry, source_prerequisites, invocation_environment)
 
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
-def codegen(ctx, target, directory, outputs, dependencies, source_tree, config, setup, compiler_inputs, native = None, ancestry = None, source_prerequisites = {}):
+def codegen(ctx, target, directory, outputs, dependencies, source_tree, config, setup, compiler_inputs, native = None, ancestry = None, source_prerequisites = {}, invocation_environment = None):
     source = source_tree.source_root
     if native != None:
         native_codegen(ctx, target, outputs, dependencies, source_tree, config, setup, compiler_inputs, native, source_prerequisites)
         return
-    variables = _scope(setup, directory, target, "__object__", source, ancestry)
+    variables = _scope(setup, directory, target, "__object__", source, ancestry, invocation_environment = invocation_environment)
     key = "Kbuild" if directory == "." else directory + "/Kbuild"
     if key not in FLAG_PROGRAM["commands"]:
         key = "Makefile" if directory == "." else directory + "/Makefile"
@@ -463,6 +471,7 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
         "CONFIG_SHELL": setup.tools["CONFIG_SHELL"],
     }.items():
         variables[name] = {"value": text}
+    variables.update(native.get("inherited_variables", {}))
     for assignment in native["assignments"]:
         patterns = make_words(evaluate(assignment["targets_expression"], variables, setup.sources))
         if any([match(p.removeprefix("./"), target) != None for p in patterns]):

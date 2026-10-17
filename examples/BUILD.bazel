@@ -15,6 +15,7 @@ example_initramfs(
 
 kernel_example(
     name = "x86_64_kernel",
+    architecture_roots = {"x86": ["arch/x86/boot/bzImage"]},
     platform = "@llvm//platforms:linux_x86_64",
     requested = EXAMPLE_CONFIGS["x86_64"],
 )
@@ -28,6 +29,7 @@ kernel_example(
 
 kernel_example(
     name = "x86_64_lz4_kernel",
+    architecture_roots = {"x86": ["arch/x86/boot/bzImage"]},
     overrides = EXAMPLE_CONFIGS["lz4"],
     platform = "@llvm//platforms:linux_x86_64",
     requested = EXAMPLE_CONFIGS["x86_64"],

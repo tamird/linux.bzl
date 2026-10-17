@@ -128,7 +128,7 @@ jobs:
               header) printf '\n/* prototype header experiment %s/%s */\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$header_file" ;;
               incbin) printf '\ndir /linux-bzl-incbin-%s-%s 0755 0 0\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$payload_file" ;;
             esac
-            bazel build //:x86_64_kernel --jobs=4 \
+            bazel build //:x86_64_kernel --output_groups=+boot --jobs=4 \
               --sandbox_block_path=/bin --sandbox_block_path=/usr/bin --sandbox_block_path=/usr/local/bin \
               --execution_log_compact_file="$results/$phase.execution.pb.zst"
             # Decode compact entries without expanding every action's source-tree inputs.

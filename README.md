@@ -13,8 +13,8 @@ the upstream parsers' global state.
 Generation exports symbolic Make expressions, Kconfig entries and source edges.
 Architecture, requested config, compiler facts, flags and object selection still
 resolve during Bazel analysis using the existing platform/toolchain providers.
-Kernel build actions do not invoke Make. The accepted conservative compiler-probe
-fallback policy and existing architecture/boot limitations are unchanged.
+Kernel build actions do not invoke Make. Compiler probes retain the accepted
+conservative fallback policy.
 
 ## Build and try it
 
@@ -22,16 +22,23 @@ On Linux x86-64, place the kernel checkout at `_tmp/linux`, then run from
 the repository root:
 
 ```sh
+git -C _tmp/linux apply "$PWD/native/linux_piggy_dependency.patch"
 bazel build //:consumer_support --platforms=@llvm//platforms:linux_x86_64_musl
 mkdir -p _tmp/kernel-repository
 tar -xzf bazel-bin/consumer-support.tar.gz -C _tmp/kernel-repository
 python3 example.py --generated _tmp/kernel-repository/support
 cd examples
 bazel build //:x86_64_kernel //:aarch64_kernel
+bazel build //:x86_64_kernel //:x86_64_lz4_kernel --output_groups=kernel,boot
 bazel build @kernel//multi_platform:configs
 # All implemented architectures; this bootstraps the configured LLVM backends:
 bazel build @kernel//multi_platform:kernels
 ```
+
+The x86 source patch declares the compressed payload read by `piggy.o` through
+assembler `.incbin`. That read is absent from the compiler's preprocessor
+dependency file. The declared Linux 6.18 archive and CI checkouts already apply
+the patch; apply it once to a supplied local checkout.
 
 Bazel compiles the patched GNU Make and kernel parsers with declared toolchains,
 links the launcher against pinned CPython objects from
