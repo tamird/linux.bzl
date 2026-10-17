@@ -75,6 +75,27 @@ existing BCR dependency/toolchain setup, not another copy of the parser tool.
 `//...` in a consumer addresses its own packages; use `@kernel//...` to address
 the generated repository.
 
+## Initramfs archives
+
+The independent `initramfs` rule builds deterministic, root-owned `newc`
+archives with a small C tool compiled for the execution platform. It does not
+require a generated kernel repository.
+
+```starlark
+load("@linux.bzl//:linux.bzl", "initramfs")
+
+initramfs(
+    name = "rootfs",
+    executables = {"/init": ":init"},
+    files = {"/boot/config": ":kernel_config"},
+    character_devices = {"/dev/console": "5:1"},
+)
+```
+
+Archive paths are absolute. Parent directories are added automatically;
+`directories` and `symlinks` can add explicit entries. Files and executables
+must each provide one regular file.
+
 ## Checks
 
 ```sh
