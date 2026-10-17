@@ -1,7 +1,14 @@
+load("@kernel//rules:example_configs.bzl", "EXAMPLE_CONFIGS")
+load("@kernel//rules:image.bzl", "kbuild_ir_experiment")
+load("@kernel//rules:rules.bzl", "kernel_config")
 load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load(":ir_experiment.bzl", "ir_variant")
 load(":native_conf.bzl", "native_conf", "native_config_reference")
 
-exports_files(["native_reference.py"])
+exports_files([
+    "native_reference.py",
+    "rules_cc_ir.patch",
+])
 
 _CASES = {
     "base": ("x86_64_kernel", "x86_64"),
@@ -79,5 +86,69 @@ py_test(
     srcs = [
         "reuse_report.py",
         "reuse_report_test.py",
+    ],
+)
+
+kbuild_ir_experiment(
+    name = "ir_core",
+    catalog = "@kernel//:catalog",
+    roots = [
+        "init/main.o",
+        "kernel/fork.o",
+        "kernel/panic.o",
+        "kernel/exit.o",
+        "lib/string.o",
+        "lib/ctype.o",
+        "arch/x86/boot/string.o",
+    ],
+    tags = ["manual"],
+)
+
+kernel_config(
+    name = "ir_changed_config",
+    allnoconfig = True,
+    base = EXAMPLE_CONFIGS["x86_64"],
+    options = "@kernel//options:options",
+    requested = {"PANIC_TIMEOUT": "37"},
+    tags = ["manual"],
+)
+
+[
+    ir_variant(
+        name = "ir_" + name,
+        config = config,
+        required_options = {"PANIC_TIMEOUT": "37" if name == "changed" else "0"},
+        tags = ["manual"],
+        target = ":ir_core",
+    )
+    for name, config in {
+        "base": "//:x86_64_kernel_requested",
+        "lz4": "//:x86_64_lz4_kernel_requested",
+        "changed": ":ir_changed_config",
+    }.items()
+]
+
+py_test(
+    name = "ir_compare_test",
+    srcs = ["ir_compare.py"],
+    args = ["$(rootpath :ir_" + name + ")" for name in [
+        "base",
+        "lz4",
+        "changed",
+    ]],
+    data = [":ir_" + name for name in [
+        "base",
+        "lz4",
+        "changed",
+    ]],
+    main = "ir_compare.py",
+    tags = ["manual"],
+)
+
+py_binary(
+    name = "ir_reuse_report",
+    srcs = [
+        "ir_reuse_report.py",
+        "reuse_report.py",
     ],
 )

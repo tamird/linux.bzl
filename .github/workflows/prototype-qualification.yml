@@ -7,7 +7,7 @@ on:
         description: Experiment to run
         type: choice
         default: all
-        options: [all, configuration-parity, source-edit-reuse, examples]
+        options: [all, configuration-parity, source-edit-reuse, compiler-ir, examples]
 
 permissions:
   contents: read
@@ -103,7 +103,7 @@ jobs:
         working-directory: examples
         run: bazel test //qualification:reuse_report_test --test_output=errors
       - name: Fetch the compact execution log decoder
-        if: matrix.experiment == 'source-edit-reuse'
+        if: matrix.experiment == 'source-edit-reuse' || matrix.experiment == 'compiler-ir'
         run: |
           decoder="$RUNNER_TEMP/linux-prototype-qualification/bb"
           curl --fail --location --output "$decoder" https://github.com/buildbuddy-io/bazel/releases/download/5.0.492/bazel-5.0.492-linux-x86_64
@@ -162,6 +162,36 @@ jobs:
             bazel run //qualification:reuse_report -- snapshot "$results" "$phase"
           done
           bazel run //qualification:reuse_report -- report "$results"
+      - name: Qualify native compiler IR and configuration reuse
+        if: matrix.experiment == 'compiler-ir'
+        working-directory: examples
+        run: |
+          set -euo pipefail
+          results="$RUNNER_TEMP/linux-prototype-qualification"
+          mapping=(--experimental_output_paths=strip --modify_execution_info=CppCompile=+supports-path-mapping)
+          for phase in base unchanged lz4 changed; do
+            variant="$phase"
+            if [[ "$variant" == unchanged ]]; then variant=base; fi
+            bazel build "//qualification:ir_$variant" --output_groups=ir_experiment --jobs=4 \
+              "${mapping[@]}" --execution_log_compact_file="$results/$phase.execution.pb.zst"
+            "$results/bb" print --compact_execution_log="$results/$phase.execution.pb.zst" --raw=true --sort=false |
+              jq -c '
+                if has("invocation") then {invocation: .invocation.id, hashFunctionName: .invocation.hashFunctionName}
+                elif has("file") then {id, path: .file.path}
+                elif has("directory") then {id, path: .directory.path}
+                elif has("unresolvedSymlink") then {id, path: .unresolvedSymlink.path}
+                elif has("spawn") then {spawn: (.spawn | {
+                  outputs: (.outputs // []), mnemonic, runner: (.runner // ""),
+                  cacheHit: (.cacheHit // false), exitCode: (.exitCode // 0), status: (.status // ""),
+                  digest: {hash: (.digest.hash // ""), sizeBytes: (.digest.sizeBytes // 0 | tonumber)}
+                })}
+                else empty end
+              ' > "$results/$phase.execution.jsonl"
+            bazel aquery "deps(//qualification:ir_$variant)" "${mapping[@]}" --output=jsonproto > "$results/$phase.aquery.json"
+            bazel run //qualification:ir_reuse_report -- snapshot "$results" "$phase"
+          done
+          bazel test //qualification:ir_compare_test "${mapping[@]}" --jobs=4 --test_output=errors
+          bazel run //qualification:ir_reuse_report -- report "$results"
       - name: Upload qualification evidence
         if: always()
         uses: actions/upload-artifact@v7

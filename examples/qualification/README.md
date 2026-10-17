@@ -9,6 +9,9 @@ Dispatch the workflow with `configuration-parity`, `source-edit-reuse`, or
 them together. The example matrix reuses the `Kernel repository prototype`
 workflow.
 
+The separate `compiler-ir` experiment qualifies a possible compiler boundary;
+it is not included in `all` while that mechanism is experimental.
+
 ## Configuration parity
 
 `bazel test //qualification:parity` builds pristine Linux `conf` with Bazel,
@@ -61,6 +64,29 @@ The inventory includes native Bazel C and assembly actions and the original
 `KbuildCC` actions, excluding host-tool compilation. Broad recompilation produces
 a report and fails the qualification. This measures dependency invalidation;
 it does not qualify sharing between configurations or cold-build speed.
+
+## Compiler IR experiment
+
+`compiler-ir` builds seven real kernel C objects through both the integrated
+compiler and a frontend-to-bitcode-to-backend pipeline. The objects include
+ordinary kernel code and real-mode boot code with native `-g -m16` flags.
+The examples apply a small rules_cc patch to accept LLVM IR inputs through
+native C++ compilation actions without requesting preprocessor depfiles.
+
+The experiment selects base, LZ4, and `PANIC_TIMEOUT=37` configurations of
+one build label. Sequential builds enable Bazel output-path mapping and use
+the workflow's disk cache. The unchanged build must execute no selected
+compiler actions. At least four LZ4 backends must have bitcode and canonical
+action-cache digests identical to the base case, with actual logged cache
+hits. Changing `PANIC_TIMEOUT` must change its bitcode, object, and backend
+action-cache digest; the report distinguishes backend execution
+from a previously cached result for that configuration.
+
+Every split object must match its integrated reference byte for byte.
+Reports, native bitcode and objects, and original compact execution logs are
+retained even when comparison fails. These checks establish semantic parity
+and cache reuse for the selected objects, not a whole-build speedup or the
+required full base/debug/BTF/LZ4 family qualification.
 
 ## Original prototype results on 2026-10-16
 

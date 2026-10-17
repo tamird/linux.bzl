@@ -1,0 +1,50 @@
+diff --git a/cc/common/cc_helper_internal.bzl b/cc/common/cc_helper_internal.bzl
+--- a/cc/common/cc_helper_internal.bzl
++++ b/cc/common/cc_helper_internal.bzl
+@@ -232,6 +232,7 @@
+ 
+ _CC_SOURCE = [".cc", ".cpp", ".cxx", ".c++", ".C", ".cu", ".cl"]
+ _C_SOURCE = [".c"]
++_LLVM_IR_SOURCE = [".bc", ".ll"]
+ _OBJC_SOURCE = [".m"]
+ _OBJCPP_SOURCE = [".mm"]
+ _CLIF_INPUT_PROTO = [".ipb"]
+@@ -274,6 +275,7 @@
+ extensions = struct(
+     CC_SOURCE = _CC_SOURCE,
+     C_SOURCE = _C_SOURCE,
++    LLVM_IR_SOURCE = _LLVM_IR_SOURCE,
+     OBJC_SOURCE = _OBJC_SOURCE,
+     OBJCPP_SOURCE = _OBJCPP_SOURCE,
+     CC_HEADER = _CC_HEADER,
+diff --git a/cc/private/compile/compile.bzl b/cc/private/compile/compile.bzl
+--- a/cc/private/compile/compile.bzl
++++ b/cc/private/compile/compile.bzl
+@@ -76,7 +76,8 @@
+     extensions.C_SOURCE +
+     extensions.ASSEMBLER +
+     extensions.ASSEMBLER_WITH_C_PREPROCESSOR +
+-    extensions.CLIF_INPUT_PROTO,
++    extensions.CLIF_INPUT_PROTO +
++    extensions.LLVM_IR_SOURCE,
+ )
+ 
+ # LINT.IfChange(cc_and_objc_file_types)
+@@ -1561,6 +1562,8 @@
+         )
+     if not action_name and output_category == artifact_category.CPP_MODULE:
+         action_name = "c++-module-compile"
++    if not action_name and "." + source_artifact.extension in extensions.LLVM_IR_SOURCE:
++        action_name = ACTION_NAMES.c_compile
+ 
+     object_file = _get_compile_output_file(
+         ctx = action_construction_context,
+@@ -2173,7 +2176,7 @@
+ 
+ def _use_dotd_file(feature_configuration, source_file):
+     extension = "." + source_file.extension if source_file.extension else ""
+-    header_discover_required = extension not in (extensions.ASSEMBLER + extensions.CPP_MODULE)
++    header_discover_required = extension not in (extensions.ASSEMBLER + extensions.CPP_MODULE + extensions.LLVM_IR_SOURCE)
+     use_header_modules = (
+         feature_configuration.is_enabled("use_header_modules") and
+         extension in extensions.CC_SOURCE + extensions.CC_HEADER + extensions.CPP_MODULE_MAP
