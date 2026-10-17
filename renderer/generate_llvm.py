@@ -102,6 +102,16 @@ def bounded(body, low, high):
 
 def flags_program(tree, linux, defer_arch=False):
     bodies = {relative(f['file'], linux): f['body'] for f in tree['files']}
+    # Only files named by the native flag-include family participate in its
+    # dependency slice. Unrelated Makefiles can assign the same variables and
+    # pull their own tool probes into this invocation's setup.
+    flag_includes = set()
+    for node, _ in walk(bodies['Makefile']):
+        if node['kind'] == 'assignment' and node.get('name', '').startswith('include-'):
+            paths = const(node['value_expression'])
+            if paths is None:
+                raise ValueError(f"Flag include paths must be source literals: {node['value']}")
+            flag_includes.update(paths.split())
     def expand(body, stack=()):
         out = []
         for n in body:
@@ -116,8 +126,8 @@ def flags_program(tree, linux, defer_arch=False):
                 if arg == '$(addprefix , $(include-y))':
                     # Retain the configuration-dependent include list as a
                     # program operation evaluated by the analysis interpreter.
-                    out.append({'kind': 'flag_includes', 'files': {p: expand(bodies[p], stack + (p,)) for p in bodies
-                                if p.startswith('scripts/Makefile.')}})
+                    out.append({'kind': 'flag_includes', 'files': {p: expand(bodies[p], stack + (p,))
+                                for p in sorted(flag_includes) if p in bodies}})
                 elif arg in bodies and arg not in stack and arg != 'scripts/Makefile.compiler':
                     out.extend(expand(bodies[arg], stack + (arg,)))
             else:
