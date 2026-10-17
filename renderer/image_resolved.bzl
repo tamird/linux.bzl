@@ -346,7 +346,6 @@ def _link_descriptor(path, state):
     for name, val in {"objtree": ".", "srctree": "__source__", "srcroot": "__source__"}.items():
         variables[name] = {"value": val}
     libs = make_words(_value("KBUILD_VMLINUX_LIBS", variables, state["sources"]))
-    lds = _value("KBUILD_LDS", variables, state["sources"])
     symdump = "Module.symvers" if state["modules"] else "vmlinux.symvers"
     modpost_outputs = [symdump, ".vmlinux.export.c"] + [p[:-3] + ".mod.c" for p in state["modules"]]
     modpost_deps = ["vmlinux.o", "scripts/mod/modpost"]
@@ -356,24 +355,31 @@ def _link_descriptor(path, state):
         "vmlinux.o": ("vmlinux_o", "ld_vmlinux.o", ["vmlinux.a"] + libs, [path]),
         symdump: ("modpost", "modpost", modpost_deps, modpost_outputs),
         ".vmlinux.export.c": ("modpost", "modpost", modpost_deps, modpost_outputs),
-        "vmlinux.unstripped": ("vmlinux", "link_vmlinux", ["vmlinux.o", ".vmlinux.export.o", "init/version-timestamp.o", lds], [path, "System.map"]),
-        "vmlinux": ("vmlinux", "strip_relocs", ["vmlinux.unstripped"], [path]),
     }
+    final_link = path == state["final_link"]
+    if path in ["vmlinux", state["final_link"]]:
+        recipe = _recipe(path, "@vmlinux", state)
+        if recipe == None:
+            fail("No native final-image producer for " + path)
+        command = evaluate(recipe["arguments"][0], recipe["variables"], state["sources"]).strip()
+        deps = list(recipe["prerequisites"])
+        if final_link:
+            deps.extend([symdump, "init/version-timestamp.o"])
+            if state["pahole"] != None:
+                deps.extend(make_words(_value("RESOLVE_BTFIDS", variables, state["sources"])))
+        stages[path] = ("vmlinux", command, deps, [path, "System.map"] if final_link else [path])
     for module in state["modules"]:
         stages[module[:-3] + ".mod.c"] = ("modpost", "modpost", modpost_deps, modpost_outputs)
     if path not in stages:
         return None
     driver, command, deps, outs = stages[path]
-    for rule in state["contexts"]["@vmlinux"].rules:
-        if path in rule["targets"]:
-            deps.extend([_normalize(p) for p in make_words(rule["prerequisites"].split(";", 1)[0]) if p not in ("FORCE", "|")])
-    if path == "vmlinux.unstripped":
+    if final_link:
         outs = outs + state["postlink_outputs"]
         scripts = _context("scripts", state)
         deps.extend(["scripts/" + name for name in make_words(_value("hostprogs-always-y", scripts.variables, state["sources"]))])
     variables["KBUILD_MODULES"] = {"value": "y" if state["modules"] else ""}
     variables = program(FLAG_PROGRAM["image_link"][driver], variables, state["sources"], cells = True).variables
-    if path == "vmlinux.unstripped" and state["pahole"] != None:
+    if final_link and state["pahole"] != None:
         # Bazel schedules the action; keep pahole's internal worker count
         # explicit instead of passing the native Makefile's empty -j argument.
         variables["MAKEFLAGS"] = {"value": "-j1"}
@@ -391,9 +397,9 @@ def _link_descriptor(path, state):
         "prerequisites": deps,
         "stem": "",
         "assignments": [],
-        "final_link": path == "vmlinux.unstripped",
-        "postlink": _recipe(path, "@postlink", state) if path == "vmlinux.unstripped" and state["postlink_outputs"] else None,
-        "pahole": state["pahole"] if path == "vmlinux.unstripped" else None,
+        "final_link": final_link,
+        "postlink": state["postlink_commands"] if final_link else [],
+        "pahole": state["pahole"] if final_link else None,
     }
     return {"target": outs[0], "directory": ".", "outs": outs, "deps": deps, "kind": "generate", "driver": "link", "native": native}
 
@@ -529,7 +535,7 @@ def _describe(path, state, owner = None):
     if path in state["preparation_checks"]:
         return state["preparation_checks"][path]
     if path in state["postlink_outputs"] or path == "System.map":
-        return _link_descriptor("vmlinux.unstripped", state)
+        return _link_descriptor(state["final_link"], state)
     link = _link_descriptor(path, state) if path in ["built-in-fixup.a", "vmlinux.a", "vmlinux.o", "vmlinux.symvers", "Module.symvers", ".vmlinux.export.c", "vmlinux.unstripped", "vmlinux"] or path in [m[:-3] + ".mod.c" for m in state["modules"]] else None
     if link:
         return link
@@ -558,10 +564,10 @@ def _describe(path, state, owner = None):
             dependencies.extend(["include/generated/uapi/linux/version.h", "include/generated/utsrelease.h", "include/generated/compile.h", "include/generated/utsversion.h"])
         elif state["config"].get("CONFIG_DEBUG_INFO_BTF_MODULES") == "y":
             native["pahole"] = state["pahole"]
-            native["postlink"] = {
+            native["postlink"] = [{
                 "arguments": [[{"op": "literal", "value": "btf_ko"}]],
                 "variables": native["variables"],
-            }
+            }]
             dependencies.append("tools/bpf/resolve_btfids/resolve_btfids")
         return {"target": path, "directory": ".", "outs": [path], "deps": dependencies, "kind": "compile" if compiling else "generate", "driver": "link", "native": native}
     if path == "include/generated/utsversion.h":
@@ -599,7 +605,7 @@ def _describe(path, state, owner = None):
     static = state["catalog"].actions.get(state["catalog"].aliases.get(path, path))
     if static != None and (static["kind"] == "compile" or static.get("driver") == "asm_headers" or path in state["header_owners"] or path in state["preparation"]):
         static = None
-    directory, _, name = path.rpartition("/")
+    directory = path.rpartition("/")[0]
     if owner != None and any([r.get("recipes") and path in [_normalize(p) for p in r["targets"] if "%" not in p] for r in _context(owner, state).rules]):
         # A Makefile can own outputs outside its directory (for example a
         # sibling generated header). Only an explicit producer establishes
@@ -655,10 +661,11 @@ def _describe(path, state, owner = None):
         objects = make_words(_value(host + "-objs", variables, state["sources"]) + " " +
                              _value(host + "-cxxobjs", variables, state["sources"]))
         host_members[host] = [_normalize(directory + "/" + obj) for obj in objects]
-    kind = "host" if name in hosts or path in [p for members in host_members.values() for p in members] else "generate"
-    dependencies = host_members.get(name, [])
+    host_name = path.removeprefix(directory + "/") if directory != "." else path
+    kind = "host" if host_name in hosts or path in [p for members in host_members.values() for p in members] else "generate"
+    dependencies = host_members.get(host_name, [])
     outs = [path]
-    has_recipe = name in hosts
+    has_recipe = host_name in hosts
     source = path[:-2] + ".c" if path.endswith((".o", ".s")) else path + ".c"
     if path.endswith((".o", ".s")):
         # Native suffix patterns consume generated lexers/parsers too.
@@ -821,12 +828,37 @@ def _impl(ctx):
     link_context = program(FLAG_PROGRAM["image_programs"]["scripts/Makefile.vmlinux"], _context(".", state).variables, state["sources"], cells = True)
     state["contexts"]["@vmlinux"] = link_context
     state["link_owners"] = {p: True for p in make_words(_value("targets", link_context.variables, state["sources"]))}
+    final_targets = {}
+    for rule in link_context.rules:
+        for terms in rule.get("recipes", []):
+            for term in terms:
+                if term.get("op") == "function" and term.get("name") == "call" and len(term["arguments"]) > 1 and evaluate(term["arguments"][1], link_context.variables, state["sources"]).strip() == "link_vmlinux":
+                    final_targets.update({p: True for p in rule["targets"]})
+    if len(final_targets) != 1:
+        fail("Expected one native link_vmlinux target, got " + str(final_targets.keys()))
+    state["final_link"] = final_targets.keys()[0]
     postlink = "arch/" + config.architecture.srcarch + "/Makefile.postlink"
     state["postlink_outputs"] = []
+    state["postlink_commands"] = []
     if postlink in FLAG_PROGRAM["image_programs"]:
         post = program(FLAG_PROGRAM["image_programs"][postlink], _context(".", state).variables, state["sources"], cells = True)
         state["contexts"]["@postlink"] = post
-        state["postlink_outputs"] = [_normalize(evaluate(expr, post.variables, state["sources"])) for expr in FLAG_PROGRAM["image_postlink_outputs"].get(postlink, [])]
+        variables = dict(post.variables)
+        variables["@"] = {"value": state["final_link"]}
+        for rule in _rules_for_path(state["final_link"], post, state):
+            for terms in rule.get("recipes", []):
+                significant = [term for term in terms if term.get("op") != "literal" or term["value"].strip() not in ("", "@", "+")]
+                if len(significant) == 1 and significant[0].get("op") == "literal" and significant[0]["value"].lstrip("@+").strip() == "true":
+                    continue
+                if len(significant) != 1 or significant[0].get("name") != "call":
+                    fail("Unsupported native postlink recipe: " + str(terms))
+                arguments = significant[0]["arguments"]
+                function = evaluate(arguments[0], variables, state["sources"]).strip()
+                if function not in ("cmd", "if_changed", "if_changed_dep") or len(arguments) < 2:
+                    fail("Unsupported native postlink command: " + str(terms))
+                name = evaluate(arguments[1], variables, state["sources"]).strip()
+                state["postlink_commands"].append({"arguments": arguments[1:], "variables": post.variables})
+                state["postlink_outputs"].extend([_normalize(evaluate(expr, variables, state["sources"])) for expr in FLAG_PROGRAM["image_postlink_outputs"][postlink].get(name, [])])
     state["known_products"] = {p: True for p in ["built-in-fixup.a", "vmlinux.a", "vmlinux.o", "vmlinux.symvers", ".vmlinux.export.c", "vmlinux.unstripped", "vmlinux", "System.map", ".config", "include/config/auto.conf", "include/generated/autoconf.h"] + state["postlink_outputs"] + state["module_final"].keys() + [m[:-3] + suffix for m in modules for suffix in [".o", ".mod", ".mod.c"]]}
     _architecture_invocations(ctx.attr.architecture_roots.get(config.architecture.srcarch, []), state)
     pending = [(path, None, {}) for path in reversed(list(ctx.attr.roots) + ctx.attr.architecture_roots.get(config.architecture.srcarch, []) + modules)]

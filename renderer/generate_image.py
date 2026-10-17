@@ -156,7 +156,7 @@ def image_selected(body, wanted):
 
 
 def target_rules(body, targets):
-    """Retain native recipes and conditionals for selected literal targets."""
+    """Retain native recipes and conditionals for selected target expressions."""
     result = []
     active = False
     for node in body:
@@ -167,8 +167,8 @@ def target_rules(body, targets):
                 result.append(dict(node, branches=branches))
             active = False
         elif node['kind'] == 'rule':
-            names = backend.const(node['targets_expression'])
-            active = names is not None and bool(set(names.split()) & targets)
+            names = make_text(node['targets_expression'])
+            active = bool(set(names.split()) & targets)
             if active:
                 result.append(node)
         elif node['kind'] == 'recipe' and active:
@@ -280,7 +280,7 @@ def main(argv=None):
     data['directories'] = {p: body for p, body in data['image_flag_programs'].items() if p.rsplit('/', 1)[-1] in ('Makefile', 'Kbuild') and p != 'Makefile'}
     data['image_programs'] = bodies
     data['image_compile_commands'] = sorted({n['name'][4:] for body in bodies.values() for n, _ in walk(body) if n['kind'] in ('assignment', 'define') and n.get('name', '').startswith('cmd_') and backend.refs(n['value_expression']) & {'c_flags', 'a_flags'}})
-    data['image_postlink_outputs'] = {p: [expr for n, _ in walk(body) if n['kind'] in ('assignment', 'define') and n.get('name', '').startswith('cmd_') for expr in output_redirections(n['value_expression'])] for p, body in bodies.items() if p.endswith('/Makefile.postlink')}
+    data['image_postlink_outputs'] = {p: {n['name'][4:]: output_redirections(n['value_expression']) for n, _ in walk(body) if n['kind'] in ('assignment', 'define') and n.get('name', '').startswith('cmd_')} for p, body in bodies.items() if p.endswith('/Makefile.postlink')}
     data['image_dtbs'] = bodies['scripts/Makefile.dtbs']
     data['graph_helpers'] = graph
     data['image_arch'] = [{'kind': 'directive', 'directive': 'include', 'arguments_expression': [
@@ -393,7 +393,7 @@ def main(argv=None):
     data['image_archive'] = backend.slice_program(
         bodies['scripts/Makefile.lib'] + archive,
         {'cmd_ar_builtin_fixup', 'cmd_ar_vmlinux.a', 'cmd_copy'} | backend.refs(rules)) + rules
-    for driver, roots in {'vmlinux_o': {'cmd_ld_vmlinux.o'}, 'vmlinux': {'cmd_strip_relocs', 'LDFLAGS_vmlinux'}}.items():
+    for driver, roots in {'vmlinux_o': {'cmd_ld_vmlinux.o'}, 'vmlinux': {'cmd_link_vmlinux', 'cmd_strip_relocs', 'LDFLAGS_vmlinux'}}.items():
         data['image_link'][driver] = backend.slice_program(bodies['scripts/Makefile.lib'] + bodies['scripts/Makefile.' + driver], roots)
     modpost = bodies['scripts/Makefile.modpost']
     data['image_link']['modpost'] = backend.slice_program(modpost, {'cmd_modpost', 'modpost-deps', 'output-symdump', 'missing-input'})
@@ -402,7 +402,7 @@ def main(argv=None):
         bodies['scripts/Makefile.lib'] + modfinal,
         {'cmd_cc_o_c', 'cmd_ld_single', 'cmd_objtool', 'objtool-enabled', 'cmd_ld_ko_o', 'cmd_btf_ko',
          'modname', 'part-of-module', 'GCOV_PROFILE', 'ccflags-remove-y'})
-    data['image_modfinal'].extend(target_rules(modfinal, {'%.mod.o', '.module-common.o', '%.ko'}))
+    data['image_modfinal'].extend(target_rules(modfinal, {'%.mod.o', '.module-common.o', '$(extmod_prefix).module-common.o', '%.ko'}))
     single_modules = target_rules(top, {'single_modules'})
     order_recipes = [n['value_expression'] for n, _ in walk(single_modules)
                      if n['kind'] == 'recipe' and any(backend.const(expr) == 'modules.order' or

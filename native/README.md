@@ -36,11 +36,17 @@ an execution platform matching the target binary's OS and CPU. Compiler
 cross-compilation support alone does not satisfy that execution requirement.
 
 The root bootstrap targets use the prototype checkout at `_tmp/linux`.
-`//native/linux_6_18:kernel_repository`, `:consumer_support`, and
-`:repository_test` use the LTS source archive pinned in `MODULE.bazel`. Both
-packages share the same bootstrap and standalone-generation audit. Each
+The `//native/linux_6_12` and `//native/linux_6_18` packages expose
+`:kernel_repository`, `:consumer_support`, and `:repository_test` for the LTS
+source archives pinned in `MODULE.bazel`. These packages share the same
+bootstrap and standalone-generation audit. Each
 generator embeds the digests of its own kernel parser sources; its consumer
 archive must be paired with that kernel source tree.
+
+CI groups the LTS archives in `kernel-repository-consumer-lts-<platform>`.
+Its paths are `linux_6_12/consumer-support.tar.gz` and
+`linux_6_18/consumer-support.tar.gz`; each tarball remains a separate,
+source-specific consumer package.
 
 The lexer adapter resets the scanner when opening each file. This allows the
 same process to parse `scripts/Kconfig.include` followed by the requested file,
