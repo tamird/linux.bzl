@@ -2,7 +2,7 @@
 
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
 load("@kernel//rules:execution_tools.bzl", "EXECUTION_TOOLS_TYPE")
-load("@kernel//rules:image.bzl", "kbuild_resolved_build")
+load("@kernel//rules:image.bzl", "kbuild_resolved_build", "kernel_artifact")
 load("@kernel//rules:rules.bzl", "KernelConfigInfo", "kernel_config")
 
 # Bazel supplies this fixed transition callback signature.
@@ -48,6 +48,9 @@ def kernel_example(name, requested, platform, overrides = {}, required_options =
     )
     _configured(name = name, target = ":" + name + "_unconfigured", platform = platform, tags = tags)
     _configured(name = name + "_config", target = ":" + name + "_requested", platform = platform)
+    for suffix, path in {"system_map": "System.map", "config_file": ".config"}.items():
+        kernel_artifact(name = name + "_" + suffix + "_unconfigured", build = ":" + name + "_unconfigured", path = path)
+        _configured(name = name + "_" + suffix, target = ":" + name + "_" + suffix + "_unconfigured", platform = platform)
 
 def _config_test_impl(ctx):
     values = ctx.attr.config[KernelConfigInfo].values

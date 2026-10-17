@@ -12,6 +12,11 @@ load(":rules.bzl", "KernelConfigInfo")
 load(":source_tree.bzl", "KernelSourceTreeInfo")
 load(":toolchain.bzl", "KernelToolchainInfo")
 
+KernelBuildInfo = provider(
+    "Declared artifacts of one configured kernel build.",
+    fields = ["artifacts", "config", "architecture"],
+)
+
 def _catalog_impl(ctx):
     programs = {}
     for target in ctx.attr.makefiles:
@@ -708,9 +713,30 @@ def _impl(ctx):
         "artifacts": {p: f.path for p, f in artifacts.items()},
     }))
     return [
+        KernelBuildInfo(
+            artifacts = dict(artifacts, **{".config": config.config}),
+            config = config,
+            architecture = config.architecture,
+        ),
         DefaultInfo(files = depset([manifest, config.report, setup.file] + artifacts.values())),
         OutputGroupInfo(boot = depset([artifacts[p] for p in ctx.attr.architecture_roots.get(config.architecture.srcarch, [])]), kernel = depset([artifacts["vmlinux"]] if "vmlinux" in artifacts else []), manifest = depset([manifest])),
     ]
+
+def _artifact_impl(ctx):
+    build = ctx.attr.build[KernelBuildInfo]
+    output = build.artifacts.get(ctx.attr.path)
+    if output == None:
+        fail("Kernel build %s does not produce %s; request its Kbuild root or module" % (ctx.attr.build.label, ctx.attr.path))
+    return [DefaultInfo(files = depset([output]))]
+
+kernel_artifact = rule(
+    implementation = _artifact_impl,
+    attrs = {
+        "build": attr.label(mandatory = True, providers = [KernelBuildInfo]),
+        "path": attr.string(mandatory = True),
+    },
+    doc = "Select one declared kernel artifact by its Kbuild path, or .config.",
+)
 
 _ACTIVE_CONFIG = str(Label("//:active_config"))
 

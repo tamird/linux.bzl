@@ -81,6 +81,17 @@ C compilation definitions; the configuration carries that same tool for BTF
 generation. Without a declared encoder, its Kconfig version is zero. The
 generated `//:pahole_test` checks those definitions against `pahole --version`.
 
+`kernel_artifact`, loaded from the generated `//rules:image.bzl`, selects one
+declared output from a `kbuild_resolved_build` by its Kbuild path. For example:
+
+```starlark
+kernel_artifact(name = "kernel_map", build = ":kernel", path = "System.map")
+kernel_artifact(name = "kernel_config", build = ":kernel", path = ".config")
+```
+
+The selected path must be produced by that build. Selectors share the build's
+action graph and report missing outputs during analysis.
+
 ## Initramfs archives
 
 The independent `initramfs` rule builds deterministic, root-owned `newc`
