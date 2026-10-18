@@ -11,13 +11,23 @@ load(":schedule.bzl", "schedule", "write_payload")
 def _plan(tctx, input_directories, output_directories, tools, additional_inputs, additional_params):
     originals = {f.basename: f for f in additional_inputs["originals"].to_list()}
     environment = json.decode(additional_params["environment"])
-    runtime_tools = dict(tools, host_cc = additional_params["cc"], host_cxx = additional_params["cc"], target_cc = additional_params["cc"], host_roles = {}, host_spec = {}, backend_environment = environment, target_compiler_files = tools["compiler_files"], commands = {name.removeprefix("cmd_"): file for name, file in tools.items() if name.startswith("cmd_")}, environment = environment)
+    runtime_tools = dict(tools, host_cc = additional_params["cc"], host_cxx = additional_params["cc"], target_cc = additional_params["cc"], host_roles = {}, host_spec = {}, backend_environment = environment, target_compiler_files = tools["compiler_files"], commands = {name.removeprefix("cmd_"): file for name, file in tools.items() if name.startswith("cmd_")}, environment = environment, path_environment = json.decode(additional_params["path_environment"]))
     params = struct(python = tools["python"], executor = tools["executor"], materialize = tools["emit"], link_script = tools["emit"], native_recipe = tools["emit"], link_script_text = "")
     jobs = []
     ctx = context(tctx, output_directories, runtime_tools, params, recorded = jobs)
     header = ctx.actions.declare_file("generated.h")
     ctx.actions.run(executable = tools["python"], arguments = [tools["codegen"].path, header.path], inputs = [tools["codegen"]], outputs = [header])
     compilers, artifacts, inventory = {}, {}, {}
+    parser = ctx.actions.declare_file("parser.c")
+    ctx.actions.run(
+        executable = tools["cmd_bison"],
+        arguments = ["--output", parser.path, originals["parser.y"].path],
+        inputs = [originals["parser.y"]],
+        outputs = [parser],
+        env = json.decode(additional_params["execution_environment"]),
+        progress_message = "Generate parser through declared Bison runfiles",
+    )
+    artifacts["parser.c"] = parser.path
     for source in ["main.c", "other.c"]:
         bitcode = ctx.actions.declare_file(source + ".bc")
         output = ctx.actions.declare_file(source + ".o")
@@ -51,8 +61,8 @@ def _plan(tctx, input_directories, output_directories, tools, additional_inputs,
 def _impl(ctx):
     compiler = ctx.attr.compiler[KernelCompilerInfo]
     execution = ctx.toolchains[EXECUTION_TOOLS_TYPE].execution
-    execution_files = execution.files
-    commands = execution.commands
+    execution_files = execution.bootstrap_files
+    commands = execution.bootstrap_commands
     sources = ctx.actions.declare_directory(ctx.label.name + ".sources")
     manifest = ctx.actions.declare_file(ctx.label.name + ".sources.json")
     ctx.actions.write(manifest, json.encode(dict(sources = {f.basename: f.path for f in ctx.files.srcs}, commands = {n: f.path for n, f in commands.items()})))
@@ -68,12 +78,13 @@ def _impl(ctx):
     tools = dict(python = execution.python, python_files = execution.python_files, emit = ctx.file._emit, executor = ctx.file._executor, runner = ctx.file._runner, payload = ctx.file._payload, codegen = ctx.file._codegen)
     tools.update({"cmd_" + n: file for n, file in commands.items()})
     tools.update({"compiler_tool_%d" % i: tool for i, tool in enumerate(compiler.tools)})
+    tools.update({"execution_tool_%d" % i: tool for i, tool in enumerate(execution.bootstrap_tools)})
     ctx.actions.map_directory(
         input_directories = {"sources": sources},
         output_directories = {"kernel": literals, "schedule": metadata, "scratch": scratch},
         additional_inputs = {"originals": depset(ctx.files.srcs)},
         tools = dict(tools, source_root = sources, compiler_files = compiler.files, execution_files = execution_files),
-        additional_params = dict(cc = compiler.roles["CC"], flags = json.encode(compiler.context.spec["compile_flags"]), environment = json.encode(compiler.context.spec["compile_env"])),
+        additional_params = dict(cc = compiler.roles["CC"], flags = json.encode(compiler.context.spec["compile_flags"]), environment = json.encode(compiler.context.spec["compile_env"]), execution_environment = json.encode(execution.bootstrap_environment), path_environment = json.encode(execution.bootstrap_path_environment)),
         implementation = _plan,
     )
     result = schedule(ctx, literals, metadata, sources, depset(ctx.files.srcs), ctx.files.srcs[0].dirname, tools, compiler.files, execution_files, config = sources, backend_files = compiler.files, backend_tools = compiler.tools, backend_environment = compiler.context.spec["compile_env"], steps = 3)

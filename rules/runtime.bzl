@@ -1,6 +1,10 @@
 """Adapt the artifact-oriented kernel backend to action-template callbacks."""
 _ASCII = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
 
+def action_tools(tools):
+    """Keep provider-owned runfiles on ordinary native actions."""
+    return [tool for name, tool in tools.items() if name.startswith("compiler_tool_") or name.startswith("execution_tool_")]
+
 def read_payload(expanded):
     chunks = sorted([f.basename for f in expanded.children if "=" in f.basename])
     decoded = []
@@ -106,6 +110,7 @@ def context(tctx, roots, tools, params, planning = False, recorded = None, kerne
             directory_outputs = [f.path for f in outputs if f.path in virtual],
             environment = environment,
             path_environment = runtime_tools.get("path_environment", {}),
+            tool_runfiles = {tool.executable.path + ".runfiles": True for tool in action_tools(runtime_tools) if tool.runfiles_manifest != None}.keys(),
         )
         if recorded != None:
             spec["inputs"] = [path for path in spec["inputs"] if path not in common_paths] + [common_manifest.path]
@@ -131,7 +136,7 @@ def context(tctx, roots, tools, params, planning = False, recorded = None, kerne
             executable = params.python,
             inputs = depset([manifest, params.executor] + all_files, transitive = [runtime_tools["python_files"]]),
             outputs = outputs,
-            tools = [tool for name, tool in runtime_tools.items() if name.startswith("compiler_tool_")],
+            tools = action_tools(runtime_tools),
             arguments = [params.executor.path, manifest.path],
             progress_message = kwargs.get("progress_message", "%s %s" % (kwargs.get("mnemonic", "Kernel action"), outputs[0].path)),
         )
@@ -146,7 +151,7 @@ def context(tctx, roots, tools, params, planning = False, recorded = None, kerne
         host_compile_env = tools.get("host_compile_env", {}),
         host_link_env = tools.get("host_link_env", {}),
         files = tools["execution_files"],
-        tools = [],
+        tools = action_tools(runtime_tools),
         bin_dir = tools["commands"]["sh"].dirname,
         shell = tools["commands"]["sh"],
         python = tools["python"],

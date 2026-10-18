@@ -16,10 +16,11 @@ EXECUTOR=Path(__file__).absolute().parent/'execute.py'
 SCHEDULER = Path(__file__).absolute().parent / 'scheduler.py'
 
 class ExecuteTest(unittest.TestCase):
- def run_action(self,root,inputs,outputs,program,directories=(),directory_outputs=()):
+ def run_action(self,root,inputs,outputs,program,directories=(),directory_outputs=(),tool_runfiles=(),path_environment=None):
   manifest=root/'action.json'
   manifest.write_text(json.dumps(dict(executable=sys.executable,arguments=['-c',program],inputs=inputs,outputs=outputs,
-      directory_inputs=list(directories),directory_outputs=list(directory_outputs),environment={})))
+      directory_inputs=list(directories),directory_outputs=list(directory_outputs),environment={},
+      tool_runfiles=list(tool_runfiles),path_environment=path_environment or {})))
   return subprocess.run([sys.executable,str(EXECUTOR),str(manifest)],cwd=root,capture_output=True,text=True)
 
  def test_regular_declared_input_and_output(self):
@@ -52,6 +53,25 @@ class ExecuteTest(unittest.TestCase):
   with tempfile.TemporaryDirectory() as tmp:
    result=self.run_action(Path(tmp),[],['result'],'raise SystemExit(42)')
    self.assertNotEqual(result.returncode,0)
+
+ def test_provider_runfiles_aliases_survive_private_staging(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp)
+   (root/'data').write_text('declared tool data')
+   runfiles=root/'bin/tool.runfiles/owner'
+   runfiles.mkdir(parents=True)
+   (runfiles/'alias').symlink_to(root/'data')
+   result=self.run_action(root,['data'],['result'],
+       "from pathlib import Path; import os; Path('result').write_text(Path(os.environ['TOOL_DATA']).read_text())",
+       tool_runfiles=['bin/tool.runfiles'],path_environment={'TOOL_DATA':'bin/tool.runfiles/owner/alias'})
+   self.assertEqual(result.returncode,0,result.stderr)
+   self.assertEqual((root/'result').read_text(),'declared tool data')
+
+ def test_missing_provider_runfiles_is_an_action_failure(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   result=self.run_action(Path(tmp),[],['result'],"raise AssertionError('must not execute')",tool_runfiles=['bin/tool.runfiles'])
+   self.assertNotEqual(result.returncode,0)
+   self.assertIn('Declared tool runfiles directory is missing: bin/tool.runfiles',result.stderr)
 
 
 class PayloadTest(unittest.TestCase):

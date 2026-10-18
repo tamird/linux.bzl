@@ -128,8 +128,10 @@ def _impl(ctx):
         mnemonic = "KernelProbeSeed",
     )
     compiler_tools = {"compiler_tool_%d" % i: tool for i, tool in enumerate(compiler.tools + host.tools + [config.pahole.files_to_run])}
+    action_tool_providers = dict(compiler_tools)
+    action_tool_providers.update({"execution_tool_%d" % i: tool for i, tool in enumerate(execution.build_tools)})
     base_tools = {"cmd_" + n: f for n, f in commands.items()}
-    base_tools.update(compiler_tools)
+    base_tools.update(action_tool_providers)
     base_tools.update(dict(
         python = execution.python,
         python_files = execution.python_files,
@@ -212,7 +214,7 @@ def _impl(ctx):
         prepared,
         originals,
         source.anchor.dirname,
-        dict(compiler_tools, python = execution.python, python_files = execution.python_files, emit = ctx.file._emit, executor = ctx.file._executor, runner = ctx.file._scheduler, payload = ctx.file._payload, materialize = ctx.file._materialize, native_recipe = ctx.file._native_recipe, recipe_check = ctx.file._recipe_check, diagnostic_driver = ctx.file._diagnostic_driver, diagnostic_source = ctx.file._diagnostic_source, libbpf_builder = ctx.file._libbpf_builder, native_configure = ctx.file._native_configure, native_spec = ctx.file._native_spec, probe = ctx.file._probe),
+        dict(action_tool_providers, python = execution.python, python_files = execution.python_files, emit = ctx.file._emit, executor = ctx.file._executor, runner = ctx.file._scheduler, payload = ctx.file._payload, materialize = ctx.file._materialize, native_recipe = ctx.file._native_recipe, recipe_check = ctx.file._recipe_check, diagnostic_driver = ctx.file._diagnostic_driver, diagnostic_source = ctx.file._diagnostic_source, libbpf_builder = ctx.file._libbpf_builder, native_configure = ctx.file._native_configure, native_spec = ctx.file._native_spec, probe = ctx.file._probe),
         base_tools["compiler_files"],
         execution_files,
         config = config.directory,

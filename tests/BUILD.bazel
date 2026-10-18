@@ -15,6 +15,7 @@ schedule_fixture(
         "included.c",
         "main.c",
         "other.c",
+        "parser.y",
         "value.h",
     ],
 )

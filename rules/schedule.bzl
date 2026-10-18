@@ -1,7 +1,7 @@
 """Schedule measured compiler dependencies before declaring compiler spawn inputs."""
 
 load(":compiler_arguments.bzl", "compiler_arguments")
-load(":runtime.bzl", "read_payload", "writer")
+load(":runtime.bzl", "action_tools", "read_payload", "writer")
 
 _ASCII = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
 _HEX = "0123456789abcdef"
@@ -164,7 +164,7 @@ def _stage(tctx, input_directories, output_directories, tools, additional_inputs
             arguments = [tools["runner"].path, "execute", manifest.path],
             inputs = depset(inputs + source_inputs + [manifest, available[job["manifest"]], tools["runner"], tools["executor"], tools["payload"]], transitive = [tools["compiler_files"], tools["execution_files"]]),
             outputs = output_files,
-            tools = [tool for name, tool in tools.items() if name.startswith("compiler_tool_")],
+            tools = action_tools(tools),
             progress_message = job["message"],
         )
         available.update({path: f for path, f in zip(job["outputs"], output_files)})
@@ -264,7 +264,7 @@ def schedule(ctx, literals, metadata, sources, originals, original_prefix, tools
             arguments = [tools["runner"].path, "scan", stage.path + "/scan-requests.json", scans.path],
             inputs = depset([stage, tools["runner"], tools["executor"], tools["payload"]] + directories.values(), transitive = [originals, compiler_files, execution_files]),
             outputs = [scans],
-            tools = [tool for name, tool in tools.items() if name.startswith("compiler_tool_")],
+            tools = action_tools(tools),
             mnemonic = "KernelDependencyScan",
         )
         directories["stage_%d" % step] = stage
