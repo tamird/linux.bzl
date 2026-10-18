@@ -155,6 +155,56 @@ def _rewrite_flags(flags, tree, source, generated):
         rewritten.append(f)
     return rewritten
 
+def _ir_diagnostics(ctx, flags, features, inputs, context, setup, experiment):
+    execution = execution_tools(ctx)
+    report = ctx.actions.declare_file(ctx.label.name + ".ir-diagnostics.json")
+    spec = ctx.actions.declare_file(ctx.label.name + ".ir-diagnostics-spec.json")
+    compiler = cc_common.get_tool_for_action(feature_configuration = features, action_name = ACTION_NAMES.c_compile)
+    cases, bitcodes = [], []
+    for name, define in [("attribute", "IR_ATTRIBUTE_ERROR"), ("assembly", "IR_ASSEMBLY_ERROR")]:
+        bitcode = ctx.actions.declare_file(ctx.label.name + ".diagnostics/" + name + ".bc")
+        bitcodes.append(bitcode)
+        commands = []
+        for phase in ["integrated", "frontend", "backend"]:
+            extra = ["-D" + define]
+            if phase == "frontend":
+                extra.extend(["-emit-llvm", "-Xclang", "-disable-llvm-passes"])
+            elif phase == "backend":
+                extra.append("-Wno-unused-command-line-argument")
+            variables = cc_common.create_compile_variables(
+                cc_toolchain = setup.cc,
+                feature_configuration = features,
+                source_file = bitcode.path if phase == "backend" else experiment.diagnostic_source.path,
+                output_file = bitcode.path if phase == "frontend" else "/dev/null",
+                user_compile_flags = flags + extra,
+                include_directories = context.includes,
+                quote_include_directories = context.quote_includes,
+                system_include_directories = context.system_includes,
+                framework_include_directories = context.framework_includes,
+                preprocessor_defines = depset(transitive = [context.defines, context.local_defines]),
+            )
+            commands.append({
+                "phase": phase,
+                "argv": [compiler] + cc_common.get_memory_inefficient_command_line(feature_configuration = features, action_name = ACTION_NAMES.c_compile, variables = variables),
+                "environment": cc_common.get_environment_variables(feature_configuration = features, action_name = ACTION_NAMES.c_compile, variables = variables),
+            })
+        cases.append({"name": name, "bitcode": bitcode.path, "bitcode_runfile": bitcode.short_path, "commands": commands})
+    ctx.actions.write(spec, json.encode(cases))
+    ctx.actions.run(
+        executable = execution.python,
+        arguments = [experiment.diagnostic_driver.path, spec.path, report.path],
+        inputs = depset(
+            [spec, experiment.diagnostic_driver, experiment.diagnostic_source] + inputs,
+            transitive = [context.headers, setup.cc.all_files, setup.compile_files, execution.files],
+        ),
+        tools = execution.tools,
+        outputs = [report] + bitcodes,
+        env = {"PYTHONNOUSERSITE": "1", "LC_ALL": "C", "LANG": "C"},
+        use_default_shell_env = False,
+        mnemonic = "KernelIRDiagnostics",
+    )
+    experiment.diagnostics.extend([report] + bitcodes)
+
 def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies, directory_marker, source_tree, source_prerequisites, setup, host, compiler_inputs):
     # Let Bazel's C++ action discover includes from the compiler's depfile.
     # Candidate source files belong in the prunable header context, including
@@ -208,7 +258,7 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
         user_compile_flags = flags,
         disallow_pic_outputs = True,
     )
-    _, compilation = cc_common.compile(**options)
+    context, compilation = cc_common.compile(**options)
     if len(compilation.objects) != 1:
         fail("Expected one compiler output for %s, got %s" % (target, compilation.objects))
     integrated = compilation.objects[0]
@@ -243,6 +293,8 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
         fail("Expected one LLVM backend output for " + target)
     result = backend.objects[0]
     compiler_inputs.experiment.records[target] = struct(source = source_file, bitcode = bitcode, integrated = integrated, object = result, flags = flags)
+    if target == compiler_inputs.experiment.diagnostic_target:
+        _ir_diagnostics(ctx, flags, features, [directory_marker] + dependencies.values() + direct_dependencies.values() + source_prerequisites.values(), context, setup, compiler_inputs.experiment)
     return result
 
 def _compiler_flags(command, compiler, source, target):

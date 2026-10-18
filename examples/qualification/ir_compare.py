@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 from typing import TypedDict
@@ -20,7 +21,43 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def read_case(path: Path, runfiles: Path, output: Path) -> dict[str, CompilerRecord]:
+def check_diagnostics(cases: list[object]) -> dict[str, dict[str, int]]:
+    result = {}
+    for case in cases:
+        match case:
+            case {"name": str(name), "bitcode": str(bitcode), "outcomes": list(outcomes)}:
+                pass
+            case _:
+                raise ValueError(f"Invalid diagnostic result: {case}")
+        assert name in {"attribute", "assembly"} and name not in result, case
+        phases = {}
+        for outcome in outcomes:
+            match outcome:
+                case {"phase": str(phase), "returncode": int(returncode), "stdout": str(stdout), "stderr": str(stderr)}:
+                    pass
+                case _:
+                    raise ValueError(f"Invalid compiler outcome: {outcome}")
+            assert phase in {"integrated", "frontend", "backend"} and phase not in phases, outcome
+            # The selected toolchain forces ANSI diagnostic colors even when
+            # stderr is captured. Preserve the raw report and match its text.
+            diagnostic = re.sub(r"\x1b\[[0-9;]*m", "", stderr)
+            if phase == "frontend":
+                assert returncode == 0, outcome
+            else:
+                assert returncode == 1, outcome
+                if name == "attribute":
+                    assert any("error: call to '" in line and "declared with 'error' attribute: linux-bzl-ir-attribute-error" in line for line in diagnostic.splitlines()), outcome
+                else:
+                    assert "error: linux-bzl-ir-inline-asm" in diagnostic, outcome
+            assert not any(marker in stdout + diagnostic for marker in ["PLEASE submit a bug report", "Stack dump:", "Assertion failed", "LLVM ERROR:", "command failed with exit code", "command failed due to signal"]), outcome
+            phases[phase] = returncode
+        assert phases.keys() == {"integrated", "frontend", "backend"}, case
+        result[name] = phases
+    assert result.keys() == {"attribute", "assembly"}, result
+    return result
+
+
+def read_case(path: Path, runfiles: Path, output: Path) -> tuple[dict[str, CompilerRecord], list[object]]:
     descriptor = json.loads(path.read_text())
     root = runfiles / descriptor["root"]
     report = json.loads((root / descriptor["report"]).read_text())
@@ -42,13 +79,28 @@ def read_case(path: Path, runfiles: Path, output: Path) -> dict[str, CompilerRec
             destination = output / path.stem / (target + "." + role)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(root / artifact, destination)
-    return result
+    match descriptor.get("diagnostics"):
+        case [str(diagnostics)]:
+            pass
+        case other:
+            raise ValueError(f"Expected one diagnostic report in {path}: {other}")
+    cases = json.loads((root / diagnostics).read_text())
+    assert isinstance(cases, list), cases
+    shutil.copyfile(root / diagnostics, output / path.stem / "diagnostics.json")
+    for case in cases:
+        match case:
+            case {"name": str(name), "bitcode": str(bitcode)}:
+                shutil.copyfile(root / bitcode, output / path.stem / (name + ".bc"))
+                assert (root / bitcode).stat().st_size > 0, case
+            case _:
+                raise ValueError(f"Invalid diagnostic artifact: {case}")
+    return result, cases
 
 
 def main() -> None:
     runfiles = Path(os.environ["TEST_SRCDIR"]) / os.environ["TEST_WORKSPACE"]
     output = Path(os.environ["TEST_UNDECLARED_OUTPUTS_DIR"])
-    base, lz4, changed = [read_case(runfiles / arg, runfiles, output / "native") for arg in sys.argv[1:]]
+    (base, base_diagnostics), (lz4, lz4_diagnostics), (changed, changed_diagnostics) = [read_case(runfiles / arg, runfiles, output / "native") for arg in sys.argv[1:]]
     assert base.keys() == lz4.keys() == changed.keys(), "Compiler inventories differ"
     parity = {
         case: [target for target, record in records.items() if record["integrated"] != record["object"]]
@@ -64,6 +116,7 @@ def main() -> None:
         "panic_ir_changed": base[control]["bitcode"] != changed[control]["bitcode"],
         "panic_object_changed": base[control]["object"] != changed[control]["object"],
         "realmode_ir_unchanged": base[realmode]["bitcode"] == changed[realmode]["bitcode"],
+        "diagnostics": {name: check_diagnostics(cases) for name, cases in {"base": base_diagnostics, "lz4": lz4_diagnostics, "changed": changed_diagnostics}.items()},
         "records": {"base": base, "lz4": lz4, "changed": changed},
     }
     (output / "ir-comparison.json").write_text(json.dumps(result, indent=2) + "\n")
