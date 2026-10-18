@@ -150,7 +150,11 @@ def _resolve_symbol(name, state):
 def _resolve_choice(records, state):
     choices = [r for r in records if r["choice"]]
     members = list({r["symbol"]: True for r in records if not r["choice"]})
-    visible = {name: _visible(name, state) != 0 for name in members}
+
+    # Native choice mode depends on the choice's own prompt visibility.
+    # A member default or explicit request cannot activate a hidden choice.
+    choice_visible = any([_condition(p["when"], state) != 0 for p in _props(choices, "prompt")])
+    visible = {name: choice_visible and _visible(name, state) != 0 for name in members}
     selected = None
 
     # Last user assignment has highest priority, as in conf_read_simple().

@@ -9,7 +9,7 @@ load(":expressions.bzl", "evaluate", "program")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 load(":image.bzl", "kbuild_resolved_build")
 load(":multi_platform.bzl", "KernelPlatformsInfo", "SUPPORTED_KERNEL_CPUS", "kernel_multi_platform")
-load(":rules.bzl", "KernelConfigInfo", "allnoconfig_requests", "bool_option", "default", "kernel_config", "literal", "prompt", "string_option")
+load(":rules.bzl", "KernelConfigInfo", "allnoconfig_requests", "bool_option", "choice_option", "default", "kernel_config", "literal", "not_equal", "prompt", "string_option", "symbol")
 load(":solver.bzl", "resolve_options")
 load(":toolchain.bzl", "KernelToolchainInfo")
 
@@ -141,6 +141,31 @@ def _config_flags_impl(ctx):
 
 _config_flags_test = unittest.make(_config_flags_impl)
 
+def _choice_visibility_impl(ctx):
+    env = unittest.begin(ctx)
+    records = [
+        string_option("INPUT", prompts = [prompt("Input")], defaults = [default(literal("", "string"))], order = 1),
+        choice_option(prompts = [prompt("Choice", not_equal(symbol("INPUT"), literal("", "string")))], defaults = [default(symbol("FIRST"))], order = 2, evaluation_rank = 1, unit = "choice:2"),
+        bool_option("FIRST", prompts = [prompt("First")], parent_choice = 2, order = 3, evaluation_rank = 1, unit = "choice:2"),
+        bool_option("SECOND", prompts = [prompt("Second")], parent_choice = 2, order = 4, evaluation_rank = 1, unit = "choice:2"),
+    ]
+    for requested, first, second, written in [
+        ({}, "n", "n", False),
+        ({"SECOND": "y"}, "n", "n", False),
+        ({"INPUT": '"nonempty"'}, "y", "n", True),
+        ({"INPUT": '"nonempty"', "SECOND": "y"}, "n", "y", True),
+    ]:
+        result = resolve_options(records, requested, requested.keys())
+        asserts.equals(env, first, result.values["FIRST"])
+        asserts.equals(env, second, result.values["SECOND"])
+        for name in ["FIRST", "SECOND"]:
+            asserts.equals(env, written, "CONFIG_" + name in result.config, result.config)
+        if not written:
+            asserts.false(env, "CONFIG_FIRST" in result.header or "CONFIG_SECOND" in result.header, result.header)
+    return unittest.end(env)
+
+_choice_visibility_test = unittest.make(_choice_visibility_impl)
+
 def _deferred_condition_impl(ctx):
     capture = [{"op": "function", "name": "shell", "arguments": [[{"op": "literal", "value": "printf y"}]]}]
     sources = {"__shell_commands__": []}
@@ -216,6 +241,7 @@ def architecture_tests(native_cpu = False):
         _expected_failure_test(name = "native_cpu_test", target_under_test = ":native_cpu", message = "Native CPU code generation requires a declared execution-host CPU/features contract")
     _compiler_controls_test(name = "compiler_controls_test")
     _config_flags_test(name = "config_flags_test")
+    _choice_visibility_test(name = "choice_visibility_test")
     _native_shell_test(name = "native_shell_recipe_test")
     checks = [":native_shell_recipe_test"]
     for directive in [False, True]:
