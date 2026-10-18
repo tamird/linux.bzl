@@ -50,6 +50,29 @@ kernel_build(
     ]
 ]
 
+# The changed-configuration control needs only the affected object and the
+# compiler diagnostic fixture; the four full variants share :kernel above.
+kernel_build(
+    name = "changed_kernel",
+    config = ":configuration",
+    required_options = {"PANIC_TIMEOUT": "37"},
+    roots = [
+        "kernel/panic.o",
+        "lib/ctype.o",
+    ],
+    syntax = "@kernel_syntax//:program",
+    tags = ["manual"],
+)
+
+kernel_example(
+    name = "x86_64_changed_kernel",
+    build_target = "changed_kernel",
+    cc_toolchain = "@llvm//toolchain:linux_x86_64_to_linux_x86_64",
+    fragments = ["//examples/configs:x86_64.config"],
+    platform = "@llvm//platforms:linux_x86_64",
+    requested = {"PANIC_TIMEOUT": "37"},
+)
+
 filegroup(
     name = "x86_64_shared_graph_metadata",
     srcs = [":x86_64_kernel"],

@@ -81,8 +81,10 @@ not a bootstrap of LLVM itself.
 `//:kernel_acceptance_test` checks the existing minimal vmlinux, its ELF/entry
 symbols, and six ordered flag groups against native GNU Make. It uses the
 already-produced native configuration, without configuring the kernel again.
-`check_reuse.py` runs the six source-mutation phases using actual execution logs
-and producer dependencies. The qualification reporters authenticate native
+`check_reuse.py --family` runs base, unchanged, LZ4, debug, BTF, and the bounded
+`PANIC_TIMEOUT=37` control, then runs both object/diagnostic and reuse comparisons.
+The default mode runs the six source-mutation phases. Both retain actual execution
+logs and producer dependencies. The qualification reporters authenticate native
 compiler inventory, split C object ancestry, integrated reference parity, and
 cross-configuration backend action identity. Reference objects are enabled by
 `--//:validate_native_objects`, which also records the source-selected LZ4 and

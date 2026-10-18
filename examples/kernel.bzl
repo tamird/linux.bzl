@@ -35,15 +35,16 @@ _configured = rule(implementation = _configured_impl, attrs = {
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
 })
 
-def kernel_example(name, fragments, platform, cc_toolchain):
+def kernel_example(name, fragments, platform, cc_toolchain, requested = {}, build_target = "kernel"):
     kernel_config(
         name = name + "_configuration",
         source = "//native:source",
         fragments = fragments,
+        requested = requested,
         pahole = "@pahole//:pahole",
         tags = ["manual"],
     )
-    for public, target in [(name + "_config", name + "_configuration"), (name, "kernel")]:
+    for public, target in [(name + "_config", name + "_configuration"), (name, build_target)]:
         _configured(
             name = public,
             target = ":" + target,

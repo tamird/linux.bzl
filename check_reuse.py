@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the six native source/header/payload reuse phases and retain their evidence."""
+"""Run native compiler-family or source-mutation reuse qualification."""
 
 import argparse
 from collections.abc import Iterator
@@ -8,10 +8,21 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from typing import TextIO
 import uuid
 
-from qualification import reuse_report
+from qualification import ir_reuse_report, reuse_report
+
+
+FAMILY_TARGETS = {
+    "base": "//examples:x86_64_kernel",
+    "unchanged": "//examples:x86_64_kernel",
+    "lz4": "//examples:x86_64_lz4_kernel",
+    "debug": "//examples:x86_64_debug_kernel",
+    "btf": "//examples:x86_64_btf_vmlinux",
+    "changed": "//examples:x86_64_changed_kernel",
+}
 
 
 def records(stream: TextIO) -> Iterator[dict[str, object]]:
@@ -96,12 +107,13 @@ def append_edit(path: Path, original: bytes, suffix: bytes) -> Iterator[None]:
             path.write_bytes(current.replace(suffix, b"", 1))
 
 
-def measure(decoder: str, target: str, options: list[str], directory: Path, name: str, workspace: Path) -> None:
+def measure(decoder: str, target: str, options: list[str], directory: Path, name: str, workspace: Path, *, family: bool = False) -> None:
     options = [*options, "--//:validate_native_objects"]
     log = directory / f"{name}.execution.pb.zst"
     subprocess.run([
         "bazel", "build", target, *options,
         "--output_groups=+boot,+qualification_manifest",
+        "--sandbox_block_path=/bin", "--sandbox_block_path=/usr/bin", "--sandbox_block_path=/usr/local/bin",
         "--execution_log_compact_file=" + str(log),
         "--profile=" + str(directory / f"{name}.profile.gz"),
     ], cwd=workspace, check=True)
@@ -117,26 +129,50 @@ def measure(decoder: str, target: str, options: list[str], directory: Path, name
             "--output=files", "--output_groups=qualification_manifest",
         ], cwd=workspace, stdout=output, check=True)
     execution_root = subprocess.check_output(["bazel", "info", "execution_root"], cwd=workspace, text=True).strip()
-    reuse_report.snapshot(directory, name, Path(execution_root))
+    snapshot = ir_reuse_report.snapshot if family else reuse_report.snapshot
+    snapshot(directory, name, Path(execution_root))
+
+
+def family(decoder: str, options: list[str], directory: Path, workspace: Path) -> None:
+    for name in ir_reuse_report.FAMILY_PHASES:
+        measure(decoder, FAMILY_TARGETS[name], options, directory, name, workspace, family=True)
+    # Each comparator must run even when the other rejects the evidence.
+    comparison = subprocess.run([
+        sys.executable, "-m", "qualification.ir_compare", "--family-results", str(directory),
+    ], cwd=workspace)
+    reuse = subprocess.run([
+        sys.executable, "-m", "qualification.ir_reuse_report", "report", str(directory), "--family",
+    ], cwd=workspace)
+    if comparison.returncode or reuse.returncode:
+        raise SystemExit(f"Compiler-family qualification failed: parity={comparison.returncode}, reuse={reuse.returncode}; see {directory}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--decoder", required=True)
-    parser.add_argument("--source", type=Path, required=True, help="Editable native init/main.c")
-    parser.add_argument("--target", default="//examples:x86_64_kernel")
-    parser.add_argument("--out", type=Path, default=Path("validation/reuse"))
+    parser.add_argument("--family", action="store_true", help="Qualify base/unchanged/LZ4/debug/BTF/changed configurations")
+    parser.add_argument("--source", type=Path, help="Editable native init/main.c, required for mutation qualification")
+    parser.add_argument("--target", help="Mutation target (default: //examples:x86_64_kernel)")
+    parser.add_argument("--out", type=Path, help="Empty evidence directory (default: validation/family or validation/reuse)")
     parser.add_argument("--bazel-option", action="append", default=[])
     args = parser.parse_args()
     workspace = Path(os.environ.get("BUILD_WORKSPACE_DIRECTORY", os.getcwd()))
+    if args.family:
+        if args.source is not None or args.target is not None:
+            parser.error("--source and --target apply only to mutation qualification")
+    elif args.source is None:
+        parser.error("mutation qualification requires --source")
+    directory = (workspace / (args.out or Path("validation/family" if args.family else "validation/reuse"))).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    if any(directory.iterdir()):
+        parser.error("--out already contains evidence; choose a separate empty directory")
+    if args.family:
+        family(args.decoder, args.bazel_option, directory, workspace)
+        return
     source = (workspace / args.source).resolve()
     if source.parts[-2:] != ("init", "main.c"):
         parser.error("--source must identify native init/main.c for the fixed mutation controls")
     root = source.parent.parent
-    directory = (workspace / args.out).resolve()
-    directory.mkdir(parents=True, exist_ok=True)
-    if any((directory / f"{name}.execution.pb.zst").exists() for name in reuse_report.PHASES):
-        parser.error("--out already contains a trial; choose a separate evidence directory")
     paths = [source, root / "init/do_mounts.h", root / "usr/default_cpio_list", root / "scripts/Makefile.lib"]
     originals = [path.read_bytes() for path in paths]
     for path, content in zip(paths, originals, strict=True):
@@ -156,7 +192,7 @@ def main() -> None:
             if index >= 2:
                 edit = index - 2
                 stack.enter_context(append_edit(paths[edit], originals[edit], edits[edit]))
-            measure(args.decoder, args.target, args.bazel_option, directory, name, workspace)
+            measure(args.decoder, args.target or "//examples:x86_64_kernel", args.bazel_option, directory, name, workspace)
     result = reuse_report.report(directory)
     (directory / "reuse-report.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result["qualification"], indent=2))

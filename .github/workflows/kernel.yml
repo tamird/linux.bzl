@@ -75,7 +75,7 @@ jobs:
   kernel:
     if: ${{ inputs.scope != 'native-config' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: ${{ (inputs.scope || 'full') == 'full' && 360 || 60 }}
     env:
       USE_BAZEL_VERSION: 9.3.0
     steps:
@@ -109,6 +109,7 @@ jobs:
         with:
           bazelisk-cache: true
           disk-cache: autoconf-kernel
+          bazelrc: ${{ (inputs.scope || 'full') == 'full' && 'startup --host_jvm_args=-Xmx8g' || '' }}
           repository-cache: |
             - MODULE.bazel
             - MODULE.bazel.lock
@@ -202,8 +203,20 @@ jobs:
           bazel run //:ir_compare "${options[@]}" -- \
             --controls-results "$evidence" --execution-root "$execution_root"
 
-      - name: Test the native configuration and measured build owners
+      - name: Fetch the compact execution log decoder
         if: ${{ (inputs.scope || 'full') == 'full' }}
+        run: |
+          decoder="$RUNNER_TEMP/autoconf-execution-log-decoder"
+          curl --fail --location --output "$decoder" https://github.com/buildbuddy-io/bazel/releases/download/5.0.492/bazel-5.0.492-linux-x86_64
+          echo "e9e996a1a01555e45433acf9432f9d40d5bda437812a830d6701fe9b09853df9  $decoder" | sha256sum --check
+          chmod +x "$decoder"
+          echo "EXECUTION_LOG_DECODER=$decoder" >> "$GITHUB_ENV"
+
+      - name: Qualify native configuration, products, compiler family, and source edits
+        if: ${{ (inputs.scope || 'full') == 'full' }}
+        # Bound the whole sequence so post steps can upload evidence and save
+        # caches; setup time and service limits still affect available headroom.
+        timeout-minutes: 330
         run: |
           bazel test //... //native:config_tests //:action_built_config_test \
             //examples:x86_64_config_test //examples:aarch64_config_test \
@@ -214,31 +227,32 @@ jobs:
             --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
             --extra_toolchains=//:driver_toolchain --jobs=4 --test_output=errors --keep_going
 
-      - name: Check native Kbuild flags and the linked kernel
-        if: ${{ (inputs.scope || 'full') == 'full' }}
-        run: |
           bazel test //:kernel_acceptance_test \
             --override_repository=linux_source="$GITHUB_WORKSPACE/_tmp/linux" \
             --override_repository=kbuild_exporter="$KBUILD_EXPORTER" \
             --platforms=@llvm//platforms:linux_x86_64 \
             --extra_execution_platforms=@llvm//platforms:linux_x86_64 --jobs=4 --test_output=errors
 
-      - name: Check source edit reuse
-        if: ${{ (inputs.scope || 'full') == 'full' }}
-        run: |
-          decoder="$RUNNER_TEMP/autoconf-execution-log-decoder"
-          curl --fail --location --output "$decoder" https://github.com/buildbuddy-io/bazel/releases/download/5.0.492/bazel-5.0.492-linux-x86_64
-          echo "e9e996a1a01555e45433acf9432f9d40d5bda437812a830d6701fe9b09853df9  $decoder" | sha256sum --check
-          chmod +x "$decoder"
-          python3 check_reuse.py --decoder "$decoder" --source _tmp/linux/init/main.c \
+          python3 check_reuse.py --family --decoder "$EXECUTION_LOG_DECODER" \
             --bazel-option="--override_repository=linux_source=$GITHUB_WORKSPACE/_tmp/linux" \
             --bazel-option="--override_repository=kbuild_exporter=$KBUILD_EXPORTER" \
             --bazel-option=--platforms=@llvm//platforms:linux_x86_64 \
             --bazel-option=--extra_execution_platforms=@llvm//platforms:linux_x86_64 \
+            --bazel-option=--experimental_output_paths=strip \
+            --bazel-option=--experimental_sandbox_async_tree_delete_idle_threads=0 \
+            --bazel-option=--jobs=4
+
+          python3 check_reuse.py --decoder "$EXECUTION_LOG_DECODER" --source _tmp/linux/init/main.c \
+            --bazel-option="--override_repository=linux_source=$GITHUB_WORKSPACE/_tmp/linux" \
+            --bazel-option="--override_repository=kbuild_exporter=$KBUILD_EXPORTER" \
+            --bazel-option=--platforms=@llvm//platforms:linux_x86_64 \
+            --bazel-option=--extra_execution_platforms=@llvm//platforms:linux_x86_64 \
+            --bazel-option=--experimental_output_paths=strip \
+            --bazel-option=--experimental_sandbox_async_tree_delete_idle_threads=0 \
             --bazel-option=--jobs=4
 
       - name: Upload comparison reports
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: kernel-acceptance
