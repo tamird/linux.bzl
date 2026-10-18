@@ -8,6 +8,19 @@ on:
         type: choice
         default: all
         options: [all, configuration-parity, source-edit-reuse, compiler-ir, compiler-family, examples, generator]
+      checkpoint_run:
+        description: Completed run supplying compiler-family evidence (empty for a fresh run)
+        type: string
+        default: ""
+      checkpoint_sha256:
+        description: Verified SHA256 of that run's prototype-compiler-family ZIP
+        type: string
+        default: ""
+      family_phases:
+        description: Bounded prefix of the still-missing family phases
+        type: choice
+        default: debug
+        options: [debug, btf, changed, "debug btf", "btf changed", "debug btf changed"]
 
 permissions:
   contents: read
@@ -15,13 +28,13 @@ permissions:
 
 jobs:
   examples:
-    if: inputs.experiment == 'all' || inputs.experiment == 'examples' || inputs.experiment == 'generator'
+    if: inputs.checkpoint_run == '' && (inputs.experiment == 'all' || inputs.experiment == 'examples' || inputs.experiment == 'generator')
     uses: ./.github/workflows/kernel-repository.yml
     with:
       verify_only: ${{ inputs.experiment == 'generator' }}
 
   generator:
-    if: inputs.experiment != 'examples' && inputs.experiment != 'generator'
+    if: inputs.experiment != 'examples' && inputs.experiment != 'generator' && inputs.checkpoint_run == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -87,7 +100,7 @@ jobs:
           retention-days: 14
 
   qualify:
-    if: inputs.experiment != 'generator'
+    if: ${{ always() && !cancelled() && inputs.experiment != 'generator' && (needs.generator.result == 'success' || inputs.checkpoint_run != '') }}
     name: ${{ matrix.experiment }}
     runs-on: ubuntu-24.04
     needs: generator
@@ -100,6 +113,109 @@ jobs:
       USE_BAZEL_VERSION: 9.1.0
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.checkpoint_run != '' && '3fe23f567c268c87cd3752545698fad20d6800cb' || github.sha }}
+      - name: Restore completed family phases
+        if: inputs.checkpoint_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKPOINT_RUN: ${{ inputs.checkpoint_run }}
+          CHECKPOINT_SHA256: ${{ inputs.checkpoint_sha256 }}
+          FAMILY_PHASES: ${{ inputs.family_phases }}
+          EXPERIMENT: ${{ inputs.experiment }}
+        run: |
+          set -euo pipefail
+          test "$EXPERIMENT" = compiler-family
+          [[ "$CHECKPOINT_RUN" =~ ^[0-9]+$ ]]
+          [[ "$CHECKPOINT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          source_sha=3fe23f567c268c87cd3752545698fad20d6800cb
+          generator_sha=8fb8d93c992ebfc5dfc94cd7f9fec68ff07a11e11d962bfc8bcafd9cd602c06f
+          test "$(git rev-parse HEAD)" = "$source_sha"
+          results="$RUNNER_TEMP/linux-prototype-qualification"
+          mkdir -p "$results/diagnostics" "$results/mismatches"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/39118009561" > "$results/origin-run.json"
+          jq -e --arg sha "$source_sha" '.id == 39118009561 and .head_sha == $sha and .status == "completed"' "$results/origin-run.json" > /dev/null
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKPOINT_RUN" > "$results/checkpoint-run.json"
+          jq -e '.status == "completed"' "$results/checkpoint-run.json" > /dev/null
+          artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKPOINT_RUN/artifacts" --paginate |
+            jq -r --arg digest "sha256:$CHECKPOINT_SHA256" '.artifacts[] | select(.name == "prototype-compiler-family" and .expired == false and .digest == $digest) | .id')
+          [[ "$artifact" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/family-checkpoint.zip"
+          echo "$CHECKPOINT_SHA256  $RUNNER_TEMP/family-checkpoint.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/family-checkpoint.zip" '_temp/linux-prototype-qualification/*' -d "$RUNNER_TEMP/family-checkpoint"
+          prior="$RUNNER_TEMP/family-checkpoint/_temp/linux-prototype-qualification"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/39118009561/artifacts" --paginate |
+            jq -s '[.[].artifacts[] | select(.name == "prototype-compiler-family" and .expired == false)] |
+              if length == 1 then .[0] else error("Expected one original family artifact") end' > "$results/origin-artifact.json"
+          origin_id=$(jq -r .id "$results/origin-artifact.json")
+          origin_digest=$(jq -r .digest "$results/origin-artifact.json")
+          [[ "$origin_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          origin_zip="$RUNNER_TEMP/family-checkpoint.zip"
+          if [[ "$CHECKPOINT_RUN" != 39118009561 ]]; then
+            origin_zip="$RUNNER_TEMP/family-origin.zip"
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$origin_id/zip" > "$origin_zip"
+          else
+            test "$artifact" = "$origin_id"
+          fi
+          echo "${origin_digest#sha256:}  $origin_zip" | sha256sum --check
+          unzip -Z -1 "$origin_zip" > "$RUNNER_TEMP/family-origin.paths"
+          : > "$results/original-phase-files.sha256"
+          if [[ "$CHECKPOINT_RUN" == 39118009561 ]]; then
+            jq -n '{checkpoints: []}' > "$RUNNER_TEMP/prior-provenance.json"
+          else
+            jq -e --arg sha "$source_sha" --arg generator "$generator_sha" \
+              '.source_sha == $sha and .origin_run == 39118009561 and .generator_sha256 == $generator and (.checkpoints | type == "array")' \
+              "$prior/family-provenance.json" > /dev/null
+            cp "$prior/family-provenance.json" "$RUNNER_TEMP/prior-provenance.json"
+          fi
+          jq --arg sha "$source_sha" --arg generator "$generator_sha" --arg digest "$CHECKPOINT_SHA256" \
+            --argjson run "$CHECKPOINT_RUN" --argjson artifact "$artifact" \
+            --arg head "$(jq -r .head_sha "$results/checkpoint-run.json")" \
+            '.source_sha=$sha | .origin_run=39118009561 | .generator_sha256=$generator | .checkpoints += [{run:$run,head:$head,artifact:$artifact,sha256:$digest}]' \
+            "$RUNNER_TEMP/prior-provenance.json" > "$results/family-provenance.json"
+          # ir.json is written last by snapshot; incomplete phases are not restored.
+          missing=()
+          restored=()
+          for phase in base unchanged lz4 debug btf changed; do
+            files=("$phase.ir.json" "$phase.products.json" "$phase.execution.jsonl" "$phase.compiler.json"
+              "$phase.aquery.json" "$phase.execution.pb.zst" "$phase.profile.gz"
+              "diagnostics/$phase/report.json" "diagnostics/$phase/attribute.bc" "diagnostics/$phase/assembly.bc")
+            complete=true
+            for file in "${files[@]}"; do
+              if [[ ! -s "$prior/$file" ]]; then complete=false; fi
+            done
+            if "$complete"; then
+              test "${#missing[@]}" -eq 0
+              jq -e . "$prior/$phase.ir.json" > /dev/null
+              for file in "${files[@]}"; do
+                mkdir -p "$results/$(dirname "$file")"
+                cp "$prior/$file" "$results/$file"
+              done
+              if [[ -d "$prior/mismatches/$phase" ]]; then cp -a "$prior/mismatches/$phase" "$results/mismatches/"; fi
+              restored+=("${files[@]}")
+              # Anchor every original completed phase directly to its authenticated ZIP.
+              if grep -Fxq "_temp/linux-prototype-qualification/$phase.ir.json" "$RUNNER_TEMP/family-origin.paths"; then
+                for file in "${files[@]}"; do
+                  digest=$(unzip -p "$origin_zip" "_temp/linux-prototype-qualification/$file" | sha256sum | cut -d ' ' -f 1)
+                  printf '%s  %s\n' "$digest" "$file" >> "$results/original-phase-files.sha256"
+                done
+              else
+                case "$phase" in base|unchanged|lz4) echo "Original phase is not authenticated: $phase" >&2; exit 1 ;; esac
+              fi
+            else
+              case "$phase" in base|unchanged|lz4) echo "Required original phase is incomplete: $phase" >&2; exit 1 ;; esac
+              missing+=("$phase")
+            fi
+          done
+          (cd "$results"; sha256sum --check original-phase-files.sha256)
+          if [[ "$CHECKPOINT_RUN" != 39118009561 ]]; then
+            cmp "$prior/original-phase-files.sha256" "$results/original-phase-files.sha256"
+          fi
+          read -r -a selected <<< "$FAMILY_PHASES"
+          test "${#selected[@]}" -gt 0
+          test "${#selected[@]}" -le "${#missing[@]}"
+          for i in "${!selected[@]}"; do test "${selected[$i]}" = "${missing[$i]}"; done
+          (cd "$results"; sha256sum "${restored[@]}") > "$RUNNER_TEMP/family-restored.sha256"
       - name: Checkout the generator's pinned kernel
         uses: actions/checkout@v5
         with:
@@ -113,6 +229,11 @@ jobs:
         with:
           name: qualification-generator
           path: _tmp/kernel-repository
+          run-id: ${{ inputs.checkpoint_run != '' && '39118009561' || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify the original family generator
+        if: inputs.checkpoint_run != ''
+        run: echo "8fb8d93c992ebfc5dfc94cd7f9fec68ff07a11e11d962bfc8bcafd9cd602c06f  _tmp/kernel-repository/consumer-support.tar.gz" | sha256sum --check
       - name: Configure the consumer with the current generator
         run: |
           mkdir -p "$RUNNER_TEMP/linux-prototype-qualification" _tmp/kernel-repository
@@ -121,6 +242,8 @@ jobs:
       - name: Configure Bazel
         uses: bazel-contrib/setup-bazel@0.19.0
         with:
+          bazelrc: |
+            startup --host_jvm_args=-Xmx8g
           bazelisk-cache: true
           disk-cache: prototype-qualification-${{ matrix.experiment }}
           repository-cache: true
@@ -207,6 +330,9 @@ jobs:
         working-directory: examples
         # Reserve job time for evidence upload and cache saving.
         timeout-minutes: ${{ matrix.experiment == 'compiler-family' && 330 || 150 }}
+        env:
+          CHECKPOINT_RUN: ${{ inputs.checkpoint_run }}
+          FAMILY_PHASES: ${{ inputs.family_phases }}
         run: |
           set -euo pipefail
           results="$RUNNER_TEMP/linux-prototype-qualification"
@@ -216,6 +342,7 @@ jobs:
           build_flags=(--output_groups=ir_experiment)
           if [[ '${{ matrix.experiment }}' == compiler-family ]]; then
             phases=(base unchanged lz4 debug btf changed)
+            if [[ -n "$CHECKPOINT_RUN" ]]; then read -r -a phases <<< "$FAMILY_PHASES"; fi
             report_flags=(--family)
             mapping+=(--platforms=@llvm//platforms:linux_x86_64)
             build_flags=("--output_groups=+kernel,+boot,+modules,+manifest,+ir_experiment"
@@ -275,6 +402,10 @@ jobs:
             bazel aquery "deps($target)" "${mapping[@]}" --noinclude_pruned_inputs --output=jsonproto > "$results/$phase.aquery.json"
             bazel run //qualification:ir_reuse_report "${mapping[@]}" -- snapshot "$results" "$phase" "${report_flags[@]}"
           done
+          if [[ -n "$CHECKPOINT_RUN" ]]; then
+            (cd "$results"; sha256sum --check "$RUNNER_TEMP/family-restored.sha256")
+          fi
+          # An incomplete checkpoint still fails the original full-family reporters.
           comparison=0
           reuse=0
           if [[ '${{ matrix.experiment }}' == compiler-family ]]; then
@@ -296,6 +427,7 @@ jobs:
             ${{ runner.temp }}/linux-prototype-qualification/*.manifest-path
             ${{ runner.temp }}/linux-prototype-qualification/*.pb.zst
             ${{ runner.temp }}/linux-prototype-qualification/*.profile.gz
+            ${{ runner.temp }}/linux-prototype-qualification/*.sha256
             ${{ runner.temp }}/linux-prototype-qualification/storage-*.log
             ${{ runner.temp }}/linux-prototype-qualification/diagnostics/**
             ${{ runner.temp }}/linux-prototype-qualification/mismatches/**
