@@ -10,11 +10,12 @@ prompts use the prototype's `allnoconfig` policy.
 From the repository root, first build and configure the prototype:
 
 ```sh
-git -C _tmp/linux apply "$PWD/native/linux_piggy_dependency.patch"
 bazel build //:consumer_support --platforms=@llvm//platforms:linux_x86_64_musl
+source_anchor=$(bazel cquery @bootstrap_linux//:Makefile --output=files)
+source_root="$(bazel info output_base)/$(dirname "$source_anchor")"
 mkdir -p _tmp/kernel-repository
 tar -xzf bazel-bin/consumer-support.tar.gz -C _tmp/kernel-repository
-python3 example.py --generated _tmp/kernel-repository/support
+python3 example.py --linux "$source_root" --generated _tmp/kernel-repository/support
 ```
 
 `example.py` writes only ignored `.generated/` module support and dependency
@@ -34,9 +35,9 @@ bazel build //:example_initramfs
 
 The regular kernel targets produce linked `vmlinux` ELF artifacts. The base and
 LZ4 x86 examples also declare the native `arch/x86/boot/bzImage` producer; request
-the `boot` output group to build their GZIP and LZ4 compressed images. The source
-patch above preserves the payload's direct assembler dependency. The declared
-LTS archive and CI checkouts already apply it.
+the `boot` output group to build their GZIP and LZ4 compressed images. The
+declared source archive already applies `native/linux_piggy_dependency.patch`
+to preserve the payload's direct assembler dependency.
 
 `example_initramfs` produces deterministic
 `newc` data with `/dev/console`, `/dev/null`, `/proc`, and this README as
@@ -59,9 +60,10 @@ The manual `aarch64_modules` target adds the source-selected ingress module to
 the BTF kernel and native boot image. Build it with
 `--output_groups=kernel,boot,modules`; its module selector is
 `aarch64_modules_net_sched_sch_ingress`. This exercises native modpost and
-module finalization, including the shared version-magic object.
+module finalization with the generated sources and metadata objects selected
+by that kernel's native rules.
 
-CI builds the static generator once, then runs independent example jobs:
+CI's Linux generator supplies the independent example jobs:
 
 | CI example | Bazel build target | Analysis test |
 | --- | --- | --- |
@@ -76,11 +78,12 @@ CI builds the static generator once, then runs independent example jobs:
 
 A separate platform job runs the generated architecture tests, builds the
 multi-platform configs, and checks execution tools. Every example build requests
-its declared boot outputs and blocks host tool directories. A separate Linux
-6.18 job uses the declared LTS source and
-matching generator to build the ARM64 BTF kernel, native boot image and ingress
-module, then runs `aarch64_modules_btf_test` to require an ELF `.BTF` section. The encoder-free
-analysis test remains a separate check of missing-capability handling.
+its declared boot outputs and blocks host tool directories. The LTS matrix uses
+matching sources and generators for Linux 5.10, 5.15, 6.1, 6.6, 6.12 and 6.18.
+Each job builds x86-64 and ARM64 BTF kernels, boot images and ingress modules,
+then runs both kernels' BTF checks and the x86 configuration check. The
+encoder-free analysis test remains a separate check of missing-capability
+handling.
 
 ## Compiler sharing qualification
 
@@ -88,7 +91,9 @@ Select `compiler-family` in the Prototype qualification workflow to build the
 maintained base, debug, declared-BTF and LZ4 kernels through their manual
 `_qualification` companions. Each companion uses its original build request
 and adds integrated reference objects and deferred-diagnostic checks. Ordinary
-kernel targets still use integrated compilation.
+target Clang C compilation uses the frontend-to-bitcode-to-backend pipeline
+without reference objects. Assembly, host tools and non-object compiler modes
+retain their native compilation paths.
 
 The workflow enables native `CppCompile` path mapping with
 `--experimental_output_paths=strip` and
@@ -101,5 +106,5 @@ full inventories, all configuration intersections and the fraction reused.
 An unchanged build and a bounded `PANIC_TIMEOUT=37` request provide controls.
 
 The separate `compiler-ir` selection retains the earlier seven-object trial.
-These compiler experiments remain separate from the source, header, generated
-input and compressed-payload mutation checks in `source-edit-reuse`.
+Full-family parity and reuse remain separate gates from the source, header,
+generated input and compressed-payload mutation checks in `source-edit-reuse`.

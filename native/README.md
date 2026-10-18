@@ -35,18 +35,18 @@ Generator targets use the requested Bazel platform: `linux_x86_64_musl` or
 an execution platform matching the target binary's OS and CPU. Compiler
 cross-compilation support alone does not satisfy that execution requirement.
 
-The root bootstrap targets use the prototype checkout at `_tmp/linux`.
-The `//native/linux_6_12` and `//native/linux_6_18` packages expose
-`:kernel_repository`, `:consumer_support`, and `:repository_test` for the LTS
-source archives pinned in `MODULE.bazel`. These packages share the same
-bootstrap and standalone-generation audit. Each
-generator embeds the digests of its own kernel parser sources; its consumer
-archive must be paired with that kernel source tree.
+The root bootstrap targets use the `@bootstrap_linux` source archive pinned in
+`MODULE.bazel`. The `//native/linux_5_10`, `//native/linux_5_15`,
+`//native/linux_6_1`, `//native/linux_6_6`, `//native/linux_6_12`, and
+`//native/linux_6_18` packages expose `:kernel_repository`, `:consumer_support`,
+and `:repository_test` for their pinned LTS archives. These packages share the
+same bootstrap and standalone-generation audit. Each generator embeds the
+digests of its own kernel parser sources; its consumer archive must be paired
+with that kernel source tree.
 
 CI groups the LTS archives in `kernel-repository-consumer-lts-<platform>`.
-Its paths are `linux_6_12/consumer-support.tar.gz` and
-`linux_6_18/consumer-support.tar.gz`; each tarball remains a separate,
-source-specific consumer package.
+Each source has a separate `<package>/consumer-support.tar.gz` path, such as
+`linux_5_10/consumer-support.tar.gz` or `linux_6_18/consumer-support.tar.gz`.
 
 The lexer adapter resets the scanner when opening each file. This allows the
 same process to parse `scripts/Kconfig.include` followed by the requested file,
@@ -62,6 +62,6 @@ when older sources have no transitional-symbol flag.
 
 Each bootstrap package exposes `:kconfig_test`, which exports every declared
 Kconfig file through its native generator and checks source locations and the
-second scanner input. `//native/linux_5_10:kconfig_test` also qualifies this
-boundary against the pinned 5.10 source. Its full Kbuild generation and image
-build are not yet qualified.
+second scanner input. Each `:repository_test` additionally audits full Kbuild
+generation. Image, module and BTF execution are checked separately by the LTS
+consumer jobs; a passing generator audit alone does not establish those results.

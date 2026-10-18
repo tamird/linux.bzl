@@ -9,8 +9,10 @@ Dispatch the workflow with `configuration-parity`, `source-edit-reuse`,
 matrix. `all` runs them together. The example matrix reuses the
 `Kernel repository prototype` workflow.
 
-The separate `compiler-ir` experiment qualifies a possible compiler boundary;
-it is not included in `all` while that mechanism is experimental.
+The separate `compiler-ir` selection retains the earlier seven-object trial
+and is not included in `all`. Ordinary target Clang C compilation now uses the
+frontend-to-bitcode-to-backend pipeline; `compiler-family` and
+`source-edit-reuse` qualify its sharing and dependency behavior.
 
 ## Configuration parity
 

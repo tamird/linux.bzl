@@ -18,15 +18,16 @@ source-selected fallback policy.
 
 ## Build and try it
 
-On Linux x86-64, place the kernel checkout at `_tmp/linux`, then run from
-the repository root:
+On Linux x86-64, run from the repository root. The root bootstrap uses the
+Linux source archive pinned as `@bootstrap_linux` in `MODULE.bazel`:
 
 ```sh
-git -C _tmp/linux apply "$PWD/native/linux_piggy_dependency.patch"
 bazel build //:consumer_support --platforms=@llvm//platforms:linux_x86_64_musl
+source_anchor=$(bazel cquery @bootstrap_linux//:Makefile --output=files)
+source_root="$(bazel info output_base)/$(dirname "$source_anchor")"
 mkdir -p _tmp/kernel-repository
 tar -xzf bazel-bin/consumer-support.tar.gz -C _tmp/kernel-repository
-python3 example.py --generated _tmp/kernel-repository/support
+python3 example.py --linux "$source_root" --generated _tmp/kernel-repository/support
 cd examples
 bazel build //:x86_64_kernel //:aarch64_kernel
 bazel build //:x86_64_kernel //:x86_64_lz4_kernel --output_groups=kernel,boot
@@ -37,8 +38,9 @@ bazel build @kernel//multi_platform:kernels
 
 The x86 source patch declares the compressed payload read by `piggy.o` through
 assembler `.incbin`. That read is absent from the compiler's preprocessor
-dependency file. The declared Linux 6.18 archive and CI checkouts already apply
-the patch; apply it once to a supplied local checkout.
+dependency file. All declared source archives and CI checkouts already apply
+the patch. To use a matching local checkout, apply the patch once and pass its
+path with `example.py --linux`.
 
 Bazel compiles the patched GNU Make and kernel parsers with declared toolchains,
 links the launcher against pinned CPython objects from
@@ -53,9 +55,12 @@ On ARM64 macOS, use `--platforms=@llvm//platforms:macos_aarch64` to build and
 audit the native generator. This selects a macOS executable for repository
 fetching; the generated kernel actions still need their Linux execution tools.
 
-The Kconfig C parser is compiled from the supplied checkout. Its parser/support
-source digests are embedded and checked before generation: rebuild the tool when
-those sources change. Ordinary Kconfig/Makefile changes only require refetching.
+The Kconfig C parser is compiled from the bootstrap target's declared source.
+Its parser/support source digests are embedded and checked against the consumer
+source before generation. Use the matching source-specific bootstrap target
+when those parser sources differ; building the root target does not select a
+checkout passed later to `example.py`. Ordinary Kconfig/Makefile changes only
+require refetching.
 `kernel_repository` watches the source tree for that invalidation.
 
 The maintained [examples](examples/README.md) retain their original config
@@ -162,9 +167,9 @@ The selected path must be produced by that build. Selectors share the build's
 action graph and report missing outputs during analysis.
 
 The build's `modules` attribute requests source-relative `.ko` paths selected by
-the configured Kbuild graph. Kernel and module objects share one native modpost
-action, and each module links its generated `.mod.c` and the kernel's shared
-`module-common.c` object. `kernel_artifact` selects those outputs by the same
+the configured Kbuild graph. The selected kernel's native rules determine the
+kernel and module modpost stages, generated `.mod.c` sources, and any shared
+module metadata objects. `kernel_artifact` selects those outputs by the same
 paths. The current module path rejects `MODVERSIONS` and
 `MODULE_SRCVERSION_ALL`: their native `.cmd` metadata is not exported yet.
 
@@ -203,7 +208,8 @@ the same binary. It also checks preserved example requests, parser-version and o
 failures. An optional `--reference` can compare Kconfig/Make data with a previously
 generated workspace. Omit `--test_arg=--strace` when tracing is unavailable.
 Root unit/style checks run with `bazel test //...`; the generator integration
-test is explicit because it requires the Linux checkout and native execution.
+test is explicit because it performs full generation with its declared Linux
+source and requires native execution.
 
 For a build/link check of the repository rule's output, run in the example:
 
@@ -229,13 +235,16 @@ remain shared. No dynamically loaded Python extension modules are required.
 
 ## CI
 
-The `Kernel repository prototype` workflow checks out a pinned Linux commit, builds
-the tool for Linux x86-64 and macOS ARM64, audits native generation on both hosts
+The `Kernel repository prototype` workflow builds the tool from pinned source
+archives for Linux x86-64 and macOS ARM64, audits native generation on both hosts
 and Linux parser execution with an exec trace, exercises the
 repository rule, runs the example and platform analysis tests, and builds/links
 the x86, debug, LZ4 and ARM64 examples with
-host tool directories blocked. It runs on this prototype branch, relevant pull
-requests, and manual dispatch. The executables and diagnostics are uploaded
+host tool directories blocked. Linux image consumers depend on their Linux
+generator; the macOS generator audit remains a separate required job. The LTS
+matrix builds both architectures' BTF kernels, boot images and ingress modules
+for all six declared source lines. The workflow runs on this prototype branch,
+relevant pull requests, and manual dispatch. The executables and diagnostics are uploaded
 as workflow artifacts. Existing root tests remain independent of local checkouts.
 
 ## Measured compiler probes
