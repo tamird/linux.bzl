@@ -41,6 +41,8 @@ def main() -> None:
 
     setup = object_file(path("setup"))
     report = object_file(path("report"))
+    if report.get("allnoconfig") is not True:
+        raise ValueError("Native configuration comparison requires allnoconfig=True")
     requested = string_map(report["requested"], "requested")
     compiler_inputs = report["compiler_inputs"]
     if not isinstance(compiler_inputs, dict):
@@ -54,6 +56,8 @@ def main() -> None:
     if not isinstance(flags, list) or not all(isinstance(flag, str) for flag in flags):
         raise ValueError("Expected compiler flag list")
     tools = {name: str(execroot / value) for name, value in string_map(setup["tools"], "tools").items()}
+    if spec.get("pahole") is not None:
+        tools["PAHOLE"] = str(path("pahole"))
     seed = output / "requested.config"
     seed.write_text("".join(
         f"# CONFIG_{name} is not set\n" if value == "n" else f"CONFIG_{name}={value}\n"
@@ -97,11 +101,9 @@ def main() -> None:
         for name in ("PAHOLE", "RUSTC", "RUSTDOC", "BINDGEN"):
             if name not in environment:
                 environment[name] = str(work / name.lower())
-        # Make exports these before invoking conf. Its $(shell) keeps stdout
-        # even when the command fails; pahole-version.sh reports 0 with status 1
-        # when pahole is absent.
+        # Make exports this before invoking conf. Its $(shell) keeps stdout
+        # even when the command fails. Native Kconfig owns its pahole query.
         for name, command in {
-            "PAHOLE_VERSION": [str(path("shell")), str(path("source") / "scripts/pahole-version.sh"), environment["PAHOLE"]],
             "RUSTC_VERSION_TEXT": [str(path("shell")), "-c", '"$RUSTC" --version 2>/dev/null'],
         }.items():
             version = subprocess.run(command, cwd=work, env=environment, capture_output=True, text=True, check=False)
@@ -112,7 +114,10 @@ def main() -> None:
             "native_shell": "/bin/sh (libc popen)",
             "compiler_identity": "CC_VERSION_TEXT matches the prototype's synthetic label; native cc-version/as-version/ld-version still probe the real executables",
         }, indent=2) + "\n")
-        for name, executable in (("compiler", str(compiler)), ("linker", tools["LD"])):
+        versions = [("compiler", str(compiler)), ("linker", tools["LD"])]
+        if "PAHOLE" in tools:
+            versions.append(("pahole", tools["PAHOLE"]))
+        for name, executable in versions:
             version = subprocess.run(
                 [executable, "--version"],
                 cwd=work,

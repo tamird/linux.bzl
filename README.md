@@ -14,7 +14,7 @@ Generation exports symbolic Make expressions, Kconfig entries and source edges.
 Architecture, requested config, compiler facts, flags and object selection still
 resolve during Bazel analysis using the existing platform/toolchain providers.
 Kernel build actions do not invoke Make. Compiler probes retain the accepted
-conservative fallback policy.
+source-selected fallback policy.
 
 ## Build and try it
 
@@ -139,6 +139,16 @@ When BTF is enabled, the image graph builds the selected kernel's
 `resolve_btfids` host program against declared libelf and libbpf libraries.
 The native final-link script receives that resolver, the same declared pahole,
 and flags evaluated from the kernel's `scripts/Makefile.btf`.
+
+Consumers can compare their existing requested configuration with pristine
+native Kconfig using the generated `//rules:config_parity.bzl` macro
+`kernel_config_parity_test(name, config, platform)`. Pass the same
+`kernel_config` label and guest platform used by the kernel build. It requires
+`allnoconfig=True`, uses the selected compiler and pahole, and compares every
+written symbol without exemptions for probe fallbacks. The test retains both
+configurations and the native tool/environment evidence. See
+[configuration parity](examples/qualification/README.md#configuration-parity)
+for the reference's execution requirements and interpretation.
 
 `kernel_artifact`, loaded from the generated `//rules:image.bzl`, selects one
 declared output from a `kbuild_resolved_build` by its Kbuild path. For example:

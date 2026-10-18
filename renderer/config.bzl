@@ -9,7 +9,7 @@ load(":kconfig_link.bzl", "link_sources")
 load(":pahole.bzl", "KernelPaholeInfo")
 load(":solver.bzl", "resolve_options")
 
-KernelConfigInfo = provider(doc = "Kernel Config Info.", fields = ["identity", "values", "make_values", "config", "header", "headers", "includes", "arch", "architecture", "report", "pahole"])
+KernelConfigInfo = provider(doc = "Kernel Config Info.", fields = ["identity", "values", "make_values", "config", "header", "headers", "includes", "arch", "architecture", "report", "pahole", "allnoconfig"])
 
 KernelOptionsInfo = provider(doc = "Kernel Options Info.", fields = ["records", "sources"])
 
@@ -198,6 +198,7 @@ def _kernel_config_impl(ctx):
     ctx.actions.write(report, json.encode({
         "mismatches": mismatches,
         "requested": ctx.attr.requested,
+        "allnoconfig": ctx.attr.allnoconfig,
         "compiler_inputs": inputs,
         "make_values": make_values,
         "architecture": {
@@ -225,6 +226,7 @@ def _kernel_config_impl(ctx):
             architecture = architecture,
             report = report,
             pahole = pahole,
+            allnoconfig = ctx.attr.allnoconfig,
         ),
         DefaultInfo(files = depset([config, header, report])),
     ]

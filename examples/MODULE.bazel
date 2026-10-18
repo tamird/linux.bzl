@@ -3,7 +3,5 @@ module(
     version = "0.0.0",
 )
 
-bazel_dep(name = "rules_python", version = "1.8.0", dev_dependency = True)
-
 # Run `python3 example.py` from the repository root after building the generator.
 include("//:.generated/setup.MODULE.bazel")

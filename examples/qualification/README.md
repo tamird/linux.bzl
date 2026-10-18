@@ -16,9 +16,21 @@ it is not included in `all` while that mechanism is experimental.
 
 `bazel test //qualification:parity` builds pristine Linux `conf` with Bazel,
 then supplies the examples' raw requests through `KCONFIG_ALLCONFIG` and
-`--allnoconfig`. The native reference uses the selected compiler and linker;
-their version output and the effective environment are retained as evidence.
-The comparison covers base, debug, LZ4, BTF requests, and ARM64.
+`--allnoconfig`. The native reference uses the selected compiler, linker and
+declared pahole; their version output and the effective environment are retained
+as evidence.
+The comparison covers base, debug, LZ4, BTF requests with and without a declared
+encoder, and ARM64.
+
+The generated `//rules:config_parity.bzl` exports
+`kernel_config_parity_test(name, config, platform)` for consumers to compare
+their own `kernel_config` target on its actual guest platform. It uses that
+target's merged raw requests and requires `allnoconfig=True`. The pristine
+`conf` source inventory comes from the selected kernel's Kbuild, independently
+of the modified exporter parser. The example suite uses this same interface;
+its results do not establish parity for a consumer's different requests.
+The reference action uses the declared Linux x86-64 execution toolchain,
+independently of the guest platform and the host running the comparison test.
 
 Compiler probes currently use source-selected fallbacks during analysis.
 A compiler built by Bazel is unavailable until execution; running those probes

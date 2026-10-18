@@ -473,6 +473,13 @@ def main(argv=None):
     # Export directives belong to the native invocation, not this version
     # phase. Their dependency closure would replay top-level orchestration.
     data['image_version'] = [node for node, _ in versions]
+    kernel_versions = [node for node, _ in walk(top)
+                       if node['kind'] in ('assignment', 'define') and node.get('name') == 'KERNELVERSION']
+    match kernel_versions:
+        case [node] if node['kind'] == 'assignment' and backend.refs(node['value_expression']) <= version_names:
+            data['image_version'] += early_controls(top, {'KERNELVERSION'}, node['line'] + 1)
+        case _:
+            raise ValueError(f'Expected one native KERNELVERSION assignment from version fields: {kernel_versions}')
     first = next(n['line'] for n in flat if n.get('name') == 'obj-y')
     # Makefile.build owns whether src is a logical directory found via VPATH
     # or an explicitly rooted source path. Preserve that distinction for
@@ -609,6 +616,8 @@ def main(argv=None):
     data['image_host_btfids_build'] = bodies['tools/bpf/resolve_btfids/Build']
     data['image_host_compile_mode'] = backend.slice_program(bodies['tools/build/Makefile.build'], {'host'})
     data['image_host_cflags'] = backend.slice_program(bodies['tools/build/Build.include'], {'c_flags', 'host_c_flags'})
+    data['image_native_conf'] = backend.slice_program(bodies['scripts/kconfig/Makefile'], {'conf-objs'})
+    data['image_native_conf_includes'] = re.findall(r'^\s*#include\s+"([^"\n]+\.c)"', (linux / 'scripts/kconfig/parser.y').read_text(), re.MULTILINE)
     data['image_btf'] = bodies.get('scripts/Makefile.btf', [])
     data['image_btf_shell'] = {}
     if 'scripts/Makefile.btf' not in bodies:
@@ -816,6 +825,7 @@ def main(argv=None):
         stream.write('load("//rules:image.bzl", "kbuild_resolved_core")\nkbuild_resolved_core(name="_kernel_build", tags=["manual"])\n')
         stream.write('load("//rules:host_toolchain.bzl","kernel_host_toolchain")\nkernel_host_toolchain(name="host_toolchain")\n')
         stream.write('load("//rules:host_tools.bzl","kernel_objtool","kernel_resolve_btfids")\nkernel_objtool(name="objtool")\nkernel_resolve_btfids(name="resolve_btfids")\n')
+        stream.write('load("//rules:config_parity.bzl","native_conf")\nnative_conf(name="native_conf", tags=["manual"])\n')
         stream.write('''load("//rules:pahole.bzl", "kernel_pahole", "kernel_pahole_test")
 kernel_pahole(name="pahole", binary="@pahole//:pahole", exec_compatible_with=["@platforms//os:linux", "@platforms//cpu:x86_64"])
 kernel_pahole_test(name="pahole_test", pahole=":pahole")
@@ -847,6 +857,8 @@ kernel_multi_platform(name="kernels", target=":kernel")
 kernel_multi_platform_test(name="kernels_test", kernels=":kernels", size="large", tags=["manual"])
 ''')
     shutil.copyfile(HERE / 'architecture_tests.bzl', out / 'rules/architecture_tests.bzl')
+    for name in ('config_parity.bzl', 'native_reference.py', 'parity_test.py'):
+        shutil.copyfile(HERE / name, out / 'rules' / name)
     (out / 'architecture_tests').mkdir(exist_ok=True)
     (out / 'architecture_tests/BUILD.bazel').write_text('load("//rules:architecture_tests.bzl","architecture_tests")\narchitecture_tests()\n')
     shutil.copyfile(HERE / 'image_boot_init.S', out / 'examples/boot_init.S')
