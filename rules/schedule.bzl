@@ -8,10 +8,17 @@ _HEX = "0123456789abcdef"
 _CODES = {c: _HEX[(i + 32) // 16] + _HEX[(i + 32) % 16] for i, c in enumerate(_ASCII.elems())}
 
 def write_payload(tctx, python, emit, root, value, python_files):
+    text = json.encode(value)
+    encoded = "".join([_CODES[c] for c in text.elems()])
+    if (len(encoded) + 179) // 180 > 100000000:
+        fail("Payload exceeds the eight-digit chunk range")
     report = tctx.declare_file("report.json", directory = root)
-    writer(tctx, python, emit, root, python_files)(report, json.encode(value))
-    encoded = "".join([_CODES[c] for c in json.encode(value).elems()])
-    outputs = [tctx.declare_file(("00000000" + str(start // 180))[-8:] + "=" + encoded[start:start + 180], directory = root) for start in range(0, len(encoded), 180)]
+    writer(tctx, python, emit, root, python_files)(report, text)
+    outputs = []
+    for start in range(0, len(encoded), 180):
+        number = ("00000000" + str(start // 180))[-8:]
+        path = "/".join([number[:2], number[2:4], number[4:6], number + "=" + encoded[start:start + 180]])
+        outputs.append(tctx.declare_file(path, directory = root))
     for start in range(0, len(outputs), 500):
         batch = outputs[start:start + 500]
         tctx.run(executable = python, inputs = depset([emit], transitive = [python_files]), outputs = batch, arguments = [emit.path, "--touch"] + [f.path for f in batch], progress_message = "Write kernel schedule metadata")
@@ -153,7 +160,7 @@ def _stage(tctx, input_directories, output_directories, tools, additional_inputs
         tctx.run(
             executable = tools["python"],
             arguments = [tools["runner"].path, "execute", manifest.path],
-            inputs = depset(inputs + source_inputs + [manifest, available[job["manifest"]], tools["runner"], tools["executor"]], transitive = [tools["compiler_files"], tools["execution_files"]]),
+            inputs = depset(inputs + source_inputs + [manifest, available[job["manifest"]], tools["runner"], tools["executor"], tools["payload"]], transitive = [tools["compiler_files"], tools["execution_files"]]),
             outputs = output_files,
             tools = [tool for name, tool in tools.items() if name.startswith("compiler_tool_")],
             progress_message = job["message"],
@@ -226,7 +233,7 @@ def _export(tctx, input_directories, output_directories, tools, additional_input
         tctx.run(
             executable = tools["python"],
             arguments = [tools["runner"].path, "manifest", file.path, mappings.path, output.path] if relative == "kernel.json" else [tools["runner"].path, "copy", file.path, output.path],
-            inputs = depset([tools["runner"], tools["executor"], file] + ([mappings] if relative == "kernel.json" else []), transitive = [tools["python_files"]]),
+            inputs = depset([tools["runner"], tools["executor"], tools["payload"], file] + ([mappings] if relative == "kernel.json" else []), transitive = [tools["python_files"]]),
             outputs = [output],
             progress_message = "Export kernel artifact " + relative,
         )
@@ -253,7 +260,7 @@ def schedule(ctx, literals, metadata, sources, originals, original_prefix, tools
         ctx.actions.run(
             executable = tools["python"],
             arguments = [tools["runner"].path, "scan", stage.path + "/scan-requests.json", scans.path],
-            inputs = depset([stage, tools["runner"], tools["executor"]] + directories.values(), transitive = [originals, compiler_files, execution_files]),
+            inputs = depset([stage, tools["runner"], tools["executor"], tools["payload"]] + directories.values(), transitive = [originals, compiler_files, execution_files]),
             outputs = [scans],
             tools = [tool for name, tool in tools.items() if name.startswith("compiler_tool_")],
             mnemonic = "KernelDependencyScan",
@@ -286,5 +293,5 @@ def schedule(ctx, literals, metadata, sources, originals, original_prefix, tools
         mnemonic = "KernelExport",
     )
     manifest = ctx.actions.declare_file(ctx.label.name + ".manifest.json")
-    ctx.actions.run(executable = tools["python"], arguments = [tools["runner"].path, "copy", result.path + "/kernel.json", manifest.path], inputs = depset([result, tools["runner"], tools["executor"]], transitive = [tools["python_files"]]), outputs = [manifest], mnemonic = "KernelManifest")
+    ctx.actions.run(executable = tools["python"], arguments = [tools["runner"].path, "copy", result.path + "/kernel.json", manifest.path], inputs = depset([result, tools["runner"], tools["executor"], tools["payload"]], transitive = [tools["python_files"]]), outputs = [manifest], mnemonic = "KernelManifest")
     return struct(directory = result, manifest = manifest)

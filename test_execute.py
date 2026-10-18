@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import unittest
 
+from payload import chunk_path, publish
 from scheduler import DependencyScan
 
 EXECUTOR=Path(__file__).absolute().parent/'execute.py'
@@ -51,6 +52,33 @@ class ExecuteTest(unittest.TestCase):
   with tempfile.TemporaryDirectory() as tmp:
    result=self.run_action(Path(tmp),[],['result'],'raise SystemExit(42)')
    self.assertNotEqual(result.returncode,0)
+
+
+class PayloadTest(unittest.TestCase):
+    def test_nested_chunks_preserve_full_payload_and_bound_directory_fanout(self):
+        value = dict(
+            capabilities={'native': True, 'empty': '', 'unicode': 'λ'},
+            history=[[dict(argv=['compiler', 'x' * 12_000], status=1, stdout='first\nsecond\n', stderr='warning')]],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            publish(root, value)
+            chunks = []
+            for name, directories, files in os.walk(root):
+                directory = Path(name)
+                self.assertLessEqual(len(directories) + len(files), 101 if directory == root else 100)
+                chunks.extend(directory / name for name in files if '=' in name)
+            self.assertGreater(len(chunks), 100)
+            self.assertTrue(all(path.parent != root for path in chunks))
+            encoded = ''.join(path.name.split('=', 1)[1] for path in sorted(chunks, key=lambda path: path.name))
+            self.assertEqual(json.loads(bytes.fromhex(encoded)), value)
+            self.assertEqual(json.loads((root / 'report.json').read_text()), value)
+
+    def test_chunk_index_boundary_rejects_overflow(self):
+        self.assertEqual(chunk_path(99_999_999, 'ab'), Path('99/99/99/99999999=ab'))
+        for index in [-1, 100_000_000]:
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, 'eight-digit'):
+                chunk_path(index, 'ab')
 
 
 class CompilerDependenciesTest(unittest.TestCase):

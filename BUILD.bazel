@@ -20,6 +20,7 @@ bool_flag(
 exports_files([
     "test_config_values.py",
     "probe_runtime.py",
+    "payload.py",
     "native_recipe.py",
     "qualification/native_recipe_check.py",
     "qualification/ir_diagnostics.py",
@@ -241,6 +242,7 @@ py_test(
     name = "execute_test",
     srcs = [
         "execute.py",
+        "payload.py",
         "scheduler.py",
         "test_execute.py",
     ],
@@ -270,6 +272,7 @@ py_test(
     name = "probes_test",
     srcs = [
         "native_recipe.py",
+        "payload.py",
         "probe_runtime.py",
         "test_probes.py",
     ],

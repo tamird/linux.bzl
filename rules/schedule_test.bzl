@@ -40,7 +40,7 @@ def _plan(tctx, input_directories, output_directories, tools, additional_inputs,
         arguments.extend(["-I", {"parts": [{"file": header.path, "parent": 1}]}, {"parts": ["-ffile-prefix-map=", {"file": header.path, "parent": 1}, "=fixture"]}, "-Wno-unused-command-line-argument", "-c", {"parts": [{"file": bitcode.path, "parent": 0}]}, "-o", {"parts": [{"file": output.path, "parent": 0}]}])
         ctx.actions.run(executable = additional_params["cc"], inputs = [bitcode, originals[source]], outputs = [output], compiler = dict(phase = "backend", target = source + ".o", source = originals[source].path, kind = "c", executable = additional_params["cc"], arguments = arguments, environment = environment))
         product = ctx.actions.declare_file(source + ".product")
-        ctx.actions.run(executable = tools["python"], arguments = [tools["runner"].path, "copy", output.path, product.path], inputs = [output, tools["runner"], tools["executor"]], outputs = [product])
+        ctx.actions.run(executable = tools["python"], arguments = [tools["runner"].path, "copy", output.path, product.path], inputs = [output, tools["runner"], tools["executor"], tools["payload"]], outputs = [product])
         compilers[source + ".o"] = dict(kind = "c", source = originals[source].path, object = output.path, frontend = bitcode.path, bitcode = bitcode.path)
         inventory[source + ".o"] = dict(kind = "c", source = source, source_file = originals[source].path, directory = ".")
         artifacts[source + ".product"] = product.path
@@ -65,7 +65,7 @@ def _impl(ctx):
     literals = ctx.actions.declare_directory(ctx.label.name + ".graph")
     metadata = ctx.actions.declare_directory(ctx.label.name + ".schedule")
     scratch = ctx.actions.declare_directory(ctx.label.name + ".scratch")
-    tools = dict(python = execution.python, python_files = execution.python_files, emit = ctx.file._emit, executor = ctx.file._executor, runner = ctx.file._runner, codegen = ctx.file._codegen)
+    tools = dict(python = execution.python, python_files = execution.python_files, emit = ctx.file._emit, executor = ctx.file._executor, runner = ctx.file._runner, payload = ctx.file._payload, codegen = ctx.file._codegen)
     tools.update({"cmd_" + n: file for n, file in commands.items()})
     tools.update({"compiler_tool_%d" % i: tool for i, tool in enumerate(compiler.tools)})
     ctx.actions.map_directory(
@@ -87,4 +87,5 @@ schedule_fixture = rule(implementation = _impl, toolchains = [EXECUTION_TOOLS_TY
     "_executor": attr.label(default = "//:execute.py", allow_single_file = True),
     "_codegen": attr.label(default = "//tests:generate.py", allow_single_file = True),
     "_runner": attr.label(default = "//:scheduler.py", allow_single_file = True),
+    "_payload": attr.label(default = "//:payload.py", allow_single_file = True),
 })

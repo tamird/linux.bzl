@@ -12,20 +12,12 @@ import tempfile
 from typing import TypedDict
 
 from execute import execute
+from payload import publish
 
 
 class CompilerDependencies(TypedDict):
     sources: list[str]
     generated: list[str]
-
-
-def publish(output, value):
-    root = Path(output)
-    root.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode().hex()
-    for start in range(0, len(text), 180):
-        (root / ('%08d=' % (start // 180) + text[start:start + 180])).touch()
-    (root / 'report.json').write_text(json.dumps(value, indent=2))
 
 
 class DependencyScan:

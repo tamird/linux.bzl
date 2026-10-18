@@ -7,16 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-
-def publish(output, value):
-    output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode().hex()
-    print(f'Payload: {len(encoded) // 2} JSON bytes; {(len(encoded) + 179) // 180} chunks', file=sys.stderr, flush=True)
-    for start in range(0, len(encoded), 180):
-        with (output / ('%08d=' % (start // 180) + encoded[start:start + 180])).open('xb'):
-            pass
-    (output / 'report.json').write_text(json.dumps(value, indent=2))
+from payload import publish
 
 
 def absolute_arguments(arguments, execution_root):

@@ -78,7 +78,7 @@ def expand_kernel(tctx, input_directories, output_directories, tools, additional
         resolver = None
         if not (planning and requests) and config["values"].get("DEBUG_INFO_BTF") == "y":
             libraries = struct(cflags = json.decode(additional_params["library_cflags"]), libs = json.decode(additional_params["library_flags"]), files = tools["library_files"])
-            libbpf = build_libbpf(ctx, prepared, struct(roles = ctx.execution.host_roles, spec = ctx.execution.host_spec), libraries, tools["host_package"], tools["libbpf_builder"], depset([tools["native_configure"], tools["native_spec"], tools["probe"]]))
+            libbpf = build_libbpf(ctx, prepared, struct(roles = ctx.execution.host_roles, spec = ctx.execution.host_spec), libraries, tools["host_package"], tools["libbpf_builder"], depset([tools["native_configure"], tools["native_spec"], tools["probe"], tools["payload"]]))
             resolver = build_resolve_btfids(ctx, prepared, setup, measured["capabilities"], requests, tools["host_package"], libraries, libbpf)
         if not (planning and requests):
             build_image(ctx, conf, setup, prepared, catalog, objtool, resolver)
@@ -123,7 +123,7 @@ def _impl(ctx):
     ctx.actions.run(
         executable = execution.python,
         arguments = ["-B", ctx.file._probe.path, "seed", spec.path, answers.path],
-        inputs = depset([spec, ctx.file._probe], transitive = [execution.python_files]),
+        inputs = depset([spec, ctx.file._probe, ctx.file._payload], transitive = [execution.python_files]),
         outputs = [answers],
         mnemonic = "KernelProbeSeed",
     )
@@ -141,6 +141,7 @@ def _impl(ctx):
         native_configure = ctx.file._native_configure,
         native_spec = ctx.file._native_spec,
         probe = ctx.file._probe,
+        payload = ctx.file._payload,
         host_package = package_command,
         pahole = config.pahole.files_to_run.executable,
         source_root = prepared,
@@ -198,7 +199,7 @@ def _impl(ctx):
             ctx.actions.run(
                 executable = execution.python,
                 arguments = ["-B", ctx.file._probe.path, "kbuild", output.path + "/requests.json", next_answers.path],
-                inputs = depset([output, answers, ctx.file._probe, ctx.file._native_recipe, prepared], transitive = [base_tools["compiler_files"], execution_files]),
+                inputs = depset([output, answers, ctx.file._probe, ctx.file._payload, ctx.file._native_recipe, prepared], transitive = [base_tools["compiler_files"], execution_files]),
                 outputs = [next_answers],
                 tools = compiler.tools + host.tools + execution.build_tools,
                 mnemonic = "KernelKbuildProbe",
@@ -211,7 +212,7 @@ def _impl(ctx):
         prepared,
         originals,
         source.anchor.dirname,
-        dict(compiler_tools, python = execution.python, python_files = execution.python_files, emit = ctx.file._emit, executor = ctx.file._executor, runner = ctx.file._scheduler, materialize = ctx.file._materialize, native_recipe = ctx.file._native_recipe, recipe_check = ctx.file._recipe_check, diagnostic_driver = ctx.file._diagnostic_driver, diagnostic_source = ctx.file._diagnostic_source, libbpf_builder = ctx.file._libbpf_builder, native_configure = ctx.file._native_configure, native_spec = ctx.file._native_spec, probe = ctx.file._probe),
+        dict(compiler_tools, python = execution.python, python_files = execution.python_files, emit = ctx.file._emit, executor = ctx.file._executor, runner = ctx.file._scheduler, payload = ctx.file._payload, materialize = ctx.file._materialize, native_recipe = ctx.file._native_recipe, recipe_check = ctx.file._recipe_check, diagnostic_driver = ctx.file._diagnostic_driver, diagnostic_source = ctx.file._diagnostic_source, libbpf_builder = ctx.file._libbpf_builder, native_configure = ctx.file._native_configure, native_spec = ctx.file._native_spec, probe = ctx.file._probe),
         base_tools["compiler_files"],
         execution_files,
         config = config.directory,
@@ -241,6 +242,7 @@ kernel_build = rule(
         "_scheduler": attr.label(default = "//:scheduler.py", allow_single_file = True),
         "_prepare": attr.label(default = "//rules:prepare_source.py", allow_single_file = True),
         "_probe": attr.label(default = "//:probe_runtime.py", allow_single_file = True),
+        "_payload": attr.label(default = "//:payload.py", allow_single_file = True),
         "_native_recipe": attr.label(default = "//:native_recipe.py", allow_single_file = True),
         "_recipe_check": attr.label(default = "//:qualification/native_recipe_check.py", allow_single_file = True),
         "_diagnostic_driver": attr.label(default = "//:qualification/ir_diagnostics.py", allow_single_file = True),

@@ -16,7 +16,7 @@ def _impl(ctx):
     ctx.actions.run(
         executable = execution.python,
         arguments = ["-B", ctx.file._runner.path, "copy", source, output.path],
-        inputs = depset([directory, ctx.file._runner, ctx.file._executor], transitive = [execution.python_files]),
+        inputs = depset([directory, ctx.file._runner, ctx.file._executor, ctx.file._payload], transitive = [execution.python_files]),
         outputs = [output],
         mnemonic = "KernelArtifactSelect",
     )
@@ -30,5 +30,6 @@ kernel_artifact = rule(
         "path": attr.string(mandatory = True),
         "_runner": attr.label(default = "//:scheduler.py", allow_single_file = True),
         "_executor": attr.label(default = "//:execute.py", allow_single_file = True),
+        "_payload": attr.label(default = "//:payload.py", allow_single_file = True),
     },
 )

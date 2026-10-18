@@ -34,7 +34,7 @@ def _impl(ctx):
     ctx.actions.run(
         executable = execution.python,
         arguments = ["-B", ctx.file._checker.path, spec.path, output.path],
-        inputs = depset([spec, kernel.directory, config.directory, ctx.file._checker, ctx.file._configure, ctx.file._spec_types, ctx.file._runtime], transitive = [config.source.files, config.compiler.files, config.host_compiler.files, config.pahole.files, execution.build_files]),
+        inputs = depset([spec, kernel.directory, config.directory, ctx.file._checker, ctx.file._configure, ctx.file._spec_types, ctx.file._runtime, ctx.file._payload], transitive = [config.source.files, config.compiler.files, config.host_compiler.files, config.pahole.files, execution.build_files]),
         tools = config.compiler.tools + config.host_compiler.tools + [config.pahole.files_to_run, ctx.attr._make[DefaultInfo].files_to_run] + execution.build_tools,
         outputs = [output],
         env = {"PYTHONPATH": ctx.file._runtime.dirname, "PYTHONDONTWRITEBYTECODE": "1"},
@@ -52,5 +52,6 @@ kernel_validation = rule(
         "_configure": attr.label(default = "//native:configure.py", allow_single_file = True),
         "_spec_types": attr.label(default = "//native:spec.py", allow_single_file = True),
         "_runtime": attr.label(default = "//:probe_runtime.py", allow_single_file = True),
+        "_payload": attr.label(default = "//:payload.py", allow_single_file = True),
     },
 )
