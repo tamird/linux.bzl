@@ -22,12 +22,13 @@ kernel_execution_tools(
     },
     commands = {
         "@kernel_exec_bash_linux_x86_64//file": "sh bash",
+        "@kernel_exec_busybox_linux_x86_64//file": "cmp",
         "@gawk//:gawk": "awk",
         "@sed//:sed": "sed",
         "@grep//:grep": "grep",
         "@make//:make": "make",
     },
-    coreutils = "[ basename cat chmod cmp cp cut date dd dirname echo env expr false head install ln ls mkdir mktemp mv od printf pwd readlink realpath rm seq sleep sort stat tail test touch tr true uname uniq wc".split(" "),
+    coreutils = "[ basename cat chmod cp cut date dd dirname echo env expr false head install ln ls mkdir mktemp mv od printf pwd readlink realpath rm seq sleep sort stat tail test touch tr true uname uniq wc".split(" "),
 )
 
 toolchain(
