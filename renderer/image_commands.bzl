@@ -54,9 +54,22 @@ def shell_words(text, allow_recipe = False):
         words.append(current)
     return words
 
+def _target_assignments(variables, assignments, target, sources):
+    for patterns_first in [True, False]:
+        for assignment in assignments:
+            patterns = make_words(evaluate(assignment["targets_expression"], variables, sources))
+            if any(["%" in p for p in patterns]) != patterns_first:
+                continue
+            if any([match(p.removeprefix("./"), target) != None for p in patterns]):
+                node = dict(assignment)
+                node["kind"] = "assignment"
+                variables = program([node], variables, sources, cells = True).variables
+    return variables
+
 def _scope(setup, directory, target, objtree, source, ancestry = None, graph_variables = {}, native = None, invocation_environment = None):
-    variables = dict(setup.variables)
-    if invocation_environment != None:
+    phase = native != None and native.get("phase") != None
+    variables = dict(native["variables"] if phase else setup.variables)
+    if invocation_environment != None and not phase:
         variables = {name: {"value": cell["value"].replace("__source__", source).replace("__object__", objtree)} for name, cell in invocation_environment.items() if name != "__exports__"}
         variables["__config__"] = setup.variables["__config__"]
         ancestry = [directory]
@@ -65,8 +78,6 @@ def _scope(setup, directory, target, objtree, source, ancestry = None, graph_var
         "srctree": source,
         "srcroot": source,
         "building_out_of_srctree": "1",
-        "obj": directory,
-        "src": source + "/" + directory,
         "@": target,
         "*": native["stem"] if native != None else "",
         "KGZIP": setup.tools["KGZIP"],
@@ -75,12 +86,16 @@ def _scope(setup, directory, target, objtree, source, ancestry = None, graph_var
         "AWK": setup.tools["AWK"],
     }.items():
         variables[key] = {"value": val}
+    if phase:
+        # Makefile.modfinal already ran in its root invocation. It has no
+        # Makefile.build directory initialization or inherited local flags.
+        variables.update(native.get("inherited_variables", {}))
+        return _target_assignments(variables, native["assignments"], target, setup.sources)
+    variables["VPATH"] = {"value": source}
+    variables["obj"] = {"value": directory}
+    variables = program(FLAG_PROGRAM["image_build_init"], variables, setup.sources, cells = True).variables
     if invocation_environment != None:
         variables = program(FLAG_PROGRAM["graph_init"] + FLAG_PROGRAM["image_common"], variables, setup.sources, cells = True).variables
-    if native != None and native.get("phase") != None:
-        # Final module objects belong to Makefile.modfinal's root invocation,
-        # not the source module's directory Kbuild or Makefile.build helpers.
-        return program(FLAG_PROGRAM["image_" + native["phase"]], variables, setup.sources, cells = True).variables
     inherited_c, inherited_a = [], []
     target_assignments = []
     parts = [] if directory == "." else directory.split("/")
@@ -88,7 +103,7 @@ def _scope(setup, directory, target, objtree, source, ancestry = None, graph_var
         for name in ["ccflags-y", "asflags-y", "subdir-ccflags-y", "subdir-asflags-y", "HOST_EXTRACFLAGS", "HOST_EXTRACXXFLAGS"]:
             variables[name] = {"value": ""}
         variables["obj"] = {"value": parent}
-        variables["src"] = {"value": source + "/" + parent}
+        variables = program(FLAG_PROGRAM["image_build_init"], variables, setup.sources, cells = True).variables
         prefix = "" if parent == "." else parent + "/"
         path = prefix + "Kbuild" if prefix + "Kbuild" in FLAG_PROGRAM["directories"] else prefix + "Makefile"
         variables["MAKEFILE_LIST"] = {"value": source + "/" + path}
@@ -109,16 +124,7 @@ def _scope(setup, directory, target, objtree, source, ancestry = None, graph_var
     if native != None:
         variables.update(native.get("inherited_variables", {}))
     target_assignments.extend(object_scope.target_assignments)
-    for patterns_first in [True, False]:
-        for assignment in target_assignments:
-            patterns = make_words(evaluate(assignment["targets_expression"], variables, setup.sources))
-            if any(["%" in p for p in patterns]) != patterns_first:
-                continue
-            if any([match(p.removeprefix("./"), target) != None for p in patterns]):
-                node = dict(assignment)
-                node["kind"] = "assignment"
-                variables = program([node], variables, setup.sources, cells = True).variables
-    return variables
+    return _target_assignments(variables, target_assignments, target, setup.sources)
 
 def _host_link_flags(setup):
     variables = cc_common.create_link_variables(cc_toolchain = setup.host_cc, feature_configuration = setup.host_features)
@@ -388,7 +394,6 @@ def codegen(ctx, target, directory, outputs, dependencies, source_tree, config, 
         key = "Makefile" if directory == "." else directory + "/Makefile"
     for path in ["scripts/Makefile.lib", "scripts/Makefile.host", "scripts/Makefile.build", key, "arch/" + config.architecture.srcarch + "/Makefile"]:
         variables = program(FLAG_PROGRAM["commands"].get(path, []), variables, setup.sources, cells = True).variables
-    variables["src"] = {"value": source + "/" + directory}
     variables["obj"] = {"value": "__object__/" + directory}
     variables["@"] = {"value": "__object__/" + target}
     name, first, header_guard, filechk = "", "", "", False
@@ -486,6 +491,8 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
     pahole = native.get("pahole")
     if pahole != None:
         variables["PAHOLE"] = {"value": pahole.executable.path}
+        for name in FLAG_PROGRAM["image_btf_shell"]:
+            variables[name] = {"value": "${" + name + "}"}
     prerequisites = []
     for path in native["prerequisites"]:
         if path.startswith("__source__/"):
@@ -599,11 +606,21 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
     if pahole != None:
         exports["PAHOLE"] = pahole.executable.path
     for name in ["KBUILD_VMLINUX_LIBS", "KBUILD_LDS", "KERNELRELEASE", "SRCARCH"] + (FLAG_PROGRAM["image_link_exports"] if native.get("final_link") else []):
+        if pahole != None and name in FLAG_PROGRAM["image_btf_shell"]:
+            continue
         if name not in ("KBUILD_VMLINUX_LIBS", "KBUILD_LDS", "KERNELRELEASE", "SRCARCH") and name not in variables.get("__exports__", {}):
             continue
         exports[name] = value(name, variables, setup.sources).replace("__source__", source).replace("__object__", ".")
     exports.update({"objtree": ".", "CONFIG_SHELL": setup.tools["CONFIG_SHELL"], "KBUILD_BUILD_USER": "bazel", "KBUILD_BUILD_HOST": "bazel"})
-    command = "\n".join(["export " + name + "=" + shell_quote(val) for name, val in exports.items()]) + "\n" + command
+    export_commands = ["export " + name + "=" + shell_quote(val) for name, val in exports.items()]
+    if pahole != None:
+        for name, expression in FLAG_PROGRAM["image_btf_shell"].items():
+            native_command = evaluate(expression, variables, command_sources).replace("__source__", source).replace("__object__", ".")
+
+            # Keep assignment separate from export so a failed native helper
+            # is not hidden by the export builtin's successful exit status.
+            export_commands.extend([name + '="$(' + native_command + ')"', "export " + name])
+    command = "\n".join(export_commands) + "\n" + command
     command = command.replace(source, source_tree.root.path)
 
     # Driver-based native links must find the declared linker beside the

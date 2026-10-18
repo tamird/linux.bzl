@@ -134,6 +134,11 @@ def _impl(ctx):
     for name, val in {"KERNELRELEASE": release, "KBUILD_BUILD_VERSION": "1", "KBUILD_BUILD_TIMESTAMP": "Thu Jan 1 00:00:00 UTC 1970"}.items():
         variables[name] = {"value": val}
     variables = program(FLAG_PROGRAM["image_exports"], variables, sources, cells = True).variables
+
+    # Shell-owned BTF flags are computed by the action using the selected
+    # pahole. Recursive Make exports must preserve that deferred reference.
+    for name in FLAG_PROGRAM["image_btf_shell"]:
+        variables[name] = {"value": "${" + name + "}"}
     for name in list(tools) + ["LLVM", "LLVM_IAS", "KBUILD_BUILD_VERSION", "KBUILD_BUILD_TIMESTAMP"]:
         variables["__exports__"][name] = True
     observed = {

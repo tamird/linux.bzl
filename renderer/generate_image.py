@@ -281,7 +281,9 @@ def main(argv=None):
     data['image_programs'] = bodies
     data['image_compile_commands'] = sorted({n['name'][4:] for body in bodies.values() for n, _ in walk(body) if n['kind'] in ('assignment', 'define') and n.get('name', '').startswith('cmd_') and backend.refs(n['value_expression']) & {'c_flags', 'a_flags'}})
     data['image_postlink_outputs'] = {p: {n['name'][4:]: output_redirections(n['value_expression']) for n, _ in walk(body) if n['kind'] in ('assignment', 'define') and n.get('name', '').startswith('cmd_')} for p, body in bodies.items() if p.endswith('/Makefile.postlink')}
-    data['image_dtbs'] = bodies['scripts/Makefile.dtbs']
+    # Older sources keep DTB recipes in Makefile.lib, already included in the
+    # native implicit-rule program. Only newer sources add a separate phase.
+    data['image_dtbs'] = bodies.get('scripts/Makefile.dtbs', [])
     data['graph_helpers'] = graph
     data['image_arch'] = [{'kind': 'directive', 'directive': 'include', 'arguments_expression': [
         {'op': 'literal', 'value': 'arch/'}, {'op': 'reference', 'name': [{'op': 'literal', 'value': 'SRCARCH'}]}, {'op': 'literal', 'value': '/Makefile'}]}]
@@ -304,6 +306,15 @@ def main(argv=None):
     data['image_exports'] = export_directives(top)
     data['image_version'] = backend.slice_program(top, {'VERSION', 'PATCHLEVEL', 'SUBLEVEL', 'EXTRAVERSION'})
     first = next(n['line'] for n in flat if n.get('name') == 'obj-y')
+    # Makefile.build owns whether src is a logical directory found via VPATH
+    # or an explicitly rooted source path. Preserve that distinction for
+    # generated files which share its implicit source patterns.
+    data['image_build_init'] = backend.slice_program(backend.bounded(build, 0, first - 1), {'src'})
+    match [n for n, _ in walk(data['image_build_init']) if n.get('name') == 'src']:
+        case [_]:
+            pass
+        case assignments:
+            raise ValueError(f'Expected one native Makefile.build src initialization, got {assignments}')
     # Kbuild resets directory variables before reading configuration and local
     # assignments. The reset inventory changes between kernel versions.
     first_include = next(n['line'] for n in flat if n['line'] > first and
@@ -336,7 +347,17 @@ def main(argv=None):
     data['image_host_btfids'] = host_fallback(backend.slice_program(bodies['tools/bpf/resolve_btfids/Makefile'], {'HOSTCFLAGS_resolve_btfids', 'HOST_OVERRIDES'}))
     data['image_host_btfids_build'] = bodies['tools/bpf/resolve_btfids/Build']
     data['image_host_cflags'] = backend.slice_program(bodies['tools/build/Build.include'], {'c_flags', 'host_c_flags'})
-    data['image_btf'] = bodies['scripts/Makefile.btf']
+    data['image_btf'] = bodies.get('scripts/Makefile.btf', [])
+    data['image_btf_shell'] = {}
+    if 'scripts/Makefile.btf' not in bodies:
+        # Older sources calculate these flags with the selected pahole at
+        # execution time. Keep that native script as the policy owner.
+        assignments = [n['value_expression'] for n in top_nodes if n.get('name') == 'PAHOLE_FLAGS']
+        match assignments:
+            case [[{'op': 'function', 'name': 'shell', 'arguments': [command]}]]:
+                data['image_btf_shell']['PAHOLE_FLAGS'] = command
+            case _:
+                raise ValueError(f'Unsupported native pahole flag computation: {assignments}')
     _INCLUDE_DIRECTIVES = True
     data['image_link_global'] = backend.slice_program(backend.bounded(top, min(n['line'] for n in top_nodes if n.get('name') == 'LDFLAGS_vmlinux'), max(n['line'] for n in top_nodes if n.get('name') == 'LDFLAGS_vmlinux')), {'LDFLAGS_vmlinux'})
     data['image_link_programs'] = {p: backend.slice_program(body, {'LDFLAGS_vmlinux'}) for p, body in bodies.items()}
@@ -371,13 +392,20 @@ def main(argv=None):
     data['image_setup_programs'] = slice_includes(setup_roots)
     data['image_graph_programs'] = slice_includes({'libs-y', 'core-y', 'drivers-y', 'BITS', 'UTS_MACHINE', 'REALMODE_CFLAGS'})
     _INCLUDE_HEADER_RULES = True
+    header_dispatch = [make_text(n['value_expression']).split() for n in top_nodes
+                       if n.get('name') == 'asm-generic']
+    match header_dispatch:
+        case [['-f', header_makefile, 'obj']] if header_makefile.startswith('$(srctree)/'):
+            header_program = bodies[header_makefile.removeprefix('$(srctree)/')]
+        case _:
+            raise ValueError(f'Unsupported native asm-generic dispatch: {header_dispatch}')
     header_body, active = [], False
-    for node in bodies['scripts/Makefile.asm-headers']:
+    for node in header_program:
         if node['kind'] == 'rule':
             active = '%.h' in node['targets']
         if node['kind'] not in ('rule', 'recipe') or active:
             header_body.append(node)
-    data['image_asm_headers'] = backend.slice_program(header_body, {'generic-y', 'syscall-y', 'generated-y', 'filechk_wrap', 'cmd_syshdr', 'cmd_systbl'})
+    data['image_asm_headers'] = backend.slice_program(header_body, {'generic-y', 'syscall-y', 'generated-y', 'cmd_wrap', 'cmd_syshdr', 'cmd_systbl'})
     _INCLUDE_HEADER_RULES = False
     _INCLUDE_DIRECTIVES = False
     data['image_link'] = {}
@@ -427,7 +455,14 @@ def main(argv=None):
     data['image_link_exports'] = sorted({left or right for left, right in referenced})
     # These helpers run after the local Kbuild file. Do not replay the earlier
     # directory-variable initialization and erase its ccflags/asflags.
-    local_include = next(n['line'] for n, _ in walk(build) if n['kind'] == 'directive' and n.get('arguments') == '$(kbuild-file)')
+    local_includes = [n['line'] for n, _ in walk(build) if n['kind'] == 'directive' and
+                      n['directive'] in ('include', '-include', 'sinclude') and
+                      backend.refs(n['arguments_expression']) & {'kbuild-file', 'kbuild-dir'}]
+    match local_includes:
+        case [local_include]:
+            pass
+        case _:
+            raise ValueError(f'Expected one local Kbuild include, got {local_includes}')
     data['image_object_helpers'] = without_graph(backend.slice_program(bodies['scripts/Makefile.lib'] + backend.bounded(build, local_include + 1, max(n['line'] for n, _ in walk(build))), {'cmd_objtool', 'objtool-enabled'}))
     data['image_cpp'] = [n for n in top_nodes if n.get('name') == 'CPP']
     def implicit_rules(body):

@@ -86,8 +86,8 @@ def _context(directory, state):
         for k, v in {
             "obj": directory,
             "objtree": ".",
-            "src": "__source__/" + directory,
             "srctree": "__source__",
+            "VPATH": "__source__",
             "building_out_of_srctree": "1",
             "srcroot": "__source__",
             "SRCARCH": state["arch"],
@@ -102,6 +102,7 @@ def _context(directory, state):
         initial["__config__"] = state["config"]
         if directory in state["dtbs_lists"]:
             initial["need-dtbslist"] = {"value": "1"}
+        initial = program(FLAG_PROGRAM["image_build_init"], initial, state["sources"], cells = True).variables
         local_context = None
         graph_variables = {}
 
