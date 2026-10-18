@@ -166,6 +166,42 @@ jobs:
             --experimental_output_paths=strip --output_groups=+qualification_manifest --jobs=4 \
             --noinclude_pruned_inputs --output=jsonproto > "$RUNNER_TEMP/native-tools.aquery.json"
 
+      - name: Build the native compiler controls
+        if: ${{ inputs.scope == 'native-tools' }}
+        timeout-minutes: 20
+        run: |
+          bazel build //:native_compiler_checks //:native_compiler_checks_5_10 \
+            --override_repository=kbuild_exporter="$KBUILD_EXPORTER" \
+            --platforms=@llvm//platforms:linux_x86_64 \
+            --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
+            --experimental_output_paths=strip --//:validate_native_objects \
+            --output_groups=+qualification_manifest --jobs=4 --keep_going \
+            --execution_log_compact_file="$RUNNER_TEMP/native-controls.execution.pb.zst" \
+            --profile="$RUNNER_TEMP/native-controls.profile.gz"
+
+      - name: Authenticate and compare the native compiler controls
+        if: ${{ inputs.scope == 'native-tools' }}
+        run: |
+          evidence="$GITHUB_WORKSPACE/validation/compiler-controls"
+          mkdir -p "$evidence"
+          options=(
+            --override_repository=kbuild_exporter="$KBUILD_EXPORTER"
+            --platforms=@llvm//platforms:linux_x86_64
+            --extra_execution_platforms=@llvm//platforms:linux_x86_64
+            --experimental_output_paths=strip --//:validate_native_objects --jobs=4
+          )
+          for name in default 5_10; do
+            target=//:native_compiler_checks
+            if [[ "$name" == 5_10 ]]; then target+=_5_10; fi
+            bazel aquery "deps($target)" "${options[@]}" \
+              --output_groups=+qualification_manifest --noinclude_pruned_inputs --output=jsonproto > "$evidence/$name.aquery.json"
+            bazel cquery "$target" "${options[@]}" \
+              --output=files --output_groups=qualification_manifest > "$evidence/$name.manifest-path"
+          done
+          execution_root="$(bazel info execution_root)"
+          bazel run //:ir_compare "${options[@]}" -- \
+            --controls-results "$evidence" --execution-root "$execution_root"
+
       - name: Test the native configuration and measured build owners
         if: ${{ (inputs.scope || 'full') == 'full' }}
         run: |
@@ -209,6 +245,7 @@ jobs:
           path: |
             validation/
             ${{ runner.temp }}/native-tools*
+            ${{ runner.temp }}/native-controls*
             bazel-out/**/bin/native/exporter_archive.tar.gz
             bazel-testlogs/repository_test/test.outputs/
             bazel-testlogs/**/test.log
@@ -221,5 +258,9 @@ jobs:
             bazel-out/**/bin/native_btf_tools.tree/**
             bazel-out/**/bin/native_btf_tools_5_10.manifest.json
             bazel-out/**/bin/native_btf_tools_5_10.tree/**
+            bazel-out/**/bin/native_compiler_checks.manifest.json
+            bazel-out/**/bin/native_compiler_checks.tree/**
+            bazel-out/**/bin/native_compiler_checks_5_10.manifest.json
+            bazel-out/**/bin/native_compiler_checks_5_10.tree/**
           if-no-files-found: warn
           retention-days: 7

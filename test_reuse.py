@@ -293,6 +293,45 @@ class ReuseTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     ir_reuse_report.snapshot_diagnostics(self.directory, "bad", self.directory, manifest, graph)
 
+    def test_bounded_controls_require_object_bytes_and_diagnostic_outcomes(self) -> None:
+        _, manifest = self.diagnostic_graph()
+        paths = self.native_recipe_files(self.directory / "controls")
+        manifest["native_recipe_checks"] = paths
+        query = json.loads((self.directory / "query.json").read_text())
+        outputs = []
+        for path in paths.values():
+            identity = str(len(query["artifacts"]) + 1)
+            query["pathFragments"].append({"id": identity, "label": path})
+            query["artifacts"].append({"id": identity, "pathFragmentId": identity})
+            outputs.append(identity)
+        query["actions"].append({"mnemonic": "KernelArtifact", "outputIds": outputs})
+        for key in ("compilers", "compiler_inventory", "artifacts"):
+            manifest[key]["lib/ctype.o"] = manifest[key].pop("unit.o")
+        for job in manifest["compiler_jobs"]:
+            job["target"] = "lib/ctype.o"
+        manifest["roots"] = ["lib/ctype.o"]
+        self.write("manifest.json", manifest)
+        (self.directory / "config").mkdir()
+        (self.directory / "config/.config").write_text("CONFIG_64BIT=y\n")
+        for path in ("reference.o", "backend.o", "final.o", "frontend.bc"):
+            (self.directory / path).write_bytes(b"actual compiler output")
+        for name in ("default", "5_10"):
+            self.write(f"{name}.aquery.json", query)
+            (self.directory / f"{name}.manifest-path").write_text("manifest.json\n")
+        ir_compare.compare_controls(self.directory, self.directory)
+        self.assertEqual((self.directory / "objects/default/lib/ctype.o.object").read_bytes(), b"actual compiler output")
+        self.assertEqual((self.directory / "diagnostics/5_10/attribute.bc").read_bytes(), b"attribute.bc")
+        for content in (b"different backend output", b""):
+            (self.directory / "backend.o").write_bytes(content)
+            with self.assertRaises(AssertionError):
+                ir_compare.compare_controls(self.directory, self.directory)
+        (self.directory / "backend.o").write_bytes(b"actual compiler output")
+        cases = diagnostics()
+        cases[0]["outcomes"][1]["returncode"] = 0
+        self.write("scheduled/diagnostics.json", cases)
+        with self.assertRaises(AssertionError):
+            ir_compare.compare_controls(self.directory, self.directory)
+
     def family(self) -> None:
         targets = ["kernel/panic.o", "arch/x86/boot/string.o", "lib/ctype.o", "lib/string.o"]
         for phase in ir_reuse_report.FAMILY_PHASES:

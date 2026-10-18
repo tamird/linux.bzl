@@ -297,6 +297,16 @@ py_test(
     main = "test_reuse.py",
 )
 
+py_binary(
+    name = "ir_compare",
+    srcs = [
+        "qualification/ir_compare.py",
+        "qualification/ir_reuse_report.py",
+        "qualification/reuse_report.py",
+    ],
+    main = "qualification/ir_compare.py",
+)
+
 filegroup(
     name = "kbuild_exporter_sources",
     srcs = glob(["renderer/*.py"]),

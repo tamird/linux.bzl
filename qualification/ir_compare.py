@@ -4,8 +4,9 @@ import argparse
 import json
 from pathlib import Path
 import re
+import shutil
 
-from qualification.ir_reuse_report import FAMILY, FAMILY_PHASES, read_snapshot
+from qualification.ir_reuse_report import FAMILY, FAMILY_PHASES, read_snapshot, snapshot
 
 
 def check_diagnostics(cases: list[object]) -> dict[str, dict[str, int]]:
@@ -78,10 +79,49 @@ def compare_family(directory: Path) -> None:
     assert "-g" in flags and "-m16" in flags, flags
 
 
+def compare_controls(directory: Path, workspace: Path) -> None:
+    """Check the two native ctype producers before running the full family."""
+    parity, diagnostics, errors = {}, {}, {}
+    for name in ("default", "5_10"):
+        snapshot(directory, name, workspace)
+        records = read_snapshot(directory / f"{name}.ir.json")
+        assert "lib/ctype.o" in records, records.keys()
+        mismatches = []
+        for target, record in records.items():
+            for role, path in record["paths"].items():
+                destination = directory / "objects" / name / (target + "." + role)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(workspace / path, destination)
+            integrated = (workspace / record["paths"]["integrated"]).read_bytes()
+            obj = (workspace / record["paths"]["object"]).read_bytes()
+            if not obj or obj != integrated:
+                mismatches.append(target)
+        parity[name] = mismatches
+        cases = json.loads((directory / "diagnostics" / name / "report.json").read_text())
+        try:
+            diagnostics[name] = check_diagnostics(cases)
+        except (AssertionError, ValueError) as error:
+            errors[name] = str(error)
+    result = {"object_mismatches": parity, "diagnostics": diagnostics, "diagnostic_errors": errors}
+    (directory / "controls-comparison.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(result, indent=2))
+    assert all(not mismatches for mismatches in parity.values()), parity
+    assert not errors, errors
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--family-results", type=Path, required=True)
-    compare_family(parser.parse_args().family_results)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--family-results", type=Path)
+    mode.add_argument("--controls-results", type=Path)
+    parser.add_argument("--execution-root", type=Path)
+    args = parser.parse_args()
+    if args.controls_results is not None:
+        if args.execution_root is None:
+            parser.error("--controls-results requires --execution-root")
+        compare_controls(args.controls_results, args.execution_root)
+    else:
+        compare_family(args.family_results)
 
 
 if __name__ == "__main__":
