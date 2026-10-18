@@ -1,3 +1,4 @@
+load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@buildifier_prebuilt//:rules.bzl", "buildifier", "buildifier_test")
 load("@rules_cc//cc/toolchains:cc_toolchain.bzl", "cc_toolchain")
 load("@rules_python//python:defs.bzl", "py_test")
@@ -127,11 +128,11 @@ py_test(
     srcs = ["test_config_values.py"],
     args = [
         "$(rootpath :action_built_report)",
-        json.encode({
+        shell.quote(json.encode({
             "X86": "y",
             "64BIT": "y",
             "CC_IS_CLANG": "y",
-        }),
+        })),
         "--compiler-suffix=/compiler_driver",
     ],
     data = [":action_built_report"],

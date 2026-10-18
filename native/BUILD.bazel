@@ -1,4 +1,5 @@
 load("@autoconf.bzl//:autoconf.bzl", "autoconf", "compile_test")
+load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@bazel_skylib//rules/directory:subdirectory.bzl", "subdirectory")
 load("@rules_python//python:defs.bzl", "py_test")
 load("//rules:compiler.bzl", "kernel_compiler")
@@ -101,7 +102,9 @@ kernel_config(
         mode = mode,
         pahole = "@pahole//:pahole",
         requested = requested,
-        source = ":source",
+        # This source gates choice members on the parent prompt. Newer native
+        # Kconfig permits an explicitly selected member under a hidden prompt.
+        source = ":source_5_10",
     )
     for name, mode, requested in [
         (
@@ -123,7 +126,7 @@ kernel_config(
         srcs = ["//:test_config_values.py"],
         args = [
             "$(rootpath :" + name + ")",
-            json.encode(expected),
+            shell.quote(json.encode(expected)),
         ] + extra,
         data = [":" + name],
         main = "//:test_config_values.py",
