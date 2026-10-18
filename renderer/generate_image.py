@@ -64,6 +64,20 @@ def without_assignments(body, owned):
     return result
 
 
+def early_controls(body, names, before):
+    """Retain native invocation controls without unrelated export dependencies."""
+    result = []
+    for node in body:
+        if node['kind'] == 'conditional':
+            branches = [dict(branch, body=early_controls(branch['body'], names, before))
+                        for branch in node['branches']]
+            if any(branch['body'] for branch in branches):
+                result.append(dict(node, branches=branches))
+        elif node['kind'] in ('assignment', 'define') and node.get('name') in names and node['line'] < before:
+            result.append(node)
+    return result
+
+
 def lower_eval_template(terms, make, definitions):
     """Parse fixed eval template syntax natively, retaining its symbolic loops."""
     significant = [t for t in terms if t['op'] != 'literal' or t['value'].strip()]
@@ -626,7 +640,11 @@ def main(argv=None):
         # top-level exports. Preserve that selector in the original setup.
         backend.ROOTS |= backend.refs(data['image_recordmcount']['program']) & export_names(top)
     global_program, _, helpers, _ = backend.flags_program(tree, linux, defer_arch=True)
-    data['global'] = without_assignments(lower_compiler_queries(lower_text_transforms(backend.lower_probes(global_program))), root_nodes)
+    first_setup = min(node['line'] for node, _ in walk(global_program) if node.get('file') == top_nodes[0]['file'])
+    # checksrc inherits its native mode from the parent invocation, before the
+    # bounded compiler setup. Empty and zero differ in its later validation.
+    data['image_compiler_controls'] = early_controls(top, {'KBUILD_CHECKSRC'}, first_setup)
+    data['global'] = data['image_compiler_controls'] + without_assignments(lower_compiler_queries(lower_text_transforms(backend.lower_probes(global_program))), root_nodes)
     setup_roots = backend.ROOTS | backend.refs(data["image_command_helpers"]) | backend.refs(global_program) | backend.refs(helpers) | {'BITS', 'UTS_MACHINE', 'REALMODE_CFLAGS', 'CLANG_FLAGS', 'libs-y', 'core-y', 'drivers-y', 'LDFLAGS_vmlinux'}
     def slice_includes(roots):
         # An included file may define a variable referenced by its caller.

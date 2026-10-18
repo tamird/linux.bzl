@@ -102,6 +102,15 @@ def _recursive_flags_impl(ctx):
 
 _recursive_flags_test = unittest.make(_recursive_flags_impl)
 
+def _compiler_controls_impl(ctx):
+    env = unittest.begin(ctx)
+    for initial, expected in [({}, "0"), ({"KBUILD_CHECKSRC": "2"}, "2")]:
+        variables = program(FLAG_PROGRAM["image_compiler_controls"], initial, {}).variables
+        asserts.equals(env, expected, value("KBUILD_CHECKSRC", variables, {}))
+    return unittest.end(env)
+
+_compiler_controls_test = unittest.make(_compiler_controls_impl)
+
 def _deferred_condition_impl(ctx):
     capture = [{"op": "function", "name": "shell", "arguments": [[{"op": "literal", "value": "printf y"}]]}]
     sources = {"__shell_commands__": []}
@@ -168,6 +177,7 @@ _native_shell_test = rule(implementation = _native_shell_impl, test = True, attr
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
 def architecture_tests():
+    _compiler_controls_test(name = "compiler_controls_test")
     _native_shell_test(name = "native_shell_recipe_test")
     checks = [":native_shell_recipe_test"]
     for directive in [False, True]:

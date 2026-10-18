@@ -175,6 +175,7 @@ jobs:
               @kernel//architecture_tests:conflicting_width_test
               @kernel//architecture_tests:selected_compiler_capabilities_test
               @kernel//architecture_tests:recursive_flags_test
+              @kernel//architecture_tests:compiler_controls_test
               @kernel//architecture_tests:native_shell_test
             build: '@kernel//multi_platform:configs @linux.bzl//execution_tools:check'
     steps:
