@@ -189,8 +189,26 @@ jobs:
             phases=(base unchanged lz4 debug btf changed)
             report_flags=(--family)
             mapping+=(--platforms=@llvm//platforms:linux_x86_64)
-            build_flags=(--output_groups=+kernel,+boot,+modules,+manifest,+ir_experiment
+            build_flags=("--output_groups=+kernel,+boot,+modules,+manifest,+ir_experiment"
               --sandbox_block_path=/bin --sandbox_block_path=/usr/bin --sandbox_block_path=/usr/local/bin)
+            output_base=$(bazel info output_base)
+            output_path=$(bazel info output_path)
+            # Read the cache locations declared by setup-bazel for this job.
+            disk_cache=$(awk '$1 == "build" && $2 ~ /^--disk_cache=/ {sub(/^--disk_cache=/, "", $2); print $2; count++} END {if (count != 1) exit 1}' "$HOME/.bazelrc")
+            repository_cache=$(awk '$1 == "common" && $2 ~ /^--repository_cache=/ {sub(/^--repository_cache=/, "", $2); print $2; count++} END {if (count != 1) exit 1}' "$HOME/.bazelrc")
+            storage_report() {
+              date -u
+              df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+              df -i "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+              for path in "$output_path" "$output_base/external" "$output_base/sandbox" "$disk_cache" "$repository_cache"; do
+                if [[ -e "$path" ]]; then
+                  du -sh "$path"
+                  du -s --inodes "$path"
+                fi
+              done
+            }
+            storage_report > "$results/storage-before.log" 2>&1 || true
+            trap 'status=$?; if (( status != 0 )); then set +e; storage_report > "$results/storage-failure.log" 2>&1; fi; exit "$status"' EXIT
           fi
           for phase in "${phases[@]}"; do
             variant="$phase"
@@ -244,6 +262,7 @@ jobs:
             ${{ runner.temp }}/linux-prototype-qualification/*.json
             ${{ runner.temp }}/linux-prototype-qualification/*.jsonl
             ${{ runner.temp }}/linux-prototype-qualification/*.pb.zst
+            ${{ runner.temp }}/linux-prototype-qualification/storage-*.log
             ${{ runner.temp }}/linux-prototype-qualification/diagnostics/**
             ${{ runner.temp }}/linux-prototype-qualification/mismatches/**
             examples/bazel-testlogs/qualification/**/test.log
