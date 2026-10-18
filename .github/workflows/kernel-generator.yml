@@ -1,0 +1,123 @@
+name: Kernel repository generator
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      platform:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  static-generator:
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 45
+    env:
+      USE_BAZEL_VERSION: 9.1.0
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install tracing tool
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y strace
+
+      - name: Configure Bazel
+        uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: kernel-repository-${{ inputs.platform }}
+          repository-cache: |
+            - MODULE.bazel
+            - MODULE.bazel.lock
+          cache-save: ${{ github.event_name != 'pull_request' }}
+
+      - name: Test prototype helpers and formatting
+        run: bazel test //... --jobs=4 --test_output=errors
+
+      - name: Check native Kconfig source APIs
+        run: >-
+          bazel test //:kconfig_test
+          //native/linux_5_10:kconfig_test //native/linux_5_15:kconfig_test
+          //native/linux_6_1:kconfig_test //native/linux_6_6:kconfig_test
+          //native/linux_6_12:kconfig_test //native/linux_6_18:kconfig_test
+          --platforms=@llvm//platforms:${{ inputs.platform }} --jobs=4 --test_output=errors
+
+      - name: Build generator from source
+        run: bazel build //:consumer_support --platforms=@llvm//platforms:${{ inputs.platform }} --jobs=4
+
+      - name: Audit standalone generation
+        shell: bash
+        run: |
+          trace=()
+          if [[ "$RUNNER_OS" == Linux ]]; then trace+=(--test_arg=--strace); fi
+          bazel test //:repository_test --platforms=@llvm//platforms:${{ inputs.platform }} --jobs=4 "${trace[@]}" --test_output=errors
+
+      - name: Upload consumer support
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-repository-consumer-${{ inputs.platform }}
+          path: bazel-bin/consumer-support.tar.gz
+          retention-days: 7
+
+      - name: Build and audit LTS generators
+        shell: bash
+        run: |
+          trace=()
+          if [[ "$RUNNER_OS" == Linux ]]; then trace+=(--test_arg=--strace); fi
+          bazel build \
+            //native/linux_5_10:consumer_support //native/linux_5_15:consumer_support \
+            //native/linux_6_1:consumer_support //native/linux_6_6:consumer_support \
+            //native/linux_6_12:consumer_support //native/linux_6_18:consumer_support \
+            --platforms=@llvm//platforms:${{ inputs.platform }} --jobs=4
+          bazel test \
+            //native/linux_5_10:repository_test //native/linux_5_15:repository_test \
+            //native/linux_6_1:repository_test //native/linux_6_6:repository_test \
+            //native/linux_6_12:repository_test //native/linux_6_18:repository_test \
+            --platforms=@llvm//platforms:${{ inputs.platform }} --jobs=4 "${trace[@]}" --test_output=errors
+
+      - name: Upload LTS consumer support
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-repository-consumer-lts-${{ inputs.platform }}
+          path: |
+            bazel-bin/native/linux_5_10/consumer-support.tar.gz
+            bazel-bin/native/linux_5_15/consumer-support.tar.gz
+            bazel-bin/native/linux_6_1/consumer-support.tar.gz
+            bazel-bin/native/linux_6_6/consumer-support.tar.gz
+            bazel-bin/native/linux_6_12/consumer-support.tar.gz
+            bazel-bin/native/linux_6_18/consumer-support.tar.gz
+          retention-days: 7
+
+      - name: Upload generation diagnostics and executable
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-repository-prototype-${{ inputs.platform }}
+          path: |
+            bazel-bin/kernel-repository
+            bazel-testlogs/repository_test/test.log
+            bazel-testlogs/repository_test/test.outputs/**
+            bazel-bin/native/linux_6_18/kernel-repository
+            bazel-testlogs/native/linux_6_18/repository_test/test.log
+            bazel-testlogs/native/linux_6_18/repository_test/test.outputs/**
+            bazel-testlogs/native/linux_6_12/repository_test/test.log
+            bazel-testlogs/native/linux_6_12/repository_test/test.outputs/**
+            bazel-testlogs/native/linux_6_6/repository_test/test.log
+            bazel-testlogs/native/linux_6_6/repository_test/test.outputs/**
+            bazel-testlogs/native/linux_6_1/repository_test/test.log
+            bazel-testlogs/native/linux_6_1/repository_test/test.outputs/**
+            bazel-testlogs/native/linux_5_15/repository_test/test.log
+            bazel-testlogs/native/linux_5_15/repository_test/test.outputs/**
+            bazel-testlogs/native/linux_5_10/repository_test/test.log
+            bazel-testlogs/native/linux_5_10/repository_test/test.outputs/**
+            bazel-testlogs/**/kconfig_test/test.log
+          if-no-files-found: warn
+          retention-days: 7
+
