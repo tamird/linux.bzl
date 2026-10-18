@@ -3,7 +3,7 @@
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts", "unittest")
 load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
 load(":architecture.bzl", "KernelArchitectureInfo")
-load(":commands.bzl", "native_recipe", "shell_quote", "value")
+load(":commands.bzl", "native_recipe", "shell_quote", "shell_words", "value")
 load(":compiler_capabilities.bzl", "KernelCompilerCapabilityVerificationInfo")
 load(":expressions.bzl", "evaluate", "program")
 load(":flag_program.bzl", "FLAG_PROGRAM")
@@ -25,7 +25,7 @@ _transition = transition(implementation = _select, inputs = [], outputs = [_ACTI
 def _snapshot_impl(ctx):
     config = ctx.attr.config[KernelConfigInfo]
     setup = ctx.attr._setup[KernelToolchainInfo]
-    flags = {name: evaluate([{"op": "reference", "name": [{"op": "literal", "value": name}]}], setup.variables, setup.sources) for name in ["KBUILD_CFLAGS", "KBUILD_CPPFLAGS", "LINUXINCLUDE", "LDFLAGS_vmlinux"]}
+    flags = {name: evaluate([{"op": "reference", "name": [{"op": "literal", "value": name}]}], setup.variables, setup.sources) for name in ["KBUILD_CFLAGS", "KBUILD_CPPFLAGS", "LINUXINCLUDE", "LDFLAGS_vmlinux", "REALMODE_CFLAGS"]}
     out = ctx.actions.declare_file(ctx.label.name + ".json")
     data = {"arch": config.architecture.arch, "srcarch": config.architecture.srcarch, "bits": config.architecture.bits, "values": config.values, "flags": flags, "config": config.config.path, "report": config.report.path}
     ctx.actions.write(out, json.encode(data))
@@ -53,6 +53,14 @@ def _check_impl(ctx):
         if symbol != ctx.attr.symbol:
             asserts.equals(env, "n", info.values.get(symbol, "n"))
     return analysistest.end(env)
+
+def _realmode_flags_impl(ctx):
+    env = analysistest.begin(ctx)
+    flags = analysistest.target_under_test(env)[SnapshotInfo].flags["REALMODE_CFLAGS"]
+    asserts.true(env, "-m16" in shell_words(flags), flags)
+    return analysistest.end(env)
+
+_realmode_flags_test = analysistest.make(_realmode_flags_impl, config_settings = {"//command_line_option:platforms": [str(Label("//architecture_tests:x86_64"))]})
 
 def _config_check_impl(ctx):
     env = analysistest.begin(ctx)
@@ -207,6 +215,7 @@ def architecture_tests(native_cpu = False):
 
     kernel_config(name = "config", options = "//options:options", requested = {"EXPERT": "y", "STACKPROTECTOR": "n", "UNWINDER_FRAME_POINTER": "y"})
     snapshot(name = "snapshot", config = ":config")
+    _realmode_flags_test(name = "realmode_flags_test", target_under_test = ":snapshot")
     kbuild_resolved_build(name = "object", config = ":config", catalog = "//:catalog", roots = ["lib/oid_registry.o"], tags = ["manual"])
     for cpu, arch, srcarch, symbol, triple in [("x86_64", "x86_64", "x86", "X86", "x86_64-linux-gnu"), ("aarch64", "arm64", "arm64", "ARM64", "aarch64-linux-gnu"), ("riscv64", "riscv", "riscv", "RISCV", "riscv64-linux-gnu")]:
         native.platform(name = cpu, constraint_values = ["@platforms//os:linux", "@platforms//cpu:" + cpu])

@@ -72,6 +72,7 @@ jobs:
               @kernel//architecture_tests:conflicting_width_test
               @kernel//architecture_tests:selected_compiler_capabilities_test
               @kernel//architecture_tests:recursive_flags_test
+              @kernel//architecture_tests:realmode_flags_test
               @kernel//architecture_tests:compiler_controls_test
               @kernel//architecture_tests:native_cpu_test
               @kernel//architecture_tests:native_shell_test
@@ -186,6 +187,9 @@ jobs:
         working-directory: examples
         run: |
           mkdir -p ../_tmp/capability-reports
+          bazel --host_jvm_args=-Xmx8g test @kernel//architecture_tests:realmode_flags_test \
+            --platforms=@llvm//platforms:linux_x86_64 \
+            --extra_execution_platforms=@llvm//platforms:linux_x86_64 --jobs=4 --test_output=errors
           verification_status=0
           for cpu in x86_64 aarch64; do
             flags=(--platforms=@llvm//platforms:linux_$cpu --extra_execution_platforms=@llvm//platforms:linux_x86_64)

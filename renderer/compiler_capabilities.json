@@ -23,6 +23,23 @@
   },
   {
     "kbuild": true,
+    "probe": "cc-option",
+    "argument": "-m16",
+    "srcarch": "x86",
+    "compilers": [
+      "clang",
+      "llvm"
+    ],
+    "description": "LLVM x86 supports 16-bit real-mode code generation",
+    "source": "#if !defined(__i386__) || defined(__x86_64__)\n#error wrong real-mode compiler ABI\n#endif\nint entry(void) { return 0; }\n",
+    "language": "c",
+    "flags": [
+      "-Werror",
+      "-m16"
+    ]
+  },
+  {
+    "kbuild": true,
     "probe": "cc-option-yn",
     "argument": "-mfentry",
     "srcarch": "x86",
