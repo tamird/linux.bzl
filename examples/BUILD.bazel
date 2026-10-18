@@ -84,33 +84,55 @@ kernel_btf_test(
     tags = ["manual"],
 )
 
+MODULE_OPTIONS = dict(
+    EXAMPLE_CONFIGS["btf"],
+    INET = "y",
+    MODULES = "y",
+    NET = "y",
+    NET_CLS_ACT = "y",
+    NET_SCHED = "y",
+    NET_SCH_INGRESS = "m",
+)
+
+MODULE_REQUIRED_OPTIONS = {
+    "DEBUG_INFO_BTF": "y",
+    "MODULES": "y",
+    "NET_SCH_INGRESS": "m",
+}
+
 kernel_example(
     name = "aarch64_modules",
     architecture_roots = {"arm64": ["arch/arm64/boot/Image"]},
     modules = ["net/sched/sch_ingress.ko"],
-    overrides = dict(
-        EXAMPLE_CONFIGS["btf"],
-        INET = "y",
-        MODULES = "y",
-        NET = "y",
-        NET_CLS_ACT = "y",
-        NET_SCHED = "y",
-        NET_SCH_INGRESS = "m",
-    ),
+    overrides = MODULE_OPTIONS,
     pahole = "@kernel//:pahole",
     platform = "@llvm//platforms:linux_aarch64",
     requested = EXAMPLE_CONFIGS["aarch64"],
-    required_options = {
-        "DEBUG_INFO_BTF": "y",
-        "MODULES": "y",
-        "NET_SCH_INGRESS": "m",
-    },
+    required_options = MODULE_REQUIRED_OPTIONS,
     tags = ["manual"],
 )
 
 kernel_btf_test(
     name = "aarch64_modules_btf_test",
     kernel = ":aarch64_modules",
+    tags = ["manual"],
+)
+
+kernel_example(
+    name = "x86_64_modules",
+    architecture_roots = {"x86": ["arch/x86/boot/bzImage"]},
+    modules = ["net/sched/sch_ingress.ko"],
+    overrides = MODULE_OPTIONS,
+    pahole = "@kernel//:pahole",
+    platform = "@llvm//platforms:linux_x86_64",
+    requested = EXAMPLE_CONFIGS["x86_64"],
+    required_options = MODULE_REQUIRED_OPTIONS,
+    tags = ["manual"],
+)
+
+kernel_btf_test(
+    name = "x86_64_modules_btf_test",
+    kernel = ":x86_64_modules",
     tags = ["manual"],
 )
 

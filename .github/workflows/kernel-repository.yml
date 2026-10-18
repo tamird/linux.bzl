@@ -92,14 +92,22 @@ jobs:
         run: |
           trace=()
           if [[ "$RUNNER_OS" == Linux ]]; then trace+=(--test_arg=--strace); fi
-          bazel build //native/linux_6_12:consumer_support //native/linux_6_18:consumer_support --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4
-          bazel test //native/linux_6_12:repository_test //native/linux_6_18:repository_test --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4 "${trace[@]}" --test_output=errors
+          bazel build \
+            //native/linux_6_1:consumer_support //native/linux_6_6:consumer_support \
+            //native/linux_6_12:consumer_support //native/linux_6_18:consumer_support \
+            --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4
+          bazel test \
+            //native/linux_6_1:repository_test //native/linux_6_6:repository_test \
+            //native/linux_6_12:repository_test //native/linux_6_18:repository_test \
+            --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4 "${trace[@]}" --test_output=errors
 
       - name: Upload LTS consumer support
         uses: actions/upload-artifact@v7
         with:
           name: kernel-repository-consumer-lts-${{ matrix.platform }}
           path: |
+            bazel-bin/native/linux_6_1/consumer-support.tar.gz
+            bazel-bin/native/linux_6_6/consumer-support.tar.gz
             bazel-bin/native/linux_6_12/consumer-support.tar.gz
             bazel-bin/native/linux_6_18/consumer-support.tar.gz
           retention-days: 7
@@ -118,6 +126,10 @@ jobs:
             bazel-testlogs/native/linux_6_18/repository_test/test.outputs/**
             bazel-testlogs/native/linux_6_12/repository_test/test.log
             bazel-testlogs/native/linux_6_12/repository_test/test.outputs/**
+            bazel-testlogs/native/linux_6_6/repository_test/test.log
+            bazel-testlogs/native/linux_6_6/repository_test/test.outputs/**
+            bazel-testlogs/native/linux_6_1/repository_test/test.log
+            bazel-testlogs/native/linux_6_1/repository_test/test.outputs/**
             bazel-testlogs/**/kconfig_test/test.log
           if-no-files-found: warn
           retention-days: 7
@@ -234,7 +246,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        source: [linux_6_12, linux_6_18]
+        source: [linux_6_1, linux_6_6, linux_6_12, linux_6_18]
     timeout-minutes: 90
     env:
       USE_BAZEL_VERSION: 9.1.0
@@ -260,13 +272,13 @@ jobs:
           tar -xzf _tmp/kernel-repository/${{ matrix.source }}/consumer-support.tar.gz -C _tmp/kernel-repository
           python3 example.py --linux "$source_root" --generated _tmp/kernel-repository/support
 
-      - name: Build x86 and ARM64 boot images, BTF and ingress module
+      - name: Build x86 and ARM64 BTF kernels, boot images and ingress modules
         working-directory: examples
         run: |
-          bazel build //:aarch64_modules //:x86_64_kernel --output_groups=kernel,boot,modules --jobs=4 \
+          bazel build //:aarch64_modules //:x86_64_modules --output_groups=kernel,boot,modules --jobs=4 \
             --sandbox_block_path=/bin --sandbox_block_path=/usr/bin \
             --sandbox_block_path=/usr/local/bin
-          bazel test //:aarch64_modules_btf_test //:x86_64_config_test --jobs=4 --test_output=errors
+          bazel test //:aarch64_modules_btf_test //:x86_64_modules_btf_test //:x86_64_config_test --jobs=4 --test_output=errors
 
       - name: Upload LTS test logs
         if: ${{ !cancelled() }}
