@@ -3,9 +3,13 @@ _ASCII = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abc
 
 def read_payload(expanded):
     chunks = sorted([f.basename for f in expanded.children if "=" in f.basename])
-    encoded = "".join([s.split("=", 1)[1] for s in chunks])
-    text = "".join([_ASCII[int(encoded[i:i + 2], 16) - 32] for i in range(0, len(encoded), 2)])
-    return json.decode(text)
+    decoded = []
+    for chunk in chunks:
+        # Both publishers split at 180 hex characters, so each chunk ends
+        # on a byte boundary. Keep the character list local to that chunk.
+        encoded = chunk.split("=", 1)[1]
+        decoded.append("".join([_ASCII[int(encoded[i:i + 2], 16) - 32] for i in range(0, len(encoded), 2)]))
+    return json.decode("".join(decoded))
 
 def writer(tctx, python, script, root, python_files):
     count = []
