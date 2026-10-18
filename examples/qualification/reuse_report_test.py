@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from qualification import reuse_report
+from qualification import ir_reuse_report, reuse_report
 
 
 _OUTPUTS = [f"bazel-out/bin/_objs/kernel.compile/{target}/source/{target}" for target in (
@@ -88,6 +88,45 @@ class ReuseReportTest(unittest.TestCase):
         self.assertEqual(result.cached, {(_OUTPUTS[1],)})
         self.assertEqual(result.report()["absent_from_execution_log"], 7)
         self.assertEqual(result.outcome((_OUTPUTS[2],)), "absent_from_execution_log")
+
+    def test_ir_snapshot_uses_the_report_producer_not_its_alias(self) -> None:
+        paths = {role: f"bazel-out/cfg/bin/native/{role}" for role in ("frontend", "bitcode", "integrated", "object")}
+        report = "bazel-out/cfg/bin/native/kernel.ir.json"
+        alias = "bazel-out/cfg/bin/view/kernel.ir.json"
+        outputs = [report, alias, *paths.values()]
+        graph = query(outputs)
+        graph["actions"][0]["mnemonic"] = "FileWrite"
+        graph["actions"][1]["mnemonic"] = "Symlink"
+        (self.directory / "base.aquery.json").write_text(json.dumps(graph))
+        for role, path in paths.items():
+            output = self.directory / path
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(role)
+        (self.directory / report).write_text(json.dumps({"lib/ctype.o": paths}))
+        ir_reuse_report.snapshot(self.directory, "base", self.directory)
+        snapshot = ir_reuse_report.read_snapshot(self.directory / "base.ir.json")
+        self.assertEqual(snapshot["lib/ctype.o"]["paths"], paths)
+
+    def test_ir_roles_follow_declared_files_and_reject_duplicates(self) -> None:
+        roles = {"frontend": "bazel-out/cfg/bin/first", "integrated": "bazel-out/cfg/bin/reference", "object": "bazel-out/cfg/bin/final"}
+        artifacts = {"lib/ctype.o": ir_reuse_report.ArtifactRecord(paths=roles, digests={})}
+        entries = [{"invocation": "ir", "hashFunctionName": "SHA-256"}]
+        entries.extend({"id": index + 1, "path": path} for index, path in enumerate(roles.values()))
+        for index in range(len(roles)):
+            entry = spawn(index, cache_hit=True)
+            native = entry["spawn"]
+            assert isinstance(native, dict), entry
+            native["digest"] = {"hash": str(index), "sizeBytes": 146}
+            entries.append(entry)
+        path = self.directory / "ir.execution.jsonl"
+        path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+        result = ir_reuse_report.execution(path, artifacts)
+        self.assertEqual(result["frontend"][0]["output"], roles["frontend"])
+        self.assertEqual(result["outcomes"].keys(), {"integrated:lib/ctype.o", "object:lib/ctype.o"})
+        with path.open("a") as output:
+            output.write(json.dumps(entries[1 + len(roles)]) + "\n")
+        with self.assertRaisesRegex(ValueError, "Duplicate selected compiler frontend:lib/ctype.o"):
+            ir_reuse_report.execution(path, artifacts)
 
     def test_invocation_only_log_is_valid(self) -> None:
         path = self.directory / "unchanged.execution.jsonl"

@@ -30,14 +30,14 @@ def _variant_impl(ctx):
         fail("Expected one IR qualification report, got " + str(reports))
     aliases = []
     for file in files:
-        output = ctx.actions.declare_file(ctx.label.name + "/" + file.short_path)
+        output = ctx.actions.declare_file(ctx.label.name + "/" + file.path)
         ctx.actions.symlink(output = output, target_file = file)
         aliases.append(output)
     manifest = ctx.actions.declare_file(ctx.label.name + ".json")
     ctx.actions.write(manifest, json.encode({
         "root": ctx.label.package + "/" + ctx.label.name,
-        "report": reports[0].short_path,
-        "diagnostics": [file.short_path for file in files if file.basename.endswith(".ir-diagnostics.json")],
+        "report": reports[0].path,
+        "diagnostics": [file.path for file in files if file.basename.endswith(".ir-diagnostics.json")],
     }))
     return [
         DefaultInfo(files = depset([manifest]), runfiles = ctx.runfiles(files = aliases + [manifest])),

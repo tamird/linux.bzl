@@ -1,5 +1,5 @@
 load("@kernel//rules:example_configs.bzl", "EXAMPLE_CONFIGS")
-load("@kernel//rules:image.bzl", "kbuild_ir_experiment")
+load("@kernel//rules:image.bzl", "kbuild_ir_experiment", "kernel_build_qualification")
 load("@kernel//rules:rules.bzl", "kernel_config")
 load("@rules_python//python:defs.bzl", "py_binary", "py_test")
 load(":ir_experiment.bzl", "ir_variant")
@@ -84,9 +84,19 @@ py_binary(
 py_test(
     name = "reuse_report_test",
     srcs = [
+        "ir_reuse_report.py",
         "reuse_report.py",
         "reuse_report_test.py",
     ],
+)
+
+kernel_build_qualification(
+    name = "compiler_parity",
+    diagnostic_driver = "ir_diagnostics.py",
+    diagnostic_source = "ir_diagnostics.c",
+    diagnostic_target = "lib/ctype.o",
+    tags = ["manual"],
+    visibility = ["//:__pkg__"],
 )
 
 kbuild_ir_experiment(
