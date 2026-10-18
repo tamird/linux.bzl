@@ -1,8 +1,9 @@
 """Resolve configured prerequisite programs and register one action per artifact."""
 
-load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE")
+load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "use_cc_toolchain")
 load(":commands.bzl", "register", "shell_words")
+load(":compiler_capabilities.bzl", "KernelCompilerCapabilityVerificationInfo")
 load(":expressions.bzl", "evaluate", "make_words", "match", "program", "source_index")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 load(":host_tools.bzl", "KernelObjtoolInfo", "KernelResolveBtfidsInfo")
@@ -13,7 +14,7 @@ load(":source_tree.bzl", "KernelSourceTreeInfo")
 load(":toolchain.bzl", "KernelToolchainInfo", "image_evaluation_setup")
 
 KernelBuildInfo = provider(
-    "Declared artifacts of one configured kernel build.",
+    "Kernel products whose action prerequisites verify declared toolchain capabilities.",
     fields = ["artifacts", "config", "architecture"],
 )
 
@@ -915,7 +916,10 @@ def _build(ctx, request):
     for name, expected in request.required_options.items():
         if config.values.get(name, "n") != expected:
             fail("Required kernel option %s=%s resolved to %s" % (name, expected, config.values.get(name, "n")))
-    setup = image_evaluation_setup(ctx.attr._setup[KernelToolchainInfo])
+    checks = ctx.attr._compiler_capability_checks[KernelCompilerCapabilityVerificationInfo]
+    setup = image_evaluation_setup(ctx.attr._setup[KernelToolchainInfo], checks.verified)
+    if checks.toolchain_id != setup.cc.toolchain_id:
+        fail("Kernel products require verification of their selected toolchain")
     if setup.identity != config.identity:
         fail("Mixed native setup and kernel configuration")
     prepared = ctx.attr._prepared_source[KernelSourceTreeInfo]
@@ -1052,13 +1056,23 @@ def _build(ctx, request):
     artifacts = {out: ctx.actions.declare_file(ctx.label.name + ".artifacts/" + out) for out in producers}
 
     # Compilers resolve generated includes through individual artifacts in one
-    # namespace. Configuration outputs come from another rule, so alias them
-    # here once instead of copying them into each compiler's input tree.
+    # namespace. Standalone configuration is a declaration needed by the
+    # verifier; publication through the build must depend on its success.
     config_files = {}
+    config_sources = []
     for path, source in {"include/generated/autoconf.h": config.header, "include/config/auto.conf": config.config, ".config": config.config}.items():
         output = ctx.actions.declare_file(ctx.label.name + ".artifacts/" + path)
-        ctx.actions.symlink(output = output, target_file = source)
         config_files[path] = output
+        config_sources.extend([source, output])
+    run_recipe(
+        ctx,
+        execution_tools(ctx),
+        command = 'while [ "$#" -gt 0 ]; do cp "$1" "$2"; shift 2; done',
+        arguments = [file.path for file in config_sources],
+        inputs = [config.header, config.config, checks.verified],
+        outputs = config_files.values(),
+        mnemonic = "KernelConfigPublish",
+    )
     generated_root = config_files[".config"].dirname
     compiler_directories = {}
     for d in descriptors.values():
@@ -1207,7 +1221,7 @@ def _build(ctx, request):
         experiment_files.extend(experiment.diagnostics)
     return [
         KernelBuildInfo(
-            artifacts = dict(artifacts, **{".config": config.config}),
+            artifacts = dict(artifacts, **{".config": config_files[".config"]}),
             config = config,
             architecture = config.architecture,
         ),
@@ -1228,7 +1242,7 @@ kernel_artifact = rule(
         "build": attr.label(mandatory = True, providers = [KernelBuildInfo]),
         "path": attr.string(mandatory = True),
     },
-    doc = "Select one declared kernel artifact by its Kbuild path, or .config.",
+    doc = "Select one capability-verified kernel product by its Kbuild path, or .config.",
 )
 
 _ACTIVE_CONFIG = str(Label("//:active_config"))
@@ -1263,6 +1277,7 @@ _REQUEST_ATTRS = {
 }
 
 _CORE_ATTRS = {
+    "_compiler_capability_checks": attr.label(default = "//:compiler_capability_checks", providers = [KernelCompilerCapabilityVerificationInfo]),
     "_link_script": attr.label(default = "//rules:link-vmlinux.sh", allow_single_file = True),
     "_objtool": attr.label(default = "//:objtool", providers = [KernelObjtoolInfo]),
     "_resolve_btfids": attr.label(default = "//:resolve_btfids", providers = [KernelResolveBtfidsInfo]),

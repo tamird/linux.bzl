@@ -42,6 +42,21 @@ jobs:
         run: |
           bazel test //native/linux_6_18:repository_test --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4 --test_output=errors
           bazel build //native/linux_6_18:consumer_support --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4
+      - name: Verify declared Linux 6.18 toolchain capabilities
+        if: inputs.experiment == 'compiler-family' || inputs.experiment == 'generator'
+        run: |
+          mkdir -p _tmp/capability-generator _tmp/capability-reports
+          tar -xzf bazel-bin/native/linux_6_18/consumer-support.tar.gz -C _tmp/capability-generator
+          source_anchor=$(bazel cquery @linux_6_18//:Makefile --platforms=@llvm//platforms:linux_x86_64_musl --output=files)
+          source_root="$(bazel info output_base)/$(dirname "$source_anchor")"
+          python3 example.py --linux "$source_root" --generated _tmp/capability-generator/support --tool _tmp/capability-generator/kernel-repository
+          cd examples
+          for cpu in x86_64 aarch64; do
+            flags=(--platforms=@llvm//platforms:linux_$cpu --extra_execution_platforms=@llvm//platforms:linux_x86_64)
+            bazel build @kernel//:compiler_capability_checks "${flags[@]}" --jobs=4
+            report=$(bazel cquery @kernel//:compiler_capability_checks "${flags[@]}" --output=files | sed -n '/\.report\.json$/p')
+            cp "$report" "../_tmp/capability-reports/$cpu.json"
+          done
       - uses: actions/upload-artifact@v7
         if: inputs.experiment == 'compiler-family' || inputs.experiment == 'generator'
         with:
@@ -60,6 +75,7 @@ jobs:
           path: |
             bazel-testlogs/**/test.log
             bazel-testlogs/repository_test/test.outputs/**
+            _tmp/capability-reports/*.json
           retention-days: 14
 
   qualify:

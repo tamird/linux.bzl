@@ -16,9 +16,11 @@ _TOOLCHAIN_FIELDS = ["file", "files", "compile_files", "host_compile_files", "id
 
 KernelToolchainInfo = provider(doc = "Kernel Toolchain Info.", fields = _TOOLCHAIN_FIELDS)
 
-def image_evaluation_setup(setup):
+def image_evaluation_setup(setup, verified):
     """Give one image mutable diagnostic state beside the frozen setup data."""
     fields = {name: getattr(setup, name) for name in _TOOLCHAIN_FIELDS}
+    fields["files"] = depset([verified], transitive = [setup.files])
+    fields["compile_files"] = depset([verified], transitive = [setup.compile_files])
     fields["sources"] = dict(setup.sources)
     fields["sources"]["__reported_probes__"] = {}
     return KernelToolchainInfo(**fields)

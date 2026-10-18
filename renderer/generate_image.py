@@ -856,11 +856,16 @@ kernel_multi_platform(name="setups", target=":setup")
 kernel_multi_platform(name="kernels", target=":kernel")
 kernel_multi_platform_test(name="kernels_test", kernels=":kernels", size="large", tags=["manual"])
 ''')
+    for name in ('compiler_capabilities_check.bzl', 'verify_capabilities.py'):
+        shutil.copyfile(HERE / name, out / 'rules' / name)
+    with (out / 'BUILD.bazel').open('a') as stream:
+        stream.write('load("//rules:compiler_capabilities_check.bzl", "kernel_compiler_capabilities_check")\nkernel_compiler_capabilities_check(name="compiler_capability_checks", tags=["manual"])\n')
     shutil.copyfile(HERE / 'architecture_tests.bzl', out / 'rules/architecture_tests.bzl')
     for name in ('config_parity.bzl', 'native_reference.py', 'parity_test.py'):
         shutil.copyfile(HERE / name, out / 'rules' / name)
     (out / 'architecture_tests').mkdir(exist_ok=True)
-    (out / 'architecture_tests/BUILD.bazel').write_text('load("//rules:architecture_tests.bzl","architecture_tests")\narchitecture_tests()\n')
+    native_cpu = any(n['symbol'] == 'X86_NATIVE_CPU' for entries in syntax.values() for n in entries)
+    (out / 'architecture_tests/BUILD.bazel').write_text('load("//rules:architecture_tests.bzl","architecture_tests")\narchitecture_tests(native_cpu=' + repr(native_cpu) + ')\n')
     shutil.copyfile(HERE / 'image_boot_init.S', out / 'examples/boot_init.S')
     shutil.copyfile(HERE / 'image_boot_test.py', out / 'rules/boot_test.py')
     shutil.copyfile(HERE / 'image_boot_test.bzl', out / 'rules/boot_test.bzl')

@@ -33,9 +33,11 @@ def export_syntax(linux, output, *, executable: Path | None = None):
     env.update(srctree=str(linux), SRCARCH='__KCONFIG_SRCARCH', ARCH='__KCONFIG_ARCH',
                SUBARCH='__KCONFIG_SUBARCH', HEADER_ARCH='__KCONFIG_HEADER_ARCH',
                KERNELVERSION='prototype', CC='__selected_cc__', LD='__selected_ld__',
+               NM='__selected_nm__', AR='__selected_ar__', OBJCOPY='__selected_objcopy__',
+               CLANG_FLAGS='__selected_clang_flags__',
                CC_VERSION_TEXT='__KCONFIG_CC_VERSION_TEXT', PAHOLE='__selected_pahole__',
                PAHOLE_VERSION='__KCONFIG_PAHOLE_VERSION')
-    files, warnings = {}, set()
+    files, warnings, commands = {}, set(), {}
     for path in sorted(linux.rglob('Kconfig*')):
         relative = path.relative_to(linux).as_posix()
         if not path.is_file() or (relative.startswith('Documentation/') and relative != 'Documentation/Kconfig') or relative.startswith(('scripts/kconfig/', 'tools/')) or '.git' in path.parts:
@@ -43,8 +45,17 @@ def export_syntax(linux, output, *, executable: Path | None = None):
         result = subprocess.run([executable, "_kconfig", relative], cwd=linux, env=env, capture_output=True, text=True)
         if result.returncode:
             raise RuntimeError(f'Native Kconfig syntax export failed for {relative}:\n{result.stderr}')
-        warnings.update(line for line in result.stderr.splitlines() if line)
+        for line in result.stderr.splitlines():
+            if line.startswith('KCONFIG_CAPABILITY\t'):
+                _, slot, encoded = line.split('\t')
+                command = bytes.fromhex(encoded).decode().replace(str(linux), '__selected_srctree__')
+                variants = commands.setdefault(slot, [])
+                if command not in variants:
+                    variants.append(command)
+            elif line:
+                warnings.add(line)
         files[relative] = json.loads(result.stdout)
     for warning in sorted(warnings):
         print(warning, file=sys.stderr)
+    (output / "capability-commands.json").write_text(json.dumps(commands, sort_keys=True))
     return files

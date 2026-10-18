@@ -6,11 +6,67 @@ static char *prototype_input(const char *slot)
 	return xstrdup(value ? value : slot);
 }
 
+/* Reuse the selected native macro expansion, stopping at its success test.
+ * No compiler or shell is executed while exporting syntax. */
+static char *variable_expand(const char *name, int argc, char *argv[]);
+static bool prototype_capturing;
+static char *prototype_command;
+
+static bool prototype_query_equal(const char *actual, const char *expected)
+{
+	const char marker[] = "__selected_srctree__";
+	const char *at = strstr(expected, marker);
+	if (!at)
+		return !strcmp(actual, expected);
+	const char *root = getenv("srctree");
+	size_t prefix = at - expected;
+	return root && !strncmp(actual, expected, prefix) &&
+		!strncmp(actual + prefix, root, strlen(root)) &&
+		!strcmp(actual + prefix + strlen(root), at + sizeof(marker) - 1);
+}
+
+static char *prototype_capability(const char *slot, const char *name,
+				 int argc, char *argv[])
+{
+	char *expanded;
+	if (!strcmp(name, "success")) {
+		prototype_command = xstrdup(argv[0]);
+	} else {
+		prototype_capturing = true;
+		expanded = variable_expand(name, argc, argv);
+		prototype_capturing = false;
+		if (!expanded || strcmp(expanded, "y") || !prototype_command)
+			pperror("Unsupported native capability expansion for %s", name);
+		free(expanded);
+	}
+	/* A single-line hexadecimal record preserves arbitrary native quotes,
+	 * whitespace and newlines without changing the syntax JSON stream. */
+	fprintf(stderr, "KCONFIG_CAPABILITY\t%s\t", slot);
+	for (const unsigned char *p = (const unsigned char *)prototype_command; *p; p++)
+		fprintf(stderr, "%02x", *p);
+	fputc('\n', stderr);
+	free(prototype_command);
+	prototype_command = NULL;
+	return prototype_input(slot);
+}
+
 static char *prototype_probe_fallback(const char *name, int argc, char *argv[])
 {
 	const char *fallback = NULL;
 	char actual[64], expected[32], extra;
 	const char *slot = NULL;
+
+	if (prototype_capturing) {
+		if (!strcmp(name, "success")) {
+			if (argc != 1 || prototype_command)
+				pperror("Expected one native success command per capability");
+			prototype_command = xstrdup(argv[0]);
+			return xstrdup("y");
+		}
+		return NULL;
+	}
+	if (!strcmp(name, "cc-option-bit") && argc == 1 && !strcmp(argv[0], "-m64"))
+		return xstrdup("__selected_m64_flag__");
 
 	if (!strcmp(name, "cc-name")) slot = "__KCONFIG_CC_NAME";
 	else if (!strcmp(name, "cc-version")) slot = "__KCONFIG_CC_VERSION";
@@ -92,6 +148,8 @@ static char *prototype_shell_fallback(int argc, char *argv[])
 	int end = 0;
 	char major[32];
 	(void)argc;
+	if (prototype_capturing)
+		pperror("Unsupported nested shell in native capability expansion");
 	if (prototype_source_query(argv[0], "/scripts/gcc-version.sh __selected_cc__"))
 		return prototype_input("__KCONFIG_GCC_VERSION");
 	if (prototype_source_query(argv[0], "/scripts/clang-version.sh __selected_cc__"))

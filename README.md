@@ -164,7 +164,20 @@ kernel_artifact(name = "kernel_config", build = ":kernel", path = ".config")
 ```
 
 The selected path must be produced by that build. Selectors share the build's
-action graph and report missing outputs during analysis.
+action graph and report missing outputs during analysis. Every published kernel
+product, including `.config` and generated wrapper headers, depends on execution
+checks for its declared positive toolchain capabilities. These checks execute
+the selected source's native probe commands with the selected tools and target
+flags; a failed declaration prevents publication.
+Verification covers the bounded declared capability set. Unrecognized probes
+retain their source-selected fallback policy; this is not generic probing.
+
+Standalone `kernel_config` outputs and analysis reports describe the resolved
+declaration and can feed those checks; they do not establish successful toolchain
+verification. Native configuration parity remains a separate strict comparison.
+The `-march=native` acceptance check is limited to Linux x86-64 execution and
+target platforms. Actual native CPU/tuning code generation is rejected until an
+execution-host CPU and feature contract is declared.
 
 The build's `modules` attribute requests source-relative `.ko` paths selected by
 the configured Kbuild graph. The selected kernel's native rules determine the

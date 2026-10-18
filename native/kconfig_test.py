@@ -1,6 +1,7 @@
 """Check the native syntax exporter against every Kconfig file of its source."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -17,6 +18,15 @@ def main() -> None:
     linux = args.linux.absolute().parent
     print(f'Native auto.conf quotes strings: {auto_conf_quotes_strings(executable=args.tool.resolve())}')
     syntax = export_syntax(linux, Path(os.environ["TEST_TMPDIR"]), executable=args.tool.resolve())
+    commands = json.loads((Path(os.environ["TEST_TMPDIR"]) / "capability-commands.json").read_text())
+    arch_config = (linux / "arch/Kconfig").read_text()
+    for tool in ("NM", "AR"):
+        query = f"$({tool}) --help | head -n 1 | grep -qi llvm"
+        if query in arch_config:
+            expected = f"__selected_{tool.lower()}__ --help | head -n 1 | grep -qi llvm"
+            assert commands[f"__KCONFIG_{tool}_LLVM_HELP"] == [expected], (tool, commands)
+    if "$(as-instr64,wrussq" in (linux / "arch/x86/Kconfig.assembler").read_text():
+        assert all("__selected_m64_flag__" in command for command in commands["__KCONFIG_AS_WRUSSQ"]), commands
     for path, symbol in (
         ("init/Kconfig", "CC_VERSION_TEXT"),
         ("arch/x86/Kconfig", "X86_64"),

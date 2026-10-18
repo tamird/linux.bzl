@@ -31,7 +31,10 @@ constraint_value(name="native", constraint_setting=":mode")
 constraint_value(name="usermode", constraint_setting=":mode")
 ''')
     shutil.copyfile(here / 'compiler_capabilities.bzl', args.repo / 'rules/compiler_capabilities.bzl')
-    (args.repo / 'rules/compiler_capabilities_data.bzl').write_text('COMPILER_CAPABILITIES = json.decode(' + repr((here / 'compiler_capabilities.json').read_text()) + ')\n')
+    commands = (args.syntax.parent / 'capability-commands.json').read_text()
+    (args.repo / 'rules/compiler_capabilities_data.bzl').write_text(
+        'COMPILER_CAPABILITIES = json.decode(' + repr((here / 'compiler_capabilities.json').read_text()) + ')\n' +
+        'COMPILER_CAPABILITY_COMMANDS = json.decode(' + repr(commands) + ')\n')
     with (args.repo / 'BUILD.bazel').open('a') as stream:
         stream.write('load("//rules:compiler_capabilities.bzl", "kernel_compiler_capabilities")\nkernel_compiler_capabilities(name="compiler_capabilities")\n')
     shutil.copyfile(here / 'kconfig_link.bzl', args.repo / 'rules/kconfig_link.bzl')

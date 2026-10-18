@@ -121,5 +121,400 @@
       "-msoft-float"
     ],
     "source": "#if !defined(_SOFT_FLOAT) || !defined(__NO_FPRS__)\n#error floating-point registers enabled\n#endif\nint entry(void) { return 0; }\n"
+  },
+  {
+    "input": "__KCONFIG_CC_UNREACHABLE_FALLTHROUGH",
+    "probe": "cc-option",
+    "argument": "-Wunreachable-code-fallthrough",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-Wunreachable-code-fallthrough)",
+    "argument_aliases": [" -Wunreachable-code-fallthrough"]
+  },
+  {
+    "input": "__KCONFIG_CC_STACK_PROTECTOR",
+    "probe": "cc-option",
+    "argument": "-fstack-protector",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fstack-protector)",
+    "argument_aliases": [" -fstack-protector"]
+  },
+  {
+    "input": "__KCONFIG_CC_KCFI",
+    "probe": "cc-option",
+    "argument": "-fsanitize=kcfi",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fsanitize=kcfi)",
+    "argument_aliases": [" -fsanitize=kcfi"]
+  },
+  {
+    "input": "__KCONFIG_CC_KCFI_NORMALIZE",
+    "probe": "cc-option",
+    "argument": "-fsanitize=kcfi -fsanitize-cfi-icall-experimental-normalize-integers",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fsanitize=kcfi -fsanitize-cfi-icall-experimental-normalize-integers)",
+    "argument_aliases": [" -fsanitize=kcfi -fsanitize-cfi-icall-experimental-normalize-integers"]
+  },
+  {
+    "input": "__KCONFIG_CC_DEBUG_ZLIB",
+    "probe": "cc-option",
+    "argument": "-gz=zlib",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-gz=zlib)",
+    "argument_aliases": [" -gz=zlib"]
+  },
+  {
+    "input": "__KCONFIG_CC_DEBUG_ZSTD",
+    "probe": "cc-option",
+    "argument": "-gz=zstd",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-gz=zstd)",
+    "argument_aliases": [" -gz=zstd"]
+  },
+  {
+    "input": "__KCONFIG_CC_SPLIT_DWARF",
+    "probe": "cc-option",
+    "argument": "-gsplit-dwarf",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-gsplit-dwarf)",
+    "argument_aliases": [" -gsplit-dwarf"]
+  },
+  {
+    "input": "__KCONFIG_CC_KERNEL_ADDRESS",
+    "probe": "cc-option",
+    "argument": "-fsanitize=kernel-address",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fsanitize=kernel-address)",
+    "argument_aliases": [" -fsanitize=kernel-address"]
+  },
+  {
+    "input": "__KCONFIG_CC_KERNEL_HWADDRESS",
+    "probe": "cc-option",
+    "argument": "-fsanitize=kernel-hwaddress",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fsanitize=kernel-hwaddress)",
+    "argument_aliases": [" -fsanitize=kernel-hwaddress"]
+  },
+  {
+    "input": "__KCONFIG_CC_THREAD_VOLATILE",
+    "probe": "cc-option",
+    "argument": "-fsanitize=thread -mllvm -tsan-distinguish-volatile=1",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fsanitize=thread -mllvm -tsan-distinguish-volatile=1)",
+    "argument_aliases": [" -fsanitize=thread -mllvm -tsan-distinguish-volatile=1"]
+  },
+  {
+    "input": "__KCONFIG_CC_AUTO_INIT_PATTERN",
+    "probe": "cc-option",
+    "argument": "-ftrivial-auto-var-init=pattern",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-ftrivial-auto-var-init=pattern)",
+    "argument_aliases": [" -ftrivial-auto-var-init=pattern"]
+  },
+  {
+    "input": "__KCONFIG_CC_AUTO_INIT_ZERO",
+    "probe": "cc-option",
+    "argument": "-ftrivial-auto-var-init=zero",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-ftrivial-auto-var-init=zero)",
+    "argument_aliases": [" -ftrivial-auto-var-init=zero"]
+  },
+  {
+    "input": "__KCONFIG_CC_SANCOV_DEPTH",
+    "probe": "cc-option",
+    "argument": "-fsanitize-coverage-stack-depth-callback-min=1",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fsanitize-coverage-stack-depth-callback-min=1)",
+    "argument_aliases": [" -fsanitize-coverage-stack-depth-callback-min=1"]
+  },
+  {
+    "input": "__KCONFIG_CC_ZERO_REGS",
+    "probe": "cc-option",
+    "argument": "-fzero-call-used-regs=used-gpr",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fzero-call-used-regs=used-gpr)",
+    "argument_aliases": [" -fzero-call-used-regs=used-gpr"]
+  },
+  {
+    "input": "__KCONFIG_CC_RANDOM_LAYOUT",
+    "probe": "cc-option",
+    "argument": "-frandomize-layout-seed-file=/dev/null",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-frandomize-layout-seed-file=/dev/null)",
+    "argument_aliases": [" -frandomize-layout-seed-file=/dev/null"]
+  },
+  {
+    "input": "__KCONFIG_CC_HARDEN_SLS",
+    "probe": "cc-option",
+    "argument": "-mharden-sls=all",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-mharden-sls=all)",
+    "argument_aliases": [" -mharden-sls=all"]
+  },
+  {
+    "input": "__KCONFIG_CC_RETURN_THUNK",
+    "probe": "cc-option",
+    "argument": "-mfunction-return=thunk-extern",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-mfunction-return=thunk-extern)",
+    "argument_aliases": [" -mfunction-return=thunk-extern"]
+  },
+  {
+    "input": "__KCONFIG_CC_ENTRY_PADDING",
+    "probe": "cc-option",
+    "argument": "-fpatchable-function-entry=16,16",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fpatchable-function-entry=16,16)",
+    "argument_aliases": [" -fpatchable-function-entry=16,16"]
+  },
+  {
+    "input": "__KCONFIG_CC_KCFI_ARITY",
+    "probe": "cc-option",
+    "argument": "-fsanitize=kcfi -fsanitize-kcfi-arity",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fsanitize=kcfi -fsanitize-kcfi-arity)",
+    "argument_aliases": [" -fsanitize=kcfi -fsanitize-kcfi-arity"]
+  },
+  {
+    "input": "__KCONFIG_CC_KERNEL_MEMORY",
+    "probe": "cc-option",
+    "argument": "-fsanitize=kernel-memory",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fsanitize=kernel-memory)",
+    "argument_aliases": [" -fsanitize=kernel-memory"]
+  },
+  {
+    "input": "__KCONFIG_CC_SHADOW_STACK",
+    "probe": "cc-option",
+    "argument": "-fsanitize=shadow-call-stack -ffixed-x18",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fsanitize=shadow-call-stack -ffixed-x18)",
+    "argument_aliases": [" -fsanitize=shadow-call-stack -ffixed-x18"]
+  },
+  {
+    "input": "__KCONFIG_CC_PAC_RET",
+    "probe": "cc-option",
+    "argument": "-mbranch-protection=pac-ret+leaf",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-mbranch-protection=pac-ret+leaf)",
+    "argument_aliases": [" -mbranch-protection=pac-ret+leaf"]
+  },
+  {
+    "input": "__KCONFIG_CC_ARMV8_5",
+    "probe": "cc-option",
+    "argument": "-Wa,-march=armv8.5-a",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-Wa,-march=armv8.5-a)",
+    "argument_aliases": [" -Wa,-march=armv8.5-a"]
+  },
+  {
+    "input": "__KCONFIG_CC_PAC_RET_BTI",
+    "probe": "cc-option",
+    "argument": "-mbranch-protection=pac-ret+leaf+bti",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-mbranch-protection=pac-ret+leaf+bti)",
+    "argument_aliases": [" -mbranch-protection=pac-ret+leaf+bti"]
+  },
+  {
+    "input": "__KCONFIG_CC_STACK_SYSREG",
+    "probe": "cc-option",
+    "argument": "-mstack-protector-guard=sysreg -mstack-protector-guard-reg=sp_el0 -mstack-protector-guard-offset=0",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-mstack-protector-guard=sysreg -mstack-protector-guard-reg=sp_el0 -mstack-protector-guard-offset=0)",
+    "argument_aliases": [" -mstack-protector-guard=sysreg -mstack-protector-guard-reg=sp_el0 -mstack-protector-guard-offset=0"]
+  },
+  {
+    "input": "__KCONFIG_LD_ORPHAN_WARN",
+    "probe": "ld-option",
+    "argument": "--orphan-handling=warn",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "ld-option(--orphan-handling=warn)",
+    "argument_aliases": [" --orphan-handling=warn"]
+  },
+  {
+    "input": "__KCONFIG_LD_ORPHAN_ERROR",
+    "probe": "ld-option",
+    "argument": "--orphan-handling=error",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "ld-option(--orphan-handling=error)",
+    "argument_aliases": [" --orphan-handling=error"]
+  },
+  {
+    "input": "__KCONFIG_LD_DEBUG_ZLIB",
+    "probe": "ld-option",
+    "argument": "--compress-debug-sections=zlib",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "ld-option(--compress-debug-sections=zlib)",
+    "argument_aliases": [" --compress-debug-sections=zlib"]
+  },
+  {
+    "input": "__KCONFIG_LD_DEBUG_ZSTD",
+    "probe": "ld-option",
+    "argument": "--compress-debug-sections=zstd",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "ld-option(--compress-debug-sections=zstd)",
+    "argument_aliases": [" --compress-debug-sections=zstd"]
+  },
+  {
+    "input": "__KCONFIG_AS_ULEB128_DIFFERENCE",
+    "probe": "as-instr",
+    "argument": ".uleb128 .Lexpr_end4 - .Lexpr_start3\\n.Lexpr_start3:\\n.Lexpr_end4:",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(.uleb128 .Lexpr_end4 - .Lexpr_start3\\n.Lexpr_start3:\\n.Lexpr_end4:)"
+  },
+  {
+    "input": "__KCONFIG_AS_ENDBR64",
+    "probe": "as-instr",
+    "argument": "endbr64",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(endbr64)"
+  },
+  {
+    "input": "__KCONFIG_AS_WRUSSQ",
+    "probe": "as-instr64",
+    "argument": "wrussq %rax,(%rbx)",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr64(wrussq %rax,(%rbx))"
+  },
+  {
+    "input": "__KCONFIG_AS_CFI_NEGATE_RA",
+    "probe": "as-instr",
+    "argument": ".cfi_startproc\\n.cfi_negate_ra_state\\n.cfi_endproc\\n",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(.cfi_startproc\\n.cfi_negate_ra_state\\n.cfi_endproc\\n)"
+  },
+  {
+    "input": "__KCONFIG_AS_MTE_STGM",
+    "probe": "as-instr",
+    "argument": ".arch armv8.5-a+memtag\\nstgm xzr,[x0]",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(.arch armv8.5-a+memtag\\nstgm xzr,[x0])"
+  },
+  {
+    "input": "__KCONFIG_AS_MOPS",
+    "probe": "as-instr",
+    "argument": ".arch_extension mops",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(.arch_extension mops)"
+  },
+  {
+    "input": "__KCONFIG_CC_ASM_GOTO_OUTPUT",
+    "probe": "success",
+    "argument": "echo 'int foo(int x) { asm goto (\"\": \"=r\"(x) ::: bar); return x; bar: return 0; }' | __selected_cc__ -x c - -c -o /dev/null",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "success(echo 'int foo(int x) { asm goto (\"\": \"=r\"(x) ::: bar); return x; bar: return 0; }' | __selected_cc__ -x c - -c -o /dev/null)"
+  },
+  {
+    "input": "__KCONFIG_CC_ASM_GOTO_SCOPED_LABEL",
+    "probe": "success",
+    "argument": "echo 'void b(void **);void* c(void);int f(void){{asm goto(\"\"::::l0);return 0;l0:return 1;}void *x __attribute__((cleanup(b)))=c();{asm goto(\"\"::::l1);return 2;l1:return 3;}}' | __selected_cc__ -x c - -c -o /dev/null",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "success(echo 'void b(void **);void* c(void);int f(void){{asm goto(\"\"::::l0);return 0;l0:return 1;}void *x __attribute__((cleanup(b)))=c();{asm goto(\"\"::::l1);return 2;l1:return 3;}}' | __selected_cc__ -x c - -c -o /dev/null)"
+  },
+  {
+    "input": "__KCONFIG_CC_ASM_GOTO_TIED_OUTPUT",
+    "probe": "success",
+    "argument": "echo 'int foo(int *x) { asm goto (\".long (%l[bar]) - .\": \"+m\"(*x) ::: bar); return *x; bar: return 0; }' | $CC -x c - -c -o /dev/null",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "success(echo 'int foo(int *x) { asm goto (\".long (%l[bar]) - .\": \"+m\"(*x) ::: bar); return *x; bar: return 0; }' | $CC -x c - -c -o /dev/null)"
+  },
+  {
+    "input": "__KCONFIG_CC_ASM_INLINE",
+    "probe": "success",
+    "argument": "echo 'void foo(void) { asm inline (\"\"); }' | __selected_cc__ -x c - -c -o /dev/null",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "success(echo 'void foo(void) { asm inline (\"\"); }' | __selected_cc__ -x c - -c -o /dev/null)"
+  },
+  {
+    "input": "__KCONFIG_CC_NO_PROFILE_ATTRIBUTE",
+    "probe": "success",
+    "argument": "echo '__attribute__((no_profile_instrument_function)) int x();' | __selected_cc__ -x c - -c -o /dev/null -Werror",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "success(echo '__attribute__((no_profile_instrument_function)) int x();' | __selected_cc__ -x c - -c -o /dev/null -Werror)"
+  },
+  {
+    "input": "__KCONFIG_CC_MULTIDIMENSIONAL_NONSTRING",
+    "probe": "success",
+    "argument": "echo 'char tag[][4] __attribute__((__nonstring__)) = { };' | __selected_cc__ __selected_clang_flags__ -x c - -c -o /dev/null -Werror",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "success(echo 'char tag[][4] __attribute__((__nonstring__)) = { };' | __selected_cc__ __selected_clang_flags__ -x c - -c -o /dev/null -Werror)"
+  },
+  {
+    "input": "__KCONFIG_TOOLS_RELR",
+    "probe": "success",
+    "argument": "env \"CC=__selected_cc__\" \"LD=__selected_ld__\" \"NM=__selected_nm__\" \"OBJCOPY=__selected_objcopy__\" __selected_srctree__/scripts/tools-support-relr.sh",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "success(env \"CC=__selected_cc__\" \"LD=__selected_ld__\" \"NM=__selected_nm__\" \"OBJCOPY=__selected_objcopy__\" __selected_srctree__/scripts/tools-support-relr.sh)",
+    "scripts": ["scripts/tools-support-relr.sh"]
+  },
+  {
+    "input": "__KCONFIG_NM_LLVM_HELP",
+    "probe": "success",
+    "argument": "__selected_nm__ --help | head -n 1 | grep -qi llvm",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "success(__selected_nm__ --help | head -n 1 | grep -qi llvm)"
+  },
+  {
+    "input": "__KCONFIG_AR_LLVM_HELP",
+    "probe": "success",
+    "argument": "__selected_ar__ --help | head -n 1 | grep -qi llvm",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "success(__selected_ar__ --help | head -n 1 | grep -qi llvm)"
+  },
+  {
+    "input": "__KCONFIG_CC_MARCH_NATIVE",
+    "probe": "cc-option",
+    "argument": "-march=native",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "execution": {
+      "os": "Linux",
+      "cpu": "x86_64"
+    },
+    "description": "Clang accepts the native-CPU option on the declared Linux x86_64 execution platform",
+    "argument_aliases": [" -march=native"]
   }
 ]

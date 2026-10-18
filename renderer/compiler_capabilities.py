@@ -10,5 +10,10 @@ def native_capabilities():
     for fact in json.loads((HERE / 'compiler_capabilities.json').read_text()):
         if fact.get('kbuild'):
             continue
-        lines.append('if (!strcmp(name, %s) && argc == 1 && !strcmp(argv[0], %s)) return prototype_input(%s);' % tuple(json.dumps(fact[k]) for k in ('probe', 'argument', 'input')))
+        arguments = fact.get('arguments', [fact['argument']])
+        matches = ['!strcmp(name, ' + json.dumps(fact['probe']) + ')', 'argc == ' + str(len(arguments))]
+        for i, value in enumerate(arguments):
+            alternatives = [value] + (fact.get('argument_aliases', []) if i == 0 else [])
+            matches.append('(' + ' || '.join('prototype_query_equal(argv[%d], %s)' % (i, json.dumps(arg)) for arg in alternatives) + ')')
+        lines.append('if (%s) return prototype_capability(%s, name, argc, argv);' % (' && '.join(matches), json.dumps(fact['input'])))
     return '\n'.join(lines)

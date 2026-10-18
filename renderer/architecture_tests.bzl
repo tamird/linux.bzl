@@ -4,7 +4,7 @@ load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts", "unittest")
 load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
 load(":architecture.bzl", "KernelArchitectureInfo")
 load(":commands.bzl", "native_recipe", "shell_quote", "value")
-load(":compiler_capabilities.bzl", "KernelCompilerCapabilityObjectsInfo", "kernel_compiler_capabilities_check")
+load(":compiler_capabilities.bzl", "KernelCompilerCapabilityVerificationInfo")
 load(":expressions.bzl", "evaluate", "program")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 load(":image.bzl", "kbuild_resolved_build")
@@ -179,7 +179,11 @@ _native_shell_test = rule(implementation = _native_shell_impl, test = True, attr
 
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
-def architecture_tests():
+def architecture_tests(native_cpu = False):
+    if native_cpu:
+        kernel_config(name = "native_cpu_config", options = "//options:options", allnoconfig = True, requested = {"X86_NATIVE_CPU": "y"}, tags = ["manual"])
+        kbuild_resolved_build(name = "native_cpu", config = ":native_cpu_config", catalog = "//:catalog", roots = ["init/main.o"], required_options = {"X86_NATIVE_CPU": "y"}, tags = ["manual"])
+        _expected_failure_test(name = "native_cpu_test", target_under_test = ":native_cpu", message = "Native CPU code generation requires a declared execution-host CPU/features contract")
     _compiler_controls_test(name = "compiler_controls_test")
     _native_shell_test(name = "native_shell_recipe_test")
     checks = [":native_shell_recipe_test"]
@@ -190,7 +194,7 @@ def architecture_tests():
         checks.append(":" + name + "_test")
     native.test_suite(name = "native_shell_test", tests = checks)
     _recursive_flags_test(name = "recursive_flags_test")
-    kernel_compiler_capabilities_check(name = "compiler_capability_checks", tags = ["manual"])
+    native.alias(name = "compiler_capability_checks", actual = "//:compiler_capability_checks", tags = ["manual"])
     kernel_compiler_capabilities_test(name = "selected_compiler_capabilities_test", checks = ":compiler_capability_checks")
     kernel_multi_platform(name = "all_compiler_capability_checks", target = ":compiler_capability_checks", tags = ["manual"])
     kernel_compiler_capabilities_test(name = "compiler_capabilities_test", checks = ":all_compiler_capability_checks")
@@ -229,35 +233,15 @@ _multi_platform_test = analysistest.make(_multi_platform_impl)
 
 def _capability_test_impl(ctx):
     targets = ctx.attr.checks[KernelPlatformsInfo].targets if KernelPlatformsInfo in ctx.attr.checks else {"selected": ctx.attr.checks}
-    aliases, files, commands = {}, [], []
+    aliases, commands = {}, []
     for cpu, target in targets.items():
-        info = target[KernelCompilerCapabilityObjectsInfo]
-        nm = "compiler-capabilities/%s/nm" % cpu
-        aliases[nm] = info.nm
-        files.append(info.files)
-        for i, check in enumerate(info.checks):
-            path = "compiler-capabilities/%s/%d.o" % (cpu, i)
-            aliases[path] = check.object
-            commands.append('test -s "$root/%s"' % path)
-            if check.required or check.excluded:
-                commands.append('symbols=$("$root/%s" --undefined-only --just-symbol-name "$root/%s")' % (nm, path))
-                for symbol in check.required:
-                    commands.append('contains_symbol %s || { echo "Missing instrumentation symbol %s in %s" >&2; exit 1; }' % (symbol, symbol, path))
-                for symbol in check.excluded:
-                    commands.append('if contains_symbol %s; then echo "Unexpected instrumentation symbol %s in %s" >&2; exit 1; fi' % (symbol, symbol, path))
+        path = "compiler-capabilities/%s/verified" % cpu
+        aliases[path] = target[KernelCompilerCapabilityVerificationInfo].verified
+        commands.append('test -s "$TEST_SRCDIR/$TEST_WORKSPACE/%s"' % path)
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, '''#!/bin/sh
-set -eu
-root="$TEST_SRCDIR/$TEST_WORKSPACE"
-contains_symbol() {
-    for symbol in $symbols; do
-        if [ "$symbol" = "$1" ]; then return 0; fi
-    done
-    return 1
-}
-''' + "\n".join(commands) + "\n", is_executable = True)
-    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(symlinks = aliases, transitive_files = depset(transitive = files)))]
+    ctx.actions.write(script, "#!/bin/sh\nset -eu\n" + "\n".join(commands) + "\n", is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(symlinks = aliases))]
 
 kernel_compiler_capabilities_test = rule(implementation = _capability_test_impl, test = True, attrs = {
-    "checks": attr.label(mandatory = True, providers = [[KernelPlatformsInfo], [KernelCompilerCapabilityObjectsInfo]]),
+    "checks": attr.label(mandatory = True, providers = [[KernelPlatformsInfo], [KernelCompilerCapabilityVerificationInfo]]),
 })

@@ -197,6 +197,8 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
     # similar assembler reads are not recorded by the C preprocessor.
     if source_file == None:
         fail("No declared compiler source for " + target)
+    if not host and any([flag in flags for flag in ["-march=native", "-mcpu=native", "-mtune=native"]]):
+        fail("Native CPU code generation requires a declared execution-host CPU/features contract; choose an explicit target CPU")
     features = setup.host_features if host else setup.features
     if not host:
         if setup.compiler == "clang" and "-nostdinc" in flags:
@@ -505,7 +507,15 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, source
             ctx.actions.symlink(output = outputs[target], target_file = raw)
         return
     if driver == "asm_headers":
-        ctx.actions.write(outputs[target], "#include <asm-generic/%s>\n" % target.rsplit("/", 1)[-1])
+        run_recipe(
+            ctx,
+            execution_tools(ctx),
+            command = 'printf \'#include <asm-generic/%s>\\n\' "$1" > "$2"',
+            arguments = [target.rsplit("/", 1)[-1], outputs[target].path],
+            inputs = setup.compile_files,
+            outputs = outputs.values(),
+            mnemonic = "KernelAsmHeader",
+        )
         return
     codegen(ctx, target, directory, outputs, dependencies, source_tree, config, setup, compiler_inputs, native, ancestry, graph_variables, source_prerequisites, invocation_environment)
 
