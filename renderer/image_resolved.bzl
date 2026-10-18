@@ -1181,6 +1181,7 @@ def _build(ctx, request):
         "members": members,
         "roots": list(request.roots) + request.architecture_roots.get(config.architecture.srcarch, []) + module_roots,
         "artifacts": {p: f.path for p, f in artifacts.items()},
+        "compiler": setup.compiler,
         "compilers": experiment.compilers,
         "compiler_diagnostics": [file.path for file in experiment.diagnostics],
     }))

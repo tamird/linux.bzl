@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 from typing import TypedDict
 
-from qualification.reuse_report import ActionGraph, action_outputs, records
+from qualification.reuse_report import ActionGraph, action_outputs, mapped, records
 
 PHASES = ("base", "unchanged", "lz4", "changed")
 FAMILY = ("base", "debug", "btf", "lz4")
@@ -70,11 +70,6 @@ def read_snapshot(path: Path) -> dict[str, ArtifactRecord]:
             case _:
                 raise ValueError(f"Invalid compiler record in {path}: {target}, {record}")
     return result
-
-
-def mapped(path: str) -> str:
-    parts = path.split("/", 2)
-    return "bazel-out/mapped/" + parts[2] if len(parts) == 3 and parts[0] == "bazel-out" else path
 
 
 def snapshot(directory: Path, name: str, workspace: Path, family: bool = False) -> None:

@@ -4,10 +4,10 @@ The `Prototype qualification` workflow checks configuration parity and compiler
 dependency tracking. It builds and tests the current standalone generator with
 Bazel before running consumers against the pinned Linux source.
 
-Dispatch the workflow with `configuration-parity`, `source-edit-reuse`, or
-`examples` to select an experiment or the maintained example matrix. `all` runs
-them together. The example matrix reuses the `Kernel repository prototype`
-workflow.
+Dispatch the workflow with `configuration-parity`, `source-edit-reuse`,
+`compiler-family`, or `examples` to select a gate or the maintained example
+matrix. `all` runs them together. The example matrix reuses the
+`Kernel repository prototype` workflow.
 
 The separate `compiler-ir` experiment qualifies a possible compiler boundary;
 it is not included in `all` while that mechanism is experimental.
@@ -20,8 +20,8 @@ then supplies the examples' raw requests through `KCONFIG_ALLCONFIG` and
 their version output and the effective environment are retained as evidence.
 The comparison covers base, debug, LZ4, BTF requests, and ARM64.
 
-Compiler probes currently use conservative fallbacks during repository generation.
-A compiler built by Bazel may be unavailable at that stage; running those probes
+Compiler probes currently use source-selected fallbacks during analysis.
+A compiler built by Bazel is unavailable until execution; running those probes
 requires a separate execution mechanism. This comparison records the resulting
 differences. Source dependency tracking preserves that policy.
 
@@ -44,15 +44,25 @@ All six phases use the same build options. The files are restored on exit.
 
 Compact Bazel execution logs record executed actions and cache hits. A
 pinned BuildBuddy decoder projects them to JSONL without expanding each
-action's source-tree inputs. `aquery` supplies the complete compiler-output
-inventory, including actions absent from the execution log.
+action's source-tree inputs. `cquery` selects the declared kernel manifest, and
+a post-build `aquery` with
+`--noinclude_pruned_inputs` authenticates its compiler phases through the actual
+product dependencies. The inventory includes actions absent from the execution
+log. All phases use the production path-mapping options and the canonical cache.
 
 `reuse-report.json` distinguishes a valid measurement from successful
 selective reuse. The baseline must observe the entire compiler inventory, the
 unchanged phase must execute no kernel compiles, and the source edit must
-execute only `init/main.o`. The header edit must execute its selected
-`do_mounts` consumers. The initramfs edit must change the payload and the raw
-object that embeds it through `.incbin`, while independent controls stay cached.
+execute only the frontend and backend of `init/main.o`. The header edit must
+execute the selected `do_mounts` frontends. A backend may reuse an unchanged IR
+input; changed IR must have a recorded backend execution or cache hit. The
+query also verifies the edited header is not a direct backend input. The
+initramfs edit must change the payload and the raw
+object that embeds it through `.incbin`, plus the compressed boot payload and
+its embedding `piggy.o`, while independent controls stay cached. The native
+payload dependency edges authenticate these two assembly consumers. Changed
+native `voffset.h`/`zoffset.h` bytes may additionally invalidate only their
+authenticated direct compiler consumers, including the declared backend inputs.
 The generated C source describing exported symbols and its object must remain
 byte-identical after this payload edit, and the compilation must stay cached even
 though the kernel object used to generate that source changes.
@@ -60,8 +70,10 @@ The gzip header edit must preserve the compressed size, decompressed contents
 and generated `piggy.S`, while changing the compressed payload and raw `piggy.o`.
 Only the embedding compiler may execute in that phase. A cached embedding action
 makes the trial inconclusive, rather than proving input invalidation.
-The inventory includes native Bazel C and assembly actions and the original
-`KbuildCC` actions, excluding host-tool compilation. Broad recompilation produces
+Logical object counts and frontend/backend/single-action counts are reported
+separately. This Clang trial requires every reached target C compiler to use the
+promoted split path; host-tool compilation cannot satisfy its inventory. Broad
+recompilation produces
 a report and fails the qualification. This measures dependency invalidation;
 it does not qualify sharing between configurations or cold-build speed.
 
@@ -70,8 +82,8 @@ it does not qualify sharing between configurations or cold-build speed.
 `compiler-ir` builds seven real kernel C objects through both the integrated
 compiler and a frontend-to-bitcode-to-backend pipeline. The objects include
 ordinary kernel code and real-mode boot code with native `-g -m16` flags.
-The examples apply a small rules_cc patch to accept LLVM IR inputs through
-native C++ compilation actions without requesting preprocessor depfiles.
+The distributed rules_cc patch accepts LLVM IR inputs through native C++
+compilation actions without requesting preprocessor depfiles.
 
 The experiment selects base, LZ4, and `PANIC_TIMEOUT=37` configurations of
 one build label. Sequential builds enable Bazel output-path mapping and use
@@ -87,6 +99,25 @@ Reports, native bitcode and objects, and original compact execution logs are
 retained even when comparison fails. These checks establish semantic parity
 and cache reuse for the selected objects, not a whole-build speedup or the
 required full base/debug/BTF/LZ4 family qualification.
+
+## Full compiler family
+
+`compiler-family` builds the maintained base, debug, declared-pahole BTF and
+LZ4 qualification companions, including their real kernel and boot products.
+Each companion retains its normal request and adds integrated references and
+backend diagnostic checks. Post-build precise action graphs authenticate the
+compiler phases from the requested products; host tools, references and assembly
+do not count toward the four C backend reuse requirement between base and LZ4.
+The report requires equal bitcode, equal canonical action-cache digests and
+actual LZ4 cache hits, reports counts and fractions, and allows each maintained
+configuration to have a different compiler inventory. The unchanged and bounded
+PANIC_TIMEOUT control builds remain separate checks.
+
+The earlier seven-object trial established two actual cache hits and matching
+integrated/split objects, but failed its four-object threshold. It remains a
+separate recorded experiment. Full-family success and the promoted mutation
+trial are both required before adoption; neither is implied by that bounded
+result or by an image build.
 
 ## Original prototype results on 2026-10-16
 

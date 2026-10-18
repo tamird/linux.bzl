@@ -92,11 +92,43 @@ repository host independently of the target kernel's architecture.
 
 Repository rules cannot add Bzlmod dependencies or register toolchains in the
 consumer. `example.py` creates a runnable consumer workspace from the generated
-MODULE template, relocating its local labels to `@kernel` and copying the two
-accepted dependency patches into the root module. The example includes the
+MODULE template, relocating its local labels to `@kernel` and copying the
+required dependency patches into the root module. The example includes the
 existing BCR dependency/toolchain setup, not another copy of the parser tool.
 `//...` in a consumer addresses its own packages; use `@kernel//...` to address
 the generated repository.
+
+### Compiler caching across configurations
+
+Build requests for a generated source repository use one shared action owner.
+Target Clang C compilation runs the native frontend to LLVM bitcode, then the
+native backend to an object; assembly, host tools and non-object compiler modes
+retain their native compilation path. Normal builds do not produce integrated
+reference objects. Qualification companions add those references and diagnostic
+checks without changing the production frontend/backend inputs.
+
+The generated MODULE template includes `rules_cc_ir.patch`, which adds LLVM IR
+inputs to native `cc_common.compile` actions. Root modules must apply this patch;
+Bzlmod does not inherit dependency overrides. Consumers that assemble their own
+MODULE file must copy `renderer/rules_cc_ir.patch` from the pinned linux.bzl
+source or matching support archive into their own source tree, then use that
+local label in the `rules_cc` override for the pinned version. `example.py`
+performs this relocation.
+
+Cross-configuration action reuse requires a Bazel disk or remote cache and these
+build options (also use them for queries of those actions):
+
+```text
+--experimental_output_paths=strip
+--modify_execution_info=CppCompile=+supports-path-mapping
+```
+
+The native backend cache key retains the compiler, bitcode, source and declared
+non-preprocessor inputs. Equal object bytes alone do not establish reuse.
+Configuration-dependent IR, including diagnostic metadata, may legitimately
+prevent a hit. See [qualification](examples/qualification/README.md) for the
+separate full-family parity/reuse and production mutation gates; these checks do
+not establish whole-build performance improvements.
 
 Generated `kernel_config` rules accept an optional `pahole` label. The
 generated `//:pahole` adapter derives the version from the selected encoder's

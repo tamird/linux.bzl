@@ -9,10 +9,14 @@ import unittest
 from qualification import ir_compare, ir_reuse_report, reuse_report
 
 
-_OUTPUTS = [f"bazel-out/bin/_objs/kernel.compile/{target}/source/{target}" for target in (
+_OUTPUTS = [f"bazel-out/mapped/bin/_objs/kernel.compile/{target}/source/{target}" for target in (
     "init/main.o", "kernel/fork.o", "lib/string.o", "init/do_mounts.o", "init/do_mounts_initrd.o", "usr/initramfs_data.o",
     "init/initramfs.o", ".vmlinux.export.o", reuse_report.PIGGY_OBJECT,
 )]
+
+
+def reuse_report_target(path: str) -> str:
+    return path.split("kernel.compile/", 1)[1].split("/source/", 1)[0]
 
 
 def query(outputs: list[str], mnemonic: str = "CppCompile") -> dict[str, list[dict[str, object]]]:
@@ -24,7 +28,7 @@ def query(outputs: list[str], mnemonic: str = "CppCompile") -> dict[str, list[di
             fragments.append({"id": fragment, "label": part, "parentId": parent})
             parent = fragment
         artifacts.append({"id": index, "pathFragmentId": parent})
-        actions.append({"mnemonic": mnemonic, "outputIds": [index]})
+        actions.append({"mnemonic": mnemonic, "outputIds": [index], "targetId": 1})
     return {"pathFragments": fragments, "artifacts": artifacts, "actions": actions}
 
 
@@ -49,6 +53,7 @@ class ReuseReportTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         self.expected = {(path,) for path in _OUTPUTS}
+        self.compilers = {reuse_report_target(path): {"source": reuse_report_target(path).removesuffix(".o") + ".c", "outputs": {"single": [path]}, "bitcode_digest": None, "generated_inputs": {"single": {}}} for path in _OUTPUTS}
 
     def log(self, name: str, spawns: list[dict[str, object]]) -> Path:
         path = self.directory / f"{name}.execution.jsonl"
@@ -60,7 +65,7 @@ class ReuseReportTest(unittest.TestCase):
 
     def trial(self, edited: list[dict[str, object]]) -> dict[str, object]:
         for name in reuse_report.PHASES:
-            (self.directory / f"{name}.aquery.json").write_text(json.dumps(_QUERY))
+            (self.directory / f"{name}.compilers.json").write_text(json.dumps(self.compilers))
             (self.directory / f"{name}.digests.json").write_text(json.dumps({
                 "kernel/fork.o": "unchanged",
                 "init/main.o": "unchanged",
@@ -69,16 +74,17 @@ class ReuseReportTest(unittest.TestCase):
                 ".vmlinux.export.c": "unchanged",
                 ".vmlinux.export.o": "unchanged",
                 reuse_report.PIGGY_SOURCE: "unchanged",
-                reuse_report.PIGGY_OBJECT: "gzip-modified" if name == "gzip" else "original",
-                reuse_report.GZIP_PAYLOAD: "gzip-modified" if name == "gzip" else "original",
+                reuse_report.PIGGY_OBJECT: "gzip-modified" if name == "gzip" else "incbin-modified" if name == "incbin" else "original",
+                reuse_report.GZIP_PAYLOAD: "gzip-modified" if name == "gzip" else "incbin-modified" if name == "incbin" else "original",
                 "decompressed_gzip": "unchanged",
+                **{header: "unchanged" for header in reuse_report.BOOT_HEADERS},
             }))
             (self.directory / f"{name}.sizes.json").write_text(json.dumps({reuse_report.GZIP_PAYLOAD: 1024}))
         self.log("baseline", [spawn(index) for index in range(len(_OUTPUTS))])
         self.log("unchanged", [])
         self.log("edited", edited)
         self.log("header", [spawn(3), spawn(4), spawn(6)])
-        self.log("incbin", [spawn(5)])
+        self.log("incbin", [spawn(5), spawn(8)])
         self.log("gzip", [spawn(8)])
         return reuse_report.report(self.directory)
 
@@ -290,7 +296,7 @@ class ReuseReportTest(unittest.TestCase):
 
     def test_qualification_distinguishes_selective_from_broad_recompilation(self) -> None:
         selective = self.trial([spawn(0)])
-        self.assertEqual(selective["phases"]["edited"]["total_kernel_compiles"], 9)
+        self.assertEqual(selective["phases"]["edited"]["total_compiler_actions"], 9)
         self.assertEqual(selective["qualification"]["all_unrelated_compiles_reused"], True)
         broad = self.trial([spawn(index) for index in range(len(_OUTPUTS))])
         self.assertEqual(broad["measurement_complete"], True)
@@ -309,20 +315,87 @@ class ReuseReportTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unchanged build executed"):
             reuse_report.report(self.directory)
         self.log("unchanged", [])
-        changed = dict(_QUERY, actions=_QUERY["actions"][:-1])
-        (self.directory / "edited.aquery.json").write_text(json.dumps(changed))
+        changed = {target: record for target, record in self.compilers.items() if target != "init/main.o"}
+        (self.directory / "edited.compilers.json").write_text(json.dumps(changed))
         with self.assertRaisesRegex(ValueError, "inventory changed"):
             reuse_report.report(self.directory)
 
-    def test_native_compiles_are_selected_by_kernel_output_ownership(self) -> None:
-        path = self.directory / "inventory.json"
-        host = "bazel-out/bin/_objs/objtool.objects/main.o"
-        for mnemonic in ("CppCompile", "Assemble"):
-            with self.subTest(mnemonic=mnemonic):
-                path.write_text(json.dumps(query([*_OUTPUTS, host], mnemonic)))
-                self.assertEqual(reuse_report.inventory(path), self.expected)
-        path.write_text(json.dumps(query(["bazel-out/bin/legacy/init/main.o"], "KbuildCC")))
-        self.assertEqual(reuse_report.inventory(path), {("bazel-out/bin/legacy/init/main.o",)})
+    def test_compiler_inventory_rejects_missing_and_duplicate_phases(self) -> None:
+        path = self.directory / "compilers.json"
+        for outputs in ({"backend": ["object.o"]}, {"frontend": ["same.o"], "backend": ["same.o"]}):
+            path.write_text(json.dumps({"init/main.o": {"source": "source.c", "outputs": outputs, "bitcode_digest": "ir", "generated_inputs": {role: {} for role in outputs}}}))
+            with self.assertRaises(ValueError):
+                reuse_report.read_compilers(path)
+
+    def test_mutation_snapshot_rejects_unpromoted_clang_c(self) -> None:
+        paths = ["vmlinux", "logical.o", "raw.o", "source.c", "kernel.json"]
+        graph = query(paths)
+        graph["depSetOfFiles"] = [{"id": 1, "directArtifactIds": [2]}, {"id": 2, "directArtifactIds": [3]}]
+        graph["actions"][0]["inputDepSetIds"] = [1]
+        graph["actions"][1]["inputDepSetIds"] = [2]
+        graph["actions"][-1]["mnemonic"] = "FileWrite"
+        (self.directory / "baseline.aquery.json").write_text(json.dumps(graph))
+        (self.directory / "baseline.manifest-path").write_text("kernel.json\n")
+        (self.directory / "kernel.json").write_text(json.dumps({
+            "compiler": "clang", "roots": ["vmlinux"],
+            "artifacts": {"vmlinux": "vmlinux", "init/main.o": "logical.o", **{header: "source.c" for header in reuse_report.BOOT_HEADERS}},
+            "compilers": {"init/main.o": {"kind": "c", "source": "source.c", "object": "raw.o"}},
+        }))
+        (self.directory / "source.c").write_text("int source;\n")
+        with self.assertRaisesRegex(ValueError, "requires split target C"):
+            reuse_report.snapshot(self.directory, "baseline", self.directory)
+
+    def test_split_mutation_counts_phases_without_doubling_objects(self) -> None:
+        self.trial([spawn(0)])
+        split_indices = (0, 3, 4, 6)
+        frontends = {index: f"bazel-out/mapped/bin/frontend/{index}.o" for index in split_indices}
+        for name in reuse_report.PHASES:
+            compilers = json.loads((self.directory / f"{name}.compilers.json").read_text())
+            for index, frontend in frontends.items():
+                target = reuse_report_target(_OUTPUTS[index])
+                compilers[target]["outputs"] = {"frontend": [frontend], "backend": [_OUTPUTS[index]]}
+                compilers[target]["generated_inputs"] = {"frontend": {}, "backend": {}}
+                compilers[target]["bitcode_digest"] = "changed" if index == 3 and name in ("header", "incbin", "gzip") else "original"
+            (self.directory / f"{name}.compilers.json").write_text(json.dumps(compilers))
+            path = self.directory / f"{name}.execution.jsonl"
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            declarations = [{"id": len(_OUTPUTS) + index + 1, "path": frontend} for index, frontend in frontends.items()]
+            new_spawns = [spawn(len(_OUTPUTS) + index) for index in split_indices
+                          if name == "baseline" or name == "edited" and index == 0 or name == "header" and index in (3, 4, 6)]
+            if name == "header":
+                records = [record for record in records if "spawn" not in record] + [spawn(3)]
+            path.write_text("".join(json.dumps(record) + "\n" for record in records[:1] + declarations + records[1:] + new_spawns))
+        result = reuse_report.report(self.directory)
+        self.assertEqual(result["logical_kernel_objects"], 9)
+        self.assertEqual(result["compiler_phase_counts"], {"frontend": 4, "backend": 4, "single": 5})
+        self.assertTrue(result["qualification"]["header_edit_recompiled_only_consumers"])
+        self.assertEqual(result["phases"]["header"]["compiler_phases"]["backend"]["executed"], 1)
+        # A changed IR backend must be observed, even when it is already cached.
+        path = self.directory / "header.execution.jsonl"
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        records = [record for record in records if record != spawn(3)]
+        path.write_text("".join(json.dumps(record) + "\n" for record in records))
+        with self.assertRaisesRegex(ValueError, "Changed header IR has no observed backend"):
+            reuse_report.report(self.directory)
+        with path.open("a") as stream:
+            stream.write(json.dumps(spawn(3, cache_hit=True)) + "\n")
+        self.assertTrue(reuse_report.report(self.directory)["qualification"]["header_edit_recompiled_only_consumers"])
+
+    def test_changed_boot_headers_require_only_authenticated_consumers(self) -> None:
+        self.trial([spawn(0)])
+        target = "lib/string.o"
+        header = reuse_report.BOOT_HEADERS[0]
+        for name in reuse_report.PHASES:
+            path = self.directory / f"{name}.compilers.json"
+            records = json.loads(path.read_text())
+            records[target]["generated_inputs"]["single"] = {header: "changed" if name in ("incbin", "gzip") else "original"}
+            path.write_text(json.dumps(records))
+        with self.assertRaisesRegex(ValueError, "Changed native boot header has no observed compiler"):
+            reuse_report.report(self.directory)
+        self.log("incbin", [spawn(2), spawn(5), spawn(8)])
+        self.assertTrue(reuse_report.report(self.directory)["qualification"]["incbin_edit_recompiled_only_consumer"])
+        self.log("incbin", [spawn(2), spawn(5), spawn(7), spawn(8)])
+        self.assertFalse(reuse_report.report(self.directory)["qualification"]["incbin_edit_recompiled_only_consumer"])
 
     def test_stale_header_or_payload_cannot_pass(self) -> None:
         self.trial([spawn(0)])
@@ -333,7 +406,7 @@ class ReuseReportTest(unittest.TestCase):
         self.log("incbin", [])
         with self.assertRaisesRegex(ValueError, "Assembly embedding.*did not execute"):
             reuse_report.report(self.directory)
-        self.log("incbin", [spawn(5)])
+        self.log("incbin", [spawn(5), spawn(8)])
         (self.directory / "incbin.digests.json").write_bytes((self.directory / "header.digests.json").read_bytes())
         with self.assertRaisesRegex(ValueError, "initramfs edit did not change"):
             reuse_report.report(self.directory)
@@ -346,7 +419,7 @@ class ReuseReportTest(unittest.TestCase):
 
     def test_incbin_fanout_cannot_pass_by_preserving_only_named_controls(self) -> None:
         self.trial([spawn(0)])
-        self.log("incbin", [spawn(5), spawn(7)])
+        self.log("incbin", [spawn(5), spawn(7), spawn(8)])
         result = reuse_report.report(self.directory)
         self.assertEqual(result["qualification"]["incbin_edit_recompiled_only_consumer"], False)
 
@@ -370,8 +443,8 @@ class ReuseReportTest(unittest.TestCase):
     def test_gzip_trial_preserves_source_and_changes_payload(self) -> None:
         for target, value, message in (
             (reuse_report.PIGGY_SOURCE, "modified", "changed generated piggy.S"),
-            (reuse_report.GZIP_PAYLOAD, "original", "did not change.*vmlinux.bin.gz"),
-            (reuse_report.PIGGY_OBJECT, "original", "did not change.*piggy.o"),
+            (reuse_report.GZIP_PAYLOAD, "incbin-modified", "did not change.*vmlinux.bin.gz"),
+            (reuse_report.PIGGY_OBJECT, "incbin-modified", "did not change.*piggy.o"),
             ("decompressed_gzip", "modified", "changed the decompressed payload"),
             ("init/main.o", "modified", "unexpectedly changed init/main.o"),
         ):

@@ -78,7 +78,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        experiment: ${{ inputs.experiment == 'all' && fromJSON('["configuration-parity", "source-edit-reuse"]') || fromJSON(format('["{0}"]', inputs.experiment)) }}
+        experiment: ${{ inputs.experiment == 'all' && fromJSON('["configuration-parity", "source-edit-reuse", "compiler-family"]') || fromJSON(format('["{0}"]', inputs.experiment)) }}
     env:
       USE_BAZEL_VERSION: 9.1.0
     steps:
@@ -128,6 +128,7 @@ jobs:
         run: |
           set -euo pipefail
           results="$RUNNER_TEMP/linux-prototype-qualification"
+          mapping=(--experimental_output_paths=strip --modify_execution_info=CppCompile=+supports-path-mapping --platforms=@llvm//platforms:linux_x86_64)
           source_file="$GITHUB_WORKSPACE/_tmp/linux/init/main.c"
           header_file="$GITHUB_WORKSPACE/_tmp/linux/init/do_mounts.h"
           payload_file="$GITHUB_WORKSPACE/_tmp/linux/usr/default_cpio_list"
@@ -152,7 +153,7 @@ jobs:
                 printf '\ncmd_gzip += ; printf "%s" | dd of=$@ bs=1 seek=4 conv=notrunc status=none\n' "$gzip_bytes" >> "$gzip_makefile"
                 ;;
             esac
-            bazel build //:x86_64_kernel --output_groups=+boot --jobs=4 \
+            bazel build //:x86_64_kernel --output_groups=+boot,+manifest --jobs=4 "${mapping[@]}" \
               --sandbox_block_path=/bin --sandbox_block_path=/usr/bin --sandbox_block_path=/usr/local/bin \
               --execution_log_compact_file="$results/$phase.execution.pb.zst"
             # Decode compact entries without expanding every action's source-tree inputs.
@@ -170,11 +171,12 @@ jobs:
                 })}
                 else empty end
               ' > "$results/$phase.execution.jsonl"
-            bazel aquery 'mnemonic("CppCompile|Assemble|KbuildCC", deps(//:x86_64_kernel)) union outputs(".*[.]artifacts/(usr/initramfs_inc_data|[.]vmlinux.export.c|arch/x86/boot/compressed/(piggy[.]S|vmlinux[.]bin[.]gz))", deps(//:x86_64_kernel))' \
+            bazel aquery 'deps(//:x86_64_kernel)' "${mapping[@]}" --noinclude_pruned_inputs \
               --output=jsonproto --include_commandline=false > "$results/$phase.aquery.json"
-            bazel run //qualification:reuse_report -- snapshot "$results" "$phase"
+            bazel cquery //:x86_64_kernel "${mapping[@]}" --output=files --output_groups=manifest > "$results/$phase.manifest-path"
+            bazel run //qualification:reuse_report "${mapping[@]}" -- snapshot "$results" "$phase"
           done
-          bazel run //qualification:reuse_report -- report "$results"
+          bazel run //qualification:reuse_report "${mapping[@]}" -- report "$results"
       - name: Qualify native compiler IR and configuration reuse
         if: matrix.experiment == 'compiler-ir' || matrix.experiment == 'compiler-family'
         working-directory: examples
@@ -261,6 +263,7 @@ jobs:
           path: |
             ${{ runner.temp }}/linux-prototype-qualification/*.json
             ${{ runner.temp }}/linux-prototype-qualification/*.jsonl
+            ${{ runner.temp }}/linux-prototype-qualification/*.manifest-path
             ${{ runner.temp }}/linux-prototype-qualification/*.pb.zst
             ${{ runner.temp }}/linux-prototype-qualification/storage-*.log
             ${{ runner.temp }}/linux-prototype-qualification/diagnostics/**

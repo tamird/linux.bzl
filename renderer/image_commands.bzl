@@ -207,7 +207,7 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
     # headers through ../ paths. That directory must exist even when it has no
     # generated input files. A stable marker preserves it in the sandbox and
     # stays mandatory because an empty search directory is absent from depfiles.
-    split = compiler_inputs.experiment.enabled and not host and source_file.extension == "c" and "-S" not in flags and "-E" not in flags
+    split = setup.compiler == "clang" and not host and source_file.extension == "c" and "-S" not in flags and "-E" not in flags
     name = ctx.label.name + (".host-compile/" if host else ".compile/") + target
 
     # cc_common owns the selected compiler's tool inputs. The setup closure
@@ -216,7 +216,7 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
     compile_files = setup.host_compile_files if host else setup.compile_files
     options = dict(
         actions = ctx.actions,
-        name = ctx.label.name + ".integrated/" + target if split else name,
+        name = name,
         feature_configuration = features,
         cc_toolchain = setup.host_cc if host else setup.cc,
         srcs = [source_file],
@@ -225,23 +225,20 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
         user_compile_flags = flags,
         disallow_pic_outputs = True,
     )
-    context, compilation = cc_common.compile(**options)
-    if len(compilation.objects) != 1:
-        fail("Expected one compiler output for %s, got %s" % (target, compilation.objects))
-    integrated = compilation.objects[0]
     if not split:
-        if compiler_inputs.experiment.enabled:
-            compiler_inputs.experiment.compilers[target] = {
-                "source": source_file.path,
-                "object": integrated.path,
-                "kind": "host" if host else ("codegen" if "-S" in flags or "-E" in flags else "assembly"),
-            }
-        return integrated
+        _, compilation = cc_common.compile(**options)
+        if len(compilation.objects) != 1:
+            fail("Expected one compiler output for %s, got %s" % (target, compilation.objects))
+        result = compilation.objects[0]
+        compiler_inputs.experiment.compilers[target] = {
+            "source": source_file.path,
+            "object": result.path,
+            "kind": "host" if host else ("codegen" if "-S" in flags or "-E" in flags else ("c" if source_file.extension == "c" else "assembly")),
+        }
+        return result
 
-    # Temporary qualification plumbing: let the selected Clang frontend own
-    # preprocessing and IR semantics, then compare the actual native objects.
-    if setup.compiler != "clang":
-        fail("IR qualification requires the selected Clang toolchain")
+    # Clang owns preprocessing and IR semantics. Identical bitcode can reuse
+    # the native backend action across configurations of the shared owner.
     options["name"] = ctx.label.name + ".frontend/" + target
     options["user_compile_flags"] = flags + ["-emit-llvm", "-Xclang", "-disable-llvm-passes"]
     _, frontend = cc_common.compile(**options)
@@ -265,10 +262,22 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
     if len(backend.objects) != 1:
         fail("Expected one LLVM backend output for " + target)
     result = backend.objects[0]
-    compiler_inputs.experiment.compilers[target] = {"source": source_file.path, "object": result.path, "kind": "c"}
-    compiler_inputs.experiment.records[target] = struct(source = source_file, frontend = frontend.objects[0], bitcode = bitcode, integrated = integrated, object = result, flags = flags)
-    if target == compiler_inputs.experiment.diagnostic_target:
-        _ir_diagnostics(ctx, flags, features, [directory_marker] + dependencies.values() + direct_dependencies.values() + source_prerequisites.values(), context, setup, compiler_inputs.experiment)
+    compiler_inputs.experiment.compilers[target] = {
+        "source": source_file.path,
+        "object": result.path,
+        "kind": "c",
+        "frontend": frontend.objects[0].path,
+        "bitcode": bitcode.path,
+    }
+    if compiler_inputs.experiment.enabled:
+        options["name"] = ctx.label.name + ".integrated/" + target
+        options["user_compile_flags"] = flags
+        context, reference = cc_common.compile(**options)
+        if len(reference.objects) != 1:
+            fail("Expected one integrated reference output for " + target)
+        compiler_inputs.experiment.records[target] = struct(source = source_file, frontend = frontend.objects[0], bitcode = bitcode, integrated = reference.objects[0], object = result, flags = flags)
+        if target == compiler_inputs.experiment.diagnostic_target:
+            _ir_diagnostics(ctx, flags, features, [directory_marker] + dependencies.values() + direct_dependencies.values() + source_prerequisites.values(), context, setup, compiler_inputs.experiment)
     return result
 
 def _compiler_flags(command, compiler, source, target):
