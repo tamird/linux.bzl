@@ -1,9 +1,9 @@
 """Analysis tests for one symbolic export across configured platforms."""
 
-load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
+load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts", "unittest")
 load(":architecture.bzl", "KernelArchitectureInfo")
 load(":compiler_capabilities.bzl", "KernelCompilerCapabilityObjectsInfo", "kernel_compiler_capabilities_check")
-load(":expressions.bzl", "evaluate")
+load(":expressions.bzl", "evaluate", "program")
 load(":image.bzl", "kbuild_resolved_build")
 load(":multi_platform.bzl", "KernelPlatformsInfo", "SUPPORTED_KERNEL_CPUS", "kernel_multi_platform")
 load(":rules.bzl", "KernelConfigInfo", "kernel_config")
@@ -84,9 +84,25 @@ _check_riscv64_test = analysistest.make(_config_check_impl, config_settings = {"
 _unsupported_cpu_test = analysistest.make(_failure_impl, expect_failure = True, config_settings = {"//command_line_option:platforms": [str(Label("//architecture_tests:wasm32"))]}, attrs = {"message": attr.string()})
 _x86_32_test = analysistest.make(_architecture_check_impl, config_settings = {"//command_line_option:platforms": [str(Label("//architecture_tests:x86_32"))]})
 
+def _recursive_flags_impl(ctx):
+    env = unittest.begin(ctx)
+    reference = [{"op": "reference", "name": [{"op": "literal", "value": "CFLAGS"}]}]
+    statements = [
+        {"kind": "assignment", "name_expression": [{"op": "literal", "value": "CFLAGS"}], "value_expression": [{"op": "literal", "value": "-Ilocal"}], "value": "-Ilocal", "flavor": "append"},
+        {"kind": "assignment", "name_expression": [{"op": "literal", "value": "captured"}], "value_expression": reference, "value": "$(CFLAGS)", "flavor": "simple"},
+    ]
+    for command_line, expected in [(False, "-Icaller -Ilocal"), (True, "-Icaller")]:
+        result = program(statements, {"CFLAGS": {"value": "-Icaller", "command_line": command_line}}, {}, cells = True).variables
+        asserts.equals(env, expected, evaluate(reference, result, {}))
+        asserts.equals(env, expected, evaluate([{"op": "reference", "name": [{"op": "literal", "value": "captured"}]}], result, {}))
+    return unittest.end(env)
+
+_recursive_flags_test = unittest.make(_recursive_flags_impl)
+
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
 def architecture_tests():
+    _recursive_flags_test(name = "recursive_flags_test")
     kernel_compiler_capabilities_check(name = "compiler_capability_checks", tags = ["manual"])
     kernel_compiler_capabilities_test(name = "selected_compiler_capabilities_test", checks = ":compiler_capability_checks")
     kernel_multi_platform(name = "all_compiler_capability_checks", target = ":compiler_capability_checks", tags = ["manual"])

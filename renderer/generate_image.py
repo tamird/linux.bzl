@@ -435,8 +435,16 @@ def main(argv=None):
             data['image_host_subcmd_call'] = call
         case _:
             raise ValueError(f'Expected one native objtool subcmd invocation, got {subcmd_calls}')
-    data['image_host_objtool'] = host_fallback(backend.slice_program(objtool, {'OBJTOOL_CFLAGS', 'BUILD_ORC', 'BUILD_KLP', 'LIBSUBCMD'} | backend.refs(call)))
-    data['image_host_build'] = backend.slice_program(bodies['tools/objtool/Build'], {'objtool-y'}) + [n for n in bodies['tools/objtool/Build'] if n['kind'] == 'rule']
+    build_calls = [n['value_expression'] for n, _ in walk(target_rules(objtool, {'$(OBJTOOL_IN)'}))
+                   if n['kind'] == 'recipe' and 'MAKE' in backend.refs(n['value_expression'])]
+    match build_calls:
+        case [build_call]:
+            data['image_host_objtool_call'] = build_call
+        case _:
+            raise ValueError(f'Expected one native objtool build invocation, got {build_calls}')
+    host_setup = bodies['tools/scripts/Makefile.include'] + objtool + bodies['tools/build/Makefile.include']
+    data['image_host_objtool'] = host_fallback(backend.slice_program(host_setup, {'CFLAGS', 'BUILD_ORC', 'BUILD_KLP', 'LIBSUBCMD', 'OBJTOOL_IN'} | backend.refs(call) | backend.refs(build_call)))
+    data['image_host_build'] = backend.slice_program(bodies['tools/objtool/Build'], {'objtool-y', 'CFLAGS', 'CFLAGS_*'}) + [n for n in bodies['tools/objtool/Build'] if n['kind'] == 'rule']
     data['image_host_arch'] = bodies
     subcmd = bodies['tools/scripts/Makefile.include'] + bodies['tools/lib/subcmd/Makefile'] + bodies['tools/lib/subcmd/Build']
     data['image_host_subcmd'] = host_fallback(backend.slice_program(subcmd, {'libsubcmd-y', 'CFLAGS'}))

@@ -420,6 +420,10 @@ def program(statements, initial, sources, cells = False):
                 variables["__exports__"].pop(name, None)
             expr, flavor = node["value_expression"], node["flavor"]
             old = variables.get(name)
+            if old != None and old.get("command_line", False):
+                if node.get("override", False):
+                    fail("Native override of a recursive command-line variable needs explicit lowering: " + name)
+                continue
             if flavor == "conditional" and old != None:
                 continue
             if flavor == "shell":

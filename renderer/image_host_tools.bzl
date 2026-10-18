@@ -35,6 +35,14 @@ def _host_capabilities(host, libraries):
     answers["$(CC) -dM -E -x c /dev/null | grep -Fq \"__clang__\"; echo $$?"] = "0" if host.compiler == "clang" else "1"
     return answers
 
+def _recursive_variables(variables, index):
+    # Exported values are expanded before recursive Make starts. Explicit
+    # command-line assignments retain their precedence through recursion.
+    result = {name: {"value": value(name, variables, index)} for name in variables.get("__exports__", {}) if name in variables}
+    result.update({name: cell for name, cell in variables.items() if cell.get("command_line", False)})
+    result["__exports__"] = {name: True for name in result}
+    return result
+
 def _impl(ctx):
     architecture = ctx.attr._architecture[KernelArchitectureInfo]
     if "tools/objtool/arch/" + architecture.srcarch + "/Build" not in FLAG_PROGRAM["image_host_arch"]:
@@ -63,16 +71,33 @@ def _impl(ctx):
     variables = program(FLAG_PROGRAM["image_utilities"], {"SRCARCH": architecture.srcarch, "HOSTARCH": host_architecture.srcarch, "srctree": source, "CURDIR": source + "/tools/objtool", "OUTPUT": prefix}, index).variables
     variables["AWK"] = {"value": execution.commands["awk"].path}
     variables = program(FLAG_PROGRAM["image_host_objtool"], variables, index, cells = True).variables
+    invocation = dict(variables)
+    invocation["MAKE"] = {"value": "__objtool__"}
+    invocation["@"] = variables["OBJTOOL_IN"]
+    words = shell_words(evaluate(FLAG_PROGRAM["image_host_objtool_call"], invocation, index).lstrip("@+"))
+    if words[:3] != ["__objtool__", "-f", source + "/tools/build/Makefile.build"]:
+        fail("Unsupported native objtool build invocation: " + str(words))
+    build_variables = _recursive_variables(variables, index)
+    for word in words[3:]:
+        name, separator, text = word.partition("=")
+        if not separator:
+            fail("Native objtool build argument is not an assignment: " + word)
+        build_variables[name] = {"value": text, "command_line": True}
+    if value("obj", build_variables, index) != "objtool" or value("dir", build_variables, index) != ".":
+        fail("Unsupported native objtool object namespace: " + str(words))
+    build = program(FLAG_PROGRAM["image_host_build"], build_variables, index, cells = True)
+    objects = [("tools/objtool/" + p, "objtool", build.variables) for p in make_words(value("objtool-y", build.variables, index)) if not p.endswith("/")]
+    arch_variables = _recursive_variables(build.variables, index)
+    arch_variables["dir"] = {"value": "./arch/" + architecture.srcarch, "command_line": True}
     generated = []
 
     # Native Build rules describe the architecture's two generated C tables.
-    architecture_program = program(FLAG_PROGRAM["image_host_arch"]["tools/objtool/arch/" + architecture.srcarch + "/Build"], variables, index, cells = True)
-    variables = architecture_program.variables
+    architecture_program = program(FLAG_PROGRAM["image_host_arch"]["tools/objtool/arch/" + architecture.srcarch + "/Build"], arch_variables, index, cells = True)
     for rule in architecture_program.rules:
         if rule["recipe"]:
             target = rule["targets"][0]
             output = ctx.actions.declare_file(ctx.label.name + ".generated/" + target.removeprefix(prefix))
-            local = dict(variables)
+            local = dict(architecture_program.variables)
             local["@"] = {"value": output.path}
 
             # Make consumes recipe control prefixes after variable expansion;
@@ -89,13 +114,9 @@ def _impl(ctx):
                 mnemonic = "ObjtoolTable",
             )
             generated.append(output)
-    variables["objtool-y"] = {"value": ""}
-    build = program(FLAG_PROGRAM["image_host_build"], variables, index, cells = True)
-    objects = [("tools/objtool/" + p, "objtool") for p in make_words(value("objtool-y", build.variables, index)) if not p.endswith("/")]
 
     # Each architecture Build has its own object namespace.
-    arch = program(FLAG_PROGRAM["image_host_arch"]["tools/objtool/arch/" + architecture.srcarch + "/Build"], dict(variables, **{"objtool-y": {"value": ""}}), index, cells = True)
-    objects.extend([("tools/objtool/arch/" + architecture.srcarch + "/" + p, "objtool") for p in make_words(value("objtool-y", arch.variables, index))])
+    objects.extend([("tools/objtool/arch/" + architecture.srcarch + "/" + p, "objtool", architecture_program.variables) for p in make_words(value("objtool-y", architecture_program.variables, index))])
     aliases = {}
     for rule in build.rules:
         tail = make_words(rule["prerequisites"])
@@ -139,13 +160,16 @@ def _impl(ctx):
             ctx.actions.symlink(output = header, target_file = prepared.logical[source_header])
             installed_headers.append(header)
     header_context = cc_common.create_compilation_context(headers = depset(installed_headers))
-    objects.extend([("tools/lib/subcmd/" + p, "subcmd") for p in make_words(value("libsubcmd-y", subcmd, index))])
+    objects.extend([("tools/lib/subcmd/" + p, "libsubcmd", subcmd) for p in make_words(value("libsubcmd-y", subcmd, index))])
     outputs = []
-    for obj, group in objects:
+    for obj, owner, scope in objects:
         src = aliases.get(obj, obj[:-2] + ".c")
-        flags = shell_words(value("OBJTOOL_CFLAGS", variables, index) if group == "objtool" else value("CFLAGS", subcmd, index))
-        if group == "objtool":
-            flags += shell_words(value("CFLAGS_" + obj.rsplit("/", 1)[-1], arch.variables, index))
+        local = dict(scope)
+        local.update({"@": {"value": obj}, "obj": {"value": owner}})
+        local = program(FLAG_PROGRAM["image_host_cflags"], local, index, cells = True).variables
+
+        # Bazel owns depfile generation and include discovery for these actions.
+        flags = [f for f in shell_words(value("c_flags", local, index)) if not f.startswith(("-Wp,-MD,", "-Wp,-MMD,", "-Wp,-MT,"))]
 
         # Preserve the toolchain's object variants for cc_common.link to select.
         _, compilation = cc_common.compile(
