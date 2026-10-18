@@ -17,6 +17,11 @@ KernelBuildInfo = provider(
     fields = ["artifacts", "config", "architecture"],
 )
 
+KernelBuildRequestInfo = provider(
+    "Configured native products requested from the shared image action owner.",
+    fields = ["config", "catalog", "roots", "architecture_roots", "modules", "required_options"],
+)
+
 def _catalog_impl(ctx):
     programs = {}
     for target in ctx.attr.makefiles:
@@ -804,9 +809,9 @@ def _select_modules(state):
         if not selected:
             fail("Module selection exceeded 10000 directories: " + module)
 
-def _impl(ctx):
-    config = ctx.attr.config[KernelConfigInfo]
-    modules = sorted({path: True for path in ctx.attr.modules})
+def _build(ctx, request):
+    config = request.config
+    modules = sorted({path: True for path in request.modules})
     for path in modules:
         if not path.endswith(".ko") or _normalize(path) != path or path.startswith("/"):
             fail("Expected a source-relative Kbuild module path ending in .ko: " + path)
@@ -816,7 +821,7 @@ def _impl(ctx):
         for option in ["MODVERSIONS", "MODULE_SRCVERSION_ALL"]:
             if config.values.get(option) == "y":
                 fail("Requested modules with CONFIG_%s need native .cmd metadata, which is not yet exported" % option)
-    for name, expected in ctx.attr.required_options.items():
+    for name, expected in request.required_options.items():
         if config.values.get(name, "n") != expected:
             fail("Required kernel option %s=%s resolved to %s" % (name, expected, config.values.get(name, "n")))
     setup = image_evaluation_setup(ctx.attr._setup[KernelToolchainInfo])
@@ -835,7 +840,7 @@ def _impl(ctx):
     index["__execution_tools__"] = setup.sources["__execution_tools__"]
     index["__reported_probes__"] = setup.sources["__reported_probes__"]
     state = {
-        "catalog": ctx.attr.catalog[KbuildCatalogInfo],
+        "catalog": request.catalog,
         "contexts": {},
         "invocations": {},
         "target_scopes": {},
@@ -911,8 +916,8 @@ def _impl(ctx):
                 fail("Multiple native postlink producers for " + output)
             state["postlink_outputs"][output] = path
     state["known_products"] = {p: True for p in ["built-in-fixup.a", "vmlinux.a", "vmlinux.o", "vmlinux.symvers", ".vmlinux.export.c", "vmlinux.unstripped", "vmlinux", "System.map", ".config", "include/config/auto.conf", "include/generated/autoconf.h"] + state["postlink_outputs"].keys() + state["module_final"].keys() + [m[:-3] + suffix for m in modules for suffix in [".o", ".mod", ".mod.c"]]}
-    _architecture_invocations(ctx.attr.architecture_roots.get(config.architecture.srcarch, []), state)
-    pending = [(path, None, {}) for path in reversed(list(ctx.attr.roots) + ctx.attr.architecture_roots.get(config.architecture.srcarch, []) + modules)]
+    _architecture_invocations(request.architecture_roots.get(config.architecture.srcarch, []), state)
+    pending = [(path, None, {}) for path in reversed(list(request.roots) + request.architecture_roots.get(config.architecture.srcarch, []) + modules)]
     descriptors, producers = {}, {}
     for _ in range(100000):
         if not pending:
@@ -1096,7 +1101,7 @@ def _impl(ctx):
             architecture = config.architecture,
         ),
         DefaultInfo(files = depset([manifest, config.report, setup.file] + artifacts.values())),
-        OutputGroupInfo(boot = depset([artifacts[p] for p in ctx.attr.architecture_roots.get(config.architecture.srcarch, [])]), kernel = depset([artifacts["vmlinux"]] if "vmlinux" in artifacts else []), modules = depset([artifacts[p] for p in modules]), manifest = depset([manifest]), ir_experiment = depset(experiment_files)),
+        OutputGroupInfo(boot = depset([artifacts[p] for p in request.architecture_roots.get(config.architecture.srcarch, [])]), kernel = depset([artifacts["vmlinux"]] if "vmlinux" in artifacts else []), modules = depset([artifacts[p] for p in modules]), manifest = depset([manifest]), ir_experiment = depset(experiment_files)),
     ]
 
 def _artifact_impl(ctx):
@@ -1137,12 +1142,16 @@ kbuild_resolved_setup = rule(implementation = _setup_impl, cfg = _transition, at
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
 })
 
-_BUILD_ATTRS = {
+_REQUEST_ATTRS = {
+    "config": attr.label(mandatory = True, providers = [KernelConfigInfo]),
     "catalog": attr.label(mandatory = True, providers = [KbuildCatalogInfo]),
     "required_options": attr.string_dict(),
     "roots": attr.string_list(mandatory = True),
     "architecture_roots": attr.string_list_dict(),
     "modules": attr.string_list(doc = "Source-relative .ko paths selected as modules by the configured Kbuild graph."),
+}
+
+_CORE_ATTRS = {
     "_link_script": attr.label(default = "//rules:link-vmlinux.sh", allow_single_file = True),
     "_objtool": attr.label(default = "//:objtool", providers = [KernelObjtoolInfo]),
     "_resolve_btfids": attr.label(default = "//:resolve_btfids", providers = [KernelResolveBtfidsInfo]),
@@ -1152,19 +1161,78 @@ _BUILD_ATTRS = {
     "_anchor": attr.label(default = "//:source/Makefile", allow_single_file = True),
 }
 
-kbuild_resolved_build = rule(implementation = _impl, cfg = _transition, fragments = ["cpp"], toolchains = use_cc_toolchain() + [EXECUTION_TOOLS_TYPE], attrs = dict(
-    _BUILD_ATTRS,
-    config = attr.label(mandatory = True, providers = [KernelConfigInfo]),
-    _allowlist_function_transition = attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
+def _request_info(ctx):
+    return KernelBuildRequestInfo(
+        config = ctx.attr.config[KernelConfigInfo],
+        catalog = ctx.attr.catalog[KbuildCatalogInfo],
+        roots = ctx.attr.roots,
+        architecture_roots = ctx.attr.architecture_roots,
+        modules = ctx.attr.modules,
+        required_options = ctx.attr.required_options,
+    )
+
+def _request_impl(ctx):
+    request = _request_info(ctx)
+
+    # Existing setup rules consume the same configuration through active_config.
+    return [request, request.config, DefaultInfo()]
+
+_build_request = rule(implementation = _request_impl, attrs = _REQUEST_ATTRS)
+
+def _core_impl(ctx):
+    return _build(ctx, ctx.attr._request[KernelBuildRequestInfo])
+
+kbuild_resolved_core = rule(implementation = _core_impl, fragments = ["cpp"], toolchains = use_cc_toolchain() + [EXECUTION_TOOLS_TYPE], attrs = dict(
+    _CORE_ATTRS,
+    _request = attr.label(default = "//:active_config", providers = [KernelBuildRequestInfo, KernelConfigInfo]),
 ))
+
+# Bazel supplies both transition callback arguments.
+# buildifier: disable=unused-variable
+def _select_request(settings, attr):
+    return {_ACTIVE_CONFIG: str(attr.request)}
+
+_request_transition = transition(implementation = _select_request, inputs = [], outputs = [_ACTIVE_CONFIG])
+
+def _view_impl(ctx):
+    target = ctx.attr._core[0]
+    return [target[KernelBuildInfo], target[DefaultInfo], target[OutputGroupInfo]]
+
+_build_view = rule(implementation = _view_impl, attrs = {
+    "request": attr.label(mandatory = True, cfg = _request_transition, providers = [KernelBuildRequestInfo]),
+    "_core": attr.label(default = "//:_kernel_build", cfg = _request_transition, providers = [KernelBuildInfo]),
+    "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
+})
+
+def kbuild_resolved_build(name, config, catalog, roots, architecture_roots = {}, modules = [], required_options = {}, tags = [], visibility = None):
+    """Request native products from this source repository's shared action owner."""
+    request = name + "_request"
+    _build_request(
+        name = request,
+        config = config,
+        catalog = catalog,
+        roots = roots,
+        architecture_roots = architecture_roots,
+        modules = modules,
+        required_options = required_options,
+        tags = ["manual"],
+        visibility = ["//visibility:private"],
+    )
+    _build_view(name = name, request = ":" + request, tags = tags, visibility = visibility)
+
+def _experiment_impl(ctx):
+    return _build(ctx, _request_info(ctx))
 
 # Temporary qualification core: outgoing transitions can select several
 # configurations of this same label, preserving paths after Bazel mapping.
-kbuild_ir_experiment = rule(implementation = _impl, fragments = ["cpp"], toolchains = use_cc_toolchain() + [EXECUTION_TOOLS_TYPE], attrs = dict(
-    _BUILD_ATTRS,
-    config = attr.label(default = "//:active_config", providers = [KernelConfigInfo]),
-    ir_pipeline = attr.bool(default = True),
-    ir_diagnostic_target = attr.string(),
-    ir_diagnostic_source = attr.label(allow_single_file = [".c"]),
-    ir_diagnostic_driver = attr.label(allow_single_file = [".py"], cfg = "exec"),
+kbuild_ir_experiment = rule(implementation = _experiment_impl, fragments = ["cpp"], toolchains = use_cc_toolchain() + [EXECUTION_TOOLS_TYPE], attrs = dict(
+    _CORE_ATTRS,
+    **dict(
+        _REQUEST_ATTRS,
+        config = attr.label(default = "//:active_config", providers = [KernelConfigInfo]),
+        ir_pipeline = attr.bool(default = True),
+        ir_diagnostic_target = attr.string(),
+        ir_diagnostic_source = attr.label(allow_single_file = [".c"]),
+        ir_diagnostic_driver = attr.label(allow_single_file = [".py"], cfg = "exec"),
+    )
 ))
