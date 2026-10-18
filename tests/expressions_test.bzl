@@ -42,6 +42,23 @@ def _context_test(ctx):
     asserts.equals(env, "explicit-compiler", requests.values()[-1]["compiler"])
     asserts.equals(env, "-m16", requests.values()[-1]["flags"])
 
+    # Both native include spellings refer to the already loaded auto.conf
+    # values. Keep the native Make string representation unchanged.
+    native_values = {"CONFIG_NATIVE": "y", "CONFIG_NATIVE_STRING": '\"quoted\\\\value\"'}
+    for prefix in ["", "__object__/"]:
+        for suffix in ["", ".cmd"]:
+            configured = program([
+                dict(kind = "directive", directive = "include", arguments_expression = _literal(prefix + "include/./config/auto.conf" + suffix)),
+                _assignment("SELECTED", [dict(op = "reference", name = _literal("CONFIG_NATIVE_STRING"))]),
+            ], {"__config__": native_values}, {})
+            asserts.equals(env, native_values, configured.variables["__config__"])
+            asserts.equals(env, native_values["CONFIG_NATIVE_STRING"], evaluate([dict(op = "reference", name = _literal("SELECTED"))], configured.variables))
+    other_include = "__object__/include/config/native.mk"
+    included = program([
+        dict(kind = "directive", directive = "include", arguments_expression = _literal(other_include)),
+    ], {}, {"__includes__": {other_include: [_assignment("NATIVE_INCLUDE", _literal("selected"))]}})
+    asserts.equals(env, "selected", evaluate([dict(op = "reference", name = _literal("NATIVE_INCLUDE"))], included.variables))
+
     # A simple assignment captures once in each recipe expansion context.
     # Reusing the cell for another action must not reuse the previous slot.
     captures = {"__shell_commands__": []}

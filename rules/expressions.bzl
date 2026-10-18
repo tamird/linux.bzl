@@ -451,8 +451,6 @@ def program(statements, initial, sources, cells = False):
             paths = _words(evaluate(node["arguments_expression"], variables, sources))
             for path in reversed(paths):
                 path = path.removeprefix("__source__/").removeprefix(sources.get("__source_root__", "__source__") + "/").removeprefix("./")
-                if path in ("include/config/auto.conf", "include/config/auto.conf.cmd"):
-                    continue
                 parts = []
                 for part in path.split("/"):
                     if part == "..":
@@ -460,6 +458,12 @@ def program(statements, initial, sources, cells = False):
                     elif part and part != ".":
                         parts.append(part)
                 path = "/".join(parts)
+
+                # Native auto.conf Make values already populate __config__.
+                # These generated includes may use the logical object root;
+                # they are not source syntax in the exported include map.
+                if path.removeprefix("__object__/") in ("include/config/auto.conf", "include/config/auto.conf.cmd"):
+                    continue
                 body = sources.get("__includes__", {}).get(path)
                 if body == None:
                     if node["directive"] == "include":
