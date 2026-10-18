@@ -192,6 +192,11 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
     # stays mandatory because an empty search directory is absent from depfiles.
     split = compiler_inputs.experiment.enabled and not host and source_file.extension == "c" and "-S" not in flags and "-E" not in flags
     name = ctx.label.name + (".host-compile/" if host else ".compile/") + target
+
+    # cc_common owns the selected compiler's tool inputs. The setup closure
+    # also contains unrelated host and script tools whose duplicate output
+    # paths can prevent Bazel from mapping configuration paths for caching.
+    compile_files = setup.host_compile_files if host else setup.compile_files
     options = dict(
         actions = ctx.actions,
         name = ctx.label.name + ".integrated/" + target if split else name,
@@ -199,7 +204,7 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
         cc_toolchain = setup.host_cc if host else setup.cc,
         srcs = [source_file],
         compilation_contexts = [source_tree.compilation_context, generated],
-        additional_inputs = [directory_marker] + direct_dependencies.values() + source_prerequisites.values() + setup.files.to_list(),
+        additional_inputs = [directory_marker] + direct_dependencies.values() + source_prerequisites.values() + compile_files.to_list(),
         user_compile_flags = flags,
         disallow_pic_outputs = True,
     )
@@ -227,7 +232,7 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
         feature_configuration = features,
         cc_toolchain = setup.cc,
         srcs = [bitcode],
-        additional_inputs = [source_file, directory_marker] + compiler_inputs.native_direct.values() + source_prerequisites.values() + setup.files.to_list(),
+        additional_inputs = [source_file, directory_marker] + compiler_inputs.native_direct.values() + source_prerequisites.values() + compile_files.to_list(),
         # Frontend diagnostics remain enabled in the preceding action. The
         # backend does not consume preprocessing flags, but must retain native
         # code-generation options and assembler include search paths.

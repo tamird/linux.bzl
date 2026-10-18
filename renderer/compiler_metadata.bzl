@@ -5,7 +5,7 @@ load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 
-KernelCompilerMetadataInfo = provider(doc = "Kernel Compiler Metadata Info.", fields = ["toolchain_id", "compiler", "compiler_version", "assembler", "assembler_version", "linker", "linker_version", "tools", "tool_files", "files", "builtin_include", "capabilities", "driver_linker_aliases"])
+KernelCompilerMetadataInfo = provider(doc = "Kernel Compiler Metadata Info.", fields = ["toolchain_id", "compiler", "compiler_version", "assembler", "assembler_version", "linker", "linker_version", "tools", "tool_files", "files", "compile_files", "builtin_include", "capabilities", "driver_linker_aliases"])
 
 def _impl(ctx):
     cc = find_cc_toolchain(ctx)
@@ -52,6 +52,9 @@ def _impl(ctx):
         tools = tools,
         tool_files = tool_files,
         files = depset(transitive = files),
+        # Native cc_common actions already declare the selected compiler's
+        # files. Only resource headers absent from that toolchain need adding.
+        compile_files = depset(extra_headers),
         builtin_include = headers.path,
         capabilities = ctx.attr.capabilities,
         driver_linker_aliases = ctx.attr.driver_linker_aliases,
