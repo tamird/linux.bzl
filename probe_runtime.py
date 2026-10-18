@@ -28,10 +28,10 @@ def absolute_arguments(arguments, execution_root):
         elif path_value:
             result.append(str(execution_root / argument) if not os.path.isabs(argument) else argument)
             path_value = False
-        elif argument in ('-I', '-isystem', '-iquote', '-include', '-imacros', '-resource-dir', '--sysroot', '-B', '-internal-isystem', '-internal-externc-isystem', '-internal-iframework'):
+        elif argument in ('-I', '-isystem', '-iquote', '-include', '-imacros', '-resource-dir', '--sysroot', '-B', '-L', '-internal-isystem', '-internal-externc-isystem', '-internal-iframework'):
             result.append(argument)
             path_value = True
-        elif argument.startswith(('-I', '-B')) and len(argument) > 2:
+        elif argument.startswith(('-I', '-B', '-L')) and len(argument) > 2:
             result.append(argument[:2] + str(execution_root / argument[2:]))
         elif argument.startswith(('-resource-dir=', '--sysroot=')):
             name, value = argument.split('=', 1)

@@ -47,8 +47,20 @@ class ProbeTest(unittest.TestCase):
             self.assertEqual(linker[1:], ['-m', 'elf_i386', '--orphan-handling=warn', '-v'])
 
     def test_provider_paths_relocate_without_reordering(self):
-        args = ['--target=aarch64-linux-gnu', '-resource-dir', 'external/clang/lib/clang/23', '-isystem', 'external/libc/include', '-DVALUE=1', '-Xclang', '-internal-isystem', '-Xclang', 'external/compiler-rt/include']
-        self.assertEqual(absolute_arguments(args, Path('/exec')), ['--target=aarch64-linux-gnu', '-resource-dir', '/exec/external/clang/lib/clang/23', '-isystem', '/exec/external/libc/include', '-DVALUE=1', '-Xclang', '-internal-isystem', '-Xclang', '/exec/external/compiler-rt/include'])
+        args = [
+            '--target=aarch64-linux-gnu', '-resource-dir', 'external/clang/lib/clang/23',
+            '-isystem', 'external/libc/include', '-DVALUE=1', '-Xclang',
+            '-internal-isystem', '-Xclang', 'external/compiler-rt/include',
+            '-Lexternal/glibc/lib', '-lpthread', '-ldl', '-L', 'external/unwind/lib',
+            '-lunwind', '-L/absolute/joined', '-L', '/absolute/separate', '-lc',
+        ]
+        self.assertEqual(absolute_arguments(args, Path('/exec')), [
+            '--target=aarch64-linux-gnu', '-resource-dir', '/exec/external/clang/lib/clang/23',
+            '-isystem', '/exec/external/libc/include', '-DVALUE=1', '-Xclang',
+            '-internal-isystem', '-Xclang', '/exec/external/compiler-rt/include',
+            '-L/exec/external/glibc/lib', '-lpthread', '-ldl', '-L', '/exec/external/unwind/lib',
+            '-lunwind', '-L/absolute/joined', '-L', '/absolute/separate', '-lc',
+        ])
 
     def test_try_run_uses_directory_environment_and_temporary_file(self):
         with tempfile.TemporaryDirectory() as temporary:
