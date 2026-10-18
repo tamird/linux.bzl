@@ -7,7 +7,7 @@ on:
         description: Experiment to run
         type: choice
         default: all
-        options: [all, configuration-parity, source-edit-reuse, compiler-ir, compiler-family, examples]
+        options: [all, configuration-parity, source-edit-reuse, compiler-ir, compiler-family, examples, generator]
 
 permissions:
   contents: read
@@ -38,12 +38,12 @@ jobs:
       # Qualify a source-specific release asset for external consumers. The
       # maintained family below retains the default source/generator pair.
       - name: Qualify the Linux 6.18 consumer generator
-        if: inputs.experiment == 'compiler-family'
+        if: inputs.experiment == 'compiler-family' || inputs.experiment == 'generator'
         run: |
           bazel test //native/linux_6_18:repository_test --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4 --test_output=errors
           bazel build //native/linux_6_18:consumer_support --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4
       - uses: actions/upload-artifact@v7
-        if: inputs.experiment == 'compiler-family'
+        if: inputs.experiment == 'compiler-family' || inputs.experiment == 'generator'
         with:
           name: qualification-generator-linux_6_18
           path: bazel-bin/native/linux_6_18/consumer-support.tar.gz
@@ -63,6 +63,7 @@ jobs:
           retention-days: 14
 
   qualify:
+    if: inputs.experiment != 'generator'
     name: ${{ matrix.experiment }}
     runs-on: ubuntu-24.04
     needs: generator
