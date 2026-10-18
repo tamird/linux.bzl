@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 from typing import NotRequired, TypeAlias, TypedDict
 
 Outputs: TypeAlias = tuple[str, ...]
@@ -76,6 +77,26 @@ class CompilerJob(TypedDict):
     outputs: list[str]
 
 
+class NativeRecipeArtifacts(TypedDict):
+    report: str
+    compressed: str
+    expanded: str
+    restored: str
+
+
+class NativeRecipeReport(TypedDict):
+    payload_size: int
+    trailer_hex: str
+    expanded: str
+    roundtrip: bool
+    lz4: str
+
+
+class NativeRecipeEvidence(TypedDict):
+    report: NativeRecipeReport
+    sha256: dict[str, str]
+
+
 class KernelManifest(TypedDict):
     compiler: str
     roots: list[str]
@@ -86,6 +107,8 @@ class KernelManifest(TypedDict):
     compiler_inventory: dict[str, CompilerDescriptor]
     compiler_jobs: list[CompilerJob]
     compiler_diagnostics: NotRequired[list[str]]
+    compiler_diagnostic_cases: NotRequired[dict[str, str]]
+    native_recipe_checks: NotRequired[NativeRecipeArtifacts]
 
 
 PHASES = ("baseline", "unchanged", "edited", "header", "incbin", "gzip")
@@ -95,6 +118,8 @@ GZIP_PAYLOAD = "arch/x86/boot/compressed/vmlinux.bin.gz"
 BOOT_HEADERS = ("arch/x86/boot/voffset.h", "arch/x86/boot/zoffset.h")
 HEADER_TARGETS = ("init/do_mounts.o", "init/do_mounts_initrd.o", "init/initramfs.o", "init/do_mounts_rd.o")
 COMPILER_MNEMONICS = {"KernelArtifact", "KernelLLVMBackend"}
+NATIVE_RECIPE_FILES = {"report": "report.json", "compressed": "compressed.lz4", "expanded": "expanded.txt", "restored": "restored.bin"}
+NATIVE_RECIPE_EXPANDED = "quoted value|no|$literal"
 
 
 def mapped(path: str) -> str:
@@ -369,6 +394,57 @@ def read_manifest(directory: Path, name: str, workspace: Path, graph: ActionGrap
     return manifest
 
 
+def check_native_recipe_files(paths: dict[str, Path]) -> NativeRecipeEvidence:
+    """Check retained native recipe bytes independently of the pass report."""
+    report = json.loads(paths["report"].read_text())
+    match report:
+        case {"payload_size": int(size), "trailer_hex": "01010000", "expanded": str(expanded), "roundtrip": True, "lz4": str(lz4)} if size == 257 and expanded == NATIVE_RECIPE_EXPANDED and Path(lz4).name in ("lz4", "lz4c"):
+            pass
+        case _:
+            raise ValueError(f"Native recipe check did not pass: {report}")
+    compressed = paths["compressed"].read_bytes()
+    if len(compressed) <= 4 or compressed[-4:] != b"\x01\x01\x00\x00":
+        raise ValueError("Native LZ4 output lacks the four-byte little-endian 257 trailer")
+    if paths["expanded"].read_bytes() != NATIVE_RECIPE_EXPANDED.encode():
+        raise ValueError("Native recipe captures did not expand before the first recipe line")
+    if paths["restored"].read_bytes() != b"x" * 257:
+        raise ValueError("Native LZ4 roundtrip did not restore the 257-byte payload")
+    return NativeRecipeEvidence(report=NativeRecipeReport(payload_size=size, trailer_hex="01010000", expanded=expanded, roundtrip=True, lz4=lz4), sha256={role: hashlib.sha256(path.read_bytes()).hexdigest() for role, path in paths.items()})
+
+
+def snapshot_native_recipe_checks(directory: Path, name: str, workspace: Path, manifest: KernelManifest, graph: ActionGraph) -> NativeRecipeEvidence:
+    """Authenticate standalone controls without adding them to compiler work."""
+    checks = manifest.get("native_recipe_checks")
+    match checks:
+        case {"report": str(report), "compressed": str(compressed), "expanded": str(expanded), "restored": str(restored)} if len(checks) == 4:
+            paths = {"report": report, "compressed": compressed, "expanded": expanded, "restored": restored}
+        case _:
+            raise ValueError(f"Missing native recipe qualification artifacts: {checks}")
+    if len(set(paths.values())) != 4:
+        raise ValueError("Native recipe artifact roles must have distinct Files")
+    missing = [path for path in paths.values() if path not in graph.identities or graph.identities[path] not in graph.producers]
+    if missing:
+        raise ValueError(f"Native recipe artifacts lack actual producers: {missing}")
+    producers = {graph.producers[graph.identities[path]] for path in paths.values()}
+    if len(producers) != 1 or graph.producer(report)["mnemonic"] != "KernelArtifact":
+        raise ValueError("Native recipe artifacts must share one KernelArtifact producer")
+    outputs = {graph.artifacts[str(item)] for item in graph.producer(report)["outputIds"]}
+    compiler_outputs = {path for job in manifest["compiler_jobs"] for path in job["outputs"]}
+    if outputs & compiler_outputs:
+        raise ValueError("Native recipe controls share a production compiler action")
+    evidence = check_native_recipe_files({role: workspace / path for role, path in paths.items()})
+    destination = directory / "native-recipes" / name
+    destination.mkdir(parents=True, exist_ok=True)
+    for role, path in paths.items():
+        shutil.copyfile(workspace / path, destination / NATIVE_RECIPE_FILES[role])
+    return evidence
+
+
+def read_native_recipe_checks(directory: Path, name: str) -> NativeRecipeEvidence:
+    destination = directory / "native-recipes" / name
+    return check_native_recipe_files({role: destination / filename for role, filename in NATIVE_RECIPE_FILES.items()})
+
+
 def authenticate_compilers(manifest: KernelManifest, graph: ActionGraph) -> tuple[set[str], dict[str, CompilerRecord]]:
     """Authenticate descriptor inventory against product edges, never scan metadata."""
     artifacts = manifest["artifacts"]
@@ -448,6 +524,7 @@ def snapshot(directory: Path, name: str, workspace: Path) -> None:
     graph = ActionGraph.read(directory / f"{name}.aquery.json")
     manifest = read_manifest(directory, name, workspace, graph)
     _, compilers = authenticate_compilers(manifest, graph)
+    snapshot_native_recipe_checks(directory, name, workspace, manifest, graph)
     artifacts = manifest["artifacts"]
     inventory = {}
     paths = {}
@@ -580,6 +657,7 @@ def phase(path: Path, expected: set[Outputs]) -> Phase:
 
 
 def report(directory: Path) -> dict[str, object]:
+    native_recipes = {name: read_native_recipe_checks(directory, name) for name in PHASES}
     inventories = {name: read_compilers(directory / f"{name}.compilers.json") for name in PHASES}
     compilers = inventories["baseline"]
     identities = {target: (record.source, record.outputs, {role: sorted(inputs) for role, inputs in record.generated_inputs.items()}) for target, record in compilers.items()}
@@ -668,6 +746,7 @@ def report(directory: Path) -> dict[str, object]:
             raise ValueError(f"The gzip header edit unexpectedly changed {target}")
     return {
         "measurement_complete": True,
+        "native_recipe_checks": native_recipes,
         "compile_inventory_unchanged": True,
         "qualification": {
             "unrelated_logical_objects": len(compilers) - 1,

@@ -272,6 +272,37 @@ cp %s "$exec_root"/%s
 """ % (shell_quote(tree.path), _stage_links([raw, source_file] + recipe_files + files.to_list() + setup.files.to_list()), shell_quote(target.rpartition("/")[0] or "."), shell_quote(raw.path), shell_quote(target), shell_quote(target), command, shell_quote(target), shell_quote(output.path))
     run_recipe(ctx, execution_tools(ctx), command = script, inputs = depset([tree, raw, source_file] + dependencies.values() + recipe_files, transitive = [files, setup.files]), outputs = [output], mnemonic = "KbuildPostprocess", progress_message = "Postprocess " + target)
 
+def _ir_diagnostics(ctx, flags, tree, dependencies, files, setup):
+    execution = execution_tools(ctx)
+    report = ctx.actions.declare_file("kernel.validation/diagnostics/report.json")
+    spec = ctx.actions.declare_file("kernel.validation/diagnostics/spec.json")
+    cases, bitcodes = [], []
+    for name, define in [("attribute", "IR_ATTRIBUTE_ERROR"), ("assembly", "IR_ASSEMBLY_ERROR")]:
+        bitcode = ctx.actions.declare_file("kernel.validation/diagnostics/" + name + ".bc")
+        bitcodes.append(bitcode)
+        commands = []
+        for phase in ["integrated", "frontend", "backend"]:
+            extra = ["-D" + define]
+            if phase == "frontend":
+                extra.extend(["-emit-llvm", "-Xclang", "-disable-llvm-passes"])
+            elif phase == "backend":
+                extra.append("-Wno-unused-command-line-argument")
+            commands.append({
+                "phase": phase,
+                "argv": [setup.tools["CC"]] + flags + extra + ["-c", bitcode.path if phase == "backend" else ctx.file._diagnostic_source.path, "-o", bitcode.path if phase == "frontend" else "/dev/null"],
+                "environment": execution.backend_environment,
+            })
+        cases.append({"name": name, "bitcode": bitcode.path, "bitcode_runfile": bitcode.path, "commands": commands})
+    ctx.actions.write(spec, json.encode(cases))
+    ctx.actions.run(
+        executable = execution.python,
+        arguments = ["-B", ctx.file._diagnostic_driver.path, spec.path, report.path],
+        inputs = depset([spec, ctx.file._diagnostic_driver, ctx.file._diagnostic_source, tree] + dependencies.values(), transitive = [files, setup.files]),
+        outputs = [report] + bitcodes,
+        mnemonic = "KernelIRDiagnostics",
+    )
+    return [report] + bitcodes, {file.path: file.path for file in bitcodes}
+
 def _compile_target(ctx, target, directory, outputs, dependencies, files, source, config, setup, native, ancestry, graph_variables, original_sources, compiler_prerequisites, postprocess_dependencies, invocation_environment, compiler_kind):
     path = target[:-2] + ".c"
     if path not in dependencies and path not in original_sources:
@@ -352,6 +383,10 @@ def _compile_target(ctx, target, directory, outputs, dependencies, files, source
             integrated = ctx.actions.declare_file("kernel.integrated/" + target)
             _compile_action(ctx, target, "integrated", source_file, integrated, flags, tree, dependencies, files, setup, source_kind, mandatory)
             result["integrated"] = integrated.path
+            if target == "lib/ctype.o":
+                diagnostics, diagnostic_cases = _ir_diagnostics(ctx, flags, tree, dependencies, files, setup)
+                result["diagnostics"] = [file.path for file in diagnostics]
+                result["diagnostic_cases"] = diagnostic_cases
     else:
         _compile_action(ctx, target, "single", source_file, raw, flags, tree, dependencies, files, setup, source_kind, mandatory)
     if post:

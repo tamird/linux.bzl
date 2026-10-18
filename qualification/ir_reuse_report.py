@@ -17,7 +17,9 @@ from qualification.reuse_report import (
     authenticate_compilers,
     mapped,
     read_manifest,
+    read_native_recipe_checks,
     records,
+    snapshot_native_recipe_checks,
 )
 
 FAMILY = ("base", "debug", "btf", "lz4")
@@ -89,6 +91,7 @@ def snapshot(directory: Path, name: str, workspace: Path) -> None:
     graph = ActionGraph.read(query_path)
     manifest = read_manifest(directory, name, workspace, graph)
     reached, inventory = authenticate_compilers(manifest, graph)
+    snapshot_native_recipe_checks(directory, name, workspace, manifest, graph)
     report: dict[str, CompilerRecord] = {}
     for target, compiler in inventory.items():
         if compiler["kind"] != "c":
@@ -99,7 +102,7 @@ def snapshot(directory: Path, name: str, workspace: Path) -> None:
             case _:
                 raise ValueError(f"Native C object lacks an integrated reference: {target}")
     assert report, "No compiler IR artifacts were requested"
-    authenticate(directory, name, workspace, manifest, reached, inventory)
+    authenticate(directory, name, workspace, manifest, graph, reached, inventory)
     artifacts = set(graph.identities)
     (directory / f"{name}.compiler.json").write_text(json.dumps(report, indent=2) + "\n")
     del graph
@@ -122,9 +125,9 @@ def snapshot(directory: Path, name: str, workspace: Path) -> None:
     (directory / f"{name}.ir.json").write_text(json.dumps(result, indent=2) + "\n")
 
 
-def authenticate(directory: Path, name: str, workspace: Path, manifest: KernelManifest, reached: set[str], inventory: dict[str, NativeCompilerRecord]) -> None:
-    products = {root: manifest["artifacts"][root] for root in manifest["roots"]}
-    match manifest["compiler_diagnostics"]:
+def snapshot_diagnostics(directory: Path, name: str, workspace: Path, manifest: KernelManifest, graph: ActionGraph) -> None:
+    """Resolve native report paths only through the scheduler's explicit map."""
+    match manifest.get("compiler_diagnostics"):
         case list(diagnostics) if all(isinstance(path, str) for path in diagnostics):
             pass
         case other:
@@ -134,20 +137,54 @@ def authenticate(directory: Path, name: str, workspace: Path, manifest: KernelMa
             pass
         case other:
             raise ValueError(f"Expected one compiler diagnostic report: {other}")
-    destination = directory / "diagnostics" / name
-    destination.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(workspace / diagnostic_report, destination / "report.json")
+    bitcodes = string_map(manifest.get("compiler_diagnostic_cases"))
+    if len(set(bitcodes.values())) != len(bitcodes) or diagnostic_report in bitcodes.values():
+        raise ValueError("Compiler diagnostic roles must have distinct actual Files")
+    expected = {diagnostic_report, *bitcodes.values()}
+    if len(diagnostics) != len(expected) or set(diagnostics) != expected:
+        raise ValueError(f"Compiler diagnostic artifact membership differs: {diagnostics}, {expected}")
+    missing = [path for path in diagnostics if path not in graph.identities or graph.identities[path] not in graph.producers]
+    if missing:
+        raise ValueError(f"Compiler diagnostic artifacts lack actual producers: {missing}")
+    producers = {graph.producers[graph.identities[path]] for path in diagnostics}
+    producer = graph.producer(diagnostic_report)
+    outputs = {graph.artifacts[str(item)] for item in producer["outputIds"]}
+    if len(producers) != 1 or producer["mnemonic"] != "KernelArtifact" or outputs != expected:
+        raise ValueError("Compiler diagnostic artifacts must be the outputs of one KernelArtifact producer")
+    compiler_outputs = {path for job in manifest["compiler_jobs"] for path in job["outputs"]}
+    if outputs & compiler_outputs:
+        raise ValueError("Compiler diagnostic controls share a production compiler action")
     cases = json.loads((workspace / diagnostic_report).read_text())
-    assert isinstance(cases, list), cases
+    if not isinstance(cases, list):
+        raise ValueError(f"Invalid diagnostic report: {cases}")
+    names, planned = set(), set()
+    resolved = []
     for case in cases:
         match case:
-            case {"name": str(case_name), "bitcode": str(bitcode)} if case_name in ("attribute", "assembly"):
-                assert bitcode in diagnostics, (bitcode, diagnostics)
-                source = workspace / bitcode
-                assert source.stat().st_size > 0, bitcode
-                shutil.copyfile(source, destination / (case_name + ".bc"))
+            case {"name": str(case_name), "bitcode": str(bitcode), "outcomes": list()} if case_name in ("attribute", "assembly"):
+                pass
             case _:
                 raise ValueError(f"Invalid diagnostic artifact: {case}")
+        if case_name in names or bitcode in planned or bitcode not in bitcodes:
+            raise ValueError(f"Unknown or duplicate compiler diagnostic case: {case_name}, {bitcode}")
+        names.add(case_name)
+        planned.add(bitcode)
+        actual = bitcodes[bitcode]
+        if (workspace / actual).stat().st_size == 0:
+            raise ValueError(f"Empty compiler diagnostic bitcode: {actual}")
+        resolved.append(dict(case, bitcode=actual))
+    if names != {"attribute", "assembly"} or planned != bitcodes.keys():
+        raise ValueError(f"Incomplete compiler diagnostic cases: {names}, {planned}, {bitcodes}")
+    destination = directory / "diagnostics" / name
+    destination.mkdir(parents=True, exist_ok=True)
+    for case in resolved:
+        shutil.copyfile(workspace / case["bitcode"], destination / (case["name"] + ".bc"))
+    (destination / "report.json").write_text(json.dumps(resolved, indent=2) + "\n")
+
+
+def authenticate(directory: Path, name: str, workspace: Path, manifest: KernelManifest, graph: ActionGraph, reached: set[str], inventory: dict[str, NativeCompilerRecord]) -> None:
+    products = {root: manifest["artifacts"][root] for root in manifest["roots"]}
+    snapshot_diagnostics(directory, name, workspace, manifest, graph)
     result = {
         "products": {root: {"path": path, "sha256": hashlib.sha256((workspace / path).read_bytes()).hexdigest()} for root, path in products.items()},
         "compilers": inventory,
@@ -228,6 +265,7 @@ def execution(path: Path, targets: dict[str, ArtifactRecord]) -> Execution:
 
 def summarize(directory: Path) -> None:
     names = FAMILY_PHASES
+    native_recipes = {name: read_native_recipe_checks(directory, name) for name in names}
     snapshots = {name: read_snapshot(directory / f"{name}.ir.json") for name in names}
     expected = snapshots["base"].keys()
     assert expected and all(snapshots.values()), "Empty native compiler inventory"
@@ -262,6 +300,7 @@ def summarize(directory: Path) -> None:
     ] + [outcome["output"] for outcome in phases["unchanged"]["frontend"] if not outcome["cache_hit"]]
     unchanged_digests = all(snapshots["base"][target]["digests"] == snapshots["unchanged"][target]["digests"] for target in expected)
     result = {
+        "native_recipe_checks": native_recipes,
         "phases": phases, "object_mismatches": parity, "equal_base_lz4_ir": equal,
         "lz4_backend_hits": hits, "panic_changed": changed,
         "paired_backend_actions": paired, "panic_action_changed": control_action_changed,

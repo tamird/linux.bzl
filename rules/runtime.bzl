@@ -154,7 +154,7 @@ def context(tctx, roots, tools, params, planning = False, recorded = None, kerne
         execution = execution,
         output_prefix = getattr(params, "output_prefix", roots["kernel"].path),
         native_link_script = params.link_script_text,
-        file = struct(_materialize = params.materialize, _link_script = params.link_script, _native_recipe = params.native_recipe),
+        file = struct(_materialize = params.materialize, _link_script = params.link_script, _native_recipe = params.native_recipe, _recipe_check = getattr(params, "recipe_check", None), _diagnostic_driver = getattr(params, "diagnostic_driver", None), _diagnostic_source = getattr(params, "diagnostic_source", None)),
         label = struct(name = "kernel"),
         attr = struct(roots = kernel_roots, required_options = required_options, validate_native_objects = validate_native_objects),
     )

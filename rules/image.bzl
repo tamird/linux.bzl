@@ -2,6 +2,7 @@
 
 load(":commands.bzl", "register", "shell_words")
 load(":expressions.bzl", "evaluate", "make_words", "match", "program", "source_index")
+load(":recipe_check.bzl", "native_recipe_check")
 
 def _value(name, variables, sources):
     return evaluate([{"op": "reference", "name": [{"op": "literal", "value": name}]}], variables, sources)
@@ -1037,6 +1038,7 @@ def build_image(ctx, config, setup, prepared, catalog, objtool, resolve_btfids =
     members = []
     compilers = {}
     compiler_inventory = {}
+    diagnostics, diagnostic_cases = [], {}
     for _ in range(len(descriptors) + 1):
         progress = False
         for target, d in descriptors.items():
@@ -1104,6 +1106,8 @@ def build_image(ctx, config, setup, prepared, catalog, objtool, resolve_btfids =
             if compiled != None:
                 if target not in compiler_inventory:
                     fail("Compiler action has no native descriptor: " + target)
+                diagnostics.extend(compiled.pop("diagnostics", []))
+                diagnostic_cases.update(compiled.pop("diagnostic_cases", {}))
                 compilers[target] = compiled
             elif compiler_descriptor:
                 fail("Native compiler descriptor did not register a compiler: " + target)
@@ -1127,12 +1131,16 @@ def build_image(ctx, config, setup, prepared, catalog, objtool, resolve_btfids =
                 trail.append(current)
                 current = blocked[current][0]
             fail("Unable to trace configured Kbuild dependency cycle")
+    recipe_checks = native_recipe_check(ctx, setup, prepared.logical) if ctx.attr.validate_native_objects else {}
     manifest = ctx.actions.declare_file(ctx.label.name + ".json")
     ctx.actions.write(manifest, json.encode({
         "identity": config.identity,
         "compiler": "clang" if config.values.get("CC_IS_CLANG") == "y" else "other",
         "compilers": compilers,
         "compiler_inventory": compiler_inventory,
+        "compiler_diagnostics": diagnostics,
+        "compiler_diagnostic_cases": diagnostic_cases,
+        "native_recipe_checks": {role: file.path for role, file in recipe_checks.items()},
         "config": config.config.path,
         "config_owner": config.config_owner.path,
         "setup": setup.file.path,

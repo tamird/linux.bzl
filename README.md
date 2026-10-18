@@ -85,7 +85,11 @@ already-produced native configuration, without configuring the kernel again.
 and producer dependencies. The qualification reporters authenticate native
 compiler inventory, split C object ancestry, integrated reference parity, and
 cross-configuration backend action identity. Reference objects are enabled by
-`--//:validate_native_objects`; production builds omit them. Example variants
+`--//:validate_native_objects`, which also records the source-selected LZ4 and
+Make recipe-ordering checks and the two deferred compiler diagnostic controls.
+The manual `native_compiler_checks` and `native_compiler_checks_5_10` targets
+request only `lib/ctype.o` for focused execution of these controls. Production
+builds omit the validation actions. Example variants
 transition one build label so corresponding backend paths share an action owner.
 Expensive build/configuration targets are explicitly tagged `manual`.
 

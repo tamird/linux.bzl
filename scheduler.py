@@ -138,6 +138,8 @@ def export_manifest(source: Path, mappings: Path, output: Path) -> None:
     for member in manifest["members"]:
         member["outputs"] = {target: artifact(path) for target, path in member["outputs"].items()}
     manifest["compiler_diagnostics"] = [artifact(path) for path in manifest.get("compiler_diagnostics", [])]
+    manifest["compiler_diagnostic_cases"] = {planned: artifact(path) for planned, path in manifest.get("compiler_diagnostic_cases", {}).items()}
+    manifest["native_recipe_checks"] = {role: artifact(path) for role, path in manifest.get("native_recipe_checks", {}).items()}
     manifest["compiler_jobs"] = [
         dict(job["compiler"], source=artifact(job["compiler"]["source"]), outputs=[artifact(path) for path in job["outputs"]])
         for job in scheduled["compiler_jobs"]

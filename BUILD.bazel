@@ -21,6 +21,9 @@ exports_files([
     "test_config_values.py",
     "probe_runtime.py",
     "native_recipe.py",
+    "qualification/native_recipe_check.py",
+    "qualification/ir_diagnostics.py",
+    "qualification/ir_diagnostics.c",
     "execute.py",
     "scheduler.py",
     "emit.py",
@@ -60,6 +63,20 @@ kernel_build(
     syntax = "@kernel_syntax//:program",
     tags = ["manual"],
 )
+
+[
+    kernel_build(
+        name = name,
+        config = config,
+        roots = ["lib/ctype.o"],
+        syntax = syntax,
+        tags = ["manual"],
+    )
+    for name, config, syntax in [
+        ("native_compiler_checks", "//native:config", "@kernel_syntax//:program"),
+        ("native_compiler_checks_5_10", "//native:old_config", "@kernel_syntax_5_10//:program"),
+    ]
+]
 
 [
     kernel_config(

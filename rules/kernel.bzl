@@ -40,7 +40,7 @@ def expand_kernel(tctx, input_directories, output_directories, tools, additional
     runtime_tools = dict(tools, commands = commands, host_cc = host_roles["HOSTCC"], host_cxx = host_roles["HOSTCXX"], target_cc = tc["cc"], host_roles = json.decode(additional_params["host_toolchain_roles"]), host_spec = json.decode(additional_params["host_toolchain"]), environment = environment, host_compile_env = host_environment, host_link_env = host_link_environment, path_environment = json.decode(additional_params["path_environment"]))
     runtime_tools["backend_environment"] = tc["compile_env"]
     link_script = tctx.declare_file("native/link-vmlinux.sh", directory = output_directories["kernel"])
-    params = struct(python = tools["python"], executor = tools["executor"], materialize = tools["materialize"], link_script = link_script, native_recipe = tools["native_recipe"], link_script_text = kbuild["link_script"], output_prefix = additional_params["output_prefix"])
+    params = struct(python = tools["python"], executor = tools["executor"], materialize = tools["materialize"], link_script = link_script, native_recipe = tools["native_recipe"], recipe_check = tools["recipe_check"], diagnostic_driver = tools["diagnostic_driver"], diagnostic_source = tools["diagnostic_source"], link_script_text = kbuild["link_script"], output_prefix = additional_params["output_prefix"])
     planning = not additional_params["final"]
     recorded = [] if additional_params["final"] else None
     ctx = context(tctx, output_directories, runtime_tools, params, planning = planning, recorded = recorded, kernel_roots = json.decode(additional_params["roots"]), required_options = json.decode(additional_params["required_options"]), validate_native_objects = additional_params["validate_native_objects"])
@@ -148,6 +148,9 @@ def _impl(ctx):
         executor = ctx.file._executor,
         materialize = ctx.file._materialize,
         native_recipe = ctx.file._native_recipe,
+        recipe_check = ctx.file._recipe_check,
+        diagnostic_driver = ctx.file._diagnostic_driver,
+        diagnostic_source = ctx.file._diagnostic_source,
     ))
     if ctx.attr.rounds < 0:
         fail("rounds must be nonnegative")
@@ -208,7 +211,7 @@ def _impl(ctx):
         prepared,
         originals,
         source.anchor.dirname,
-        dict(compiler_tools, python = execution.python, python_files = execution.python_files, emit = ctx.file._emit, executor = ctx.file._executor, runner = ctx.file._scheduler, materialize = ctx.file._materialize, native_recipe = ctx.file._native_recipe, libbpf_builder = ctx.file._libbpf_builder, native_configure = ctx.file._native_configure, native_spec = ctx.file._native_spec, probe = ctx.file._probe),
+        dict(compiler_tools, python = execution.python, python_files = execution.python_files, emit = ctx.file._emit, executor = ctx.file._executor, runner = ctx.file._scheduler, materialize = ctx.file._materialize, native_recipe = ctx.file._native_recipe, recipe_check = ctx.file._recipe_check, diagnostic_driver = ctx.file._diagnostic_driver, diagnostic_source = ctx.file._diagnostic_source, libbpf_builder = ctx.file._libbpf_builder, native_configure = ctx.file._native_configure, native_spec = ctx.file._native_spec, probe = ctx.file._probe),
         base_tools["compiler_files"],
         execution_files,
         config = config.directory,
@@ -239,6 +242,9 @@ kernel_build = rule(
         "_prepare": attr.label(default = "//rules:prepare_source.py", allow_single_file = True),
         "_probe": attr.label(default = "//:probe_runtime.py", allow_single_file = True),
         "_native_recipe": attr.label(default = "//:native_recipe.py", allow_single_file = True),
+        "_recipe_check": attr.label(default = "//:qualification/native_recipe_check.py", allow_single_file = True),
+        "_diagnostic_driver": attr.label(default = "//:qualification/ir_diagnostics.py", allow_single_file = True),
+        "_diagnostic_source": attr.label(default = "//:qualification/ir_diagnostics.c", allow_single_file = True),
         "_emit": attr.label(default = "//:emit.py", allow_single_file = True),
         "_executor": attr.label(default = "//:execute.py", allow_single_file = True),
         "_materialize": attr.label(default = "//rules:materialize.py", allow_single_file = True),

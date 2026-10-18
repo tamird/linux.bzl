@@ -97,6 +97,7 @@ def append_edit(path: Path, original: bytes, suffix: bytes) -> Iterator[None]:
 
 
 def measure(decoder: str, target: str, options: list[str], directory: Path, name: str, workspace: Path) -> None:
+    options = [*options, "--//:validate_native_objects"]
     log = directory / f"{name}.execution.pb.zst"
     subprocess.run([
         "bazel", "build", target, *options,
@@ -115,7 +116,7 @@ def measure(decoder: str, target: str, options: list[str], directory: Path, name
             "bazel", "cquery", target, *options,
             "--output=files", "--output_groups=qualification_manifest",
         ], cwd=workspace, stdout=output, check=True)
-    execution_root = subprocess.check_output(["bazel", "info", "execution_root", *options], cwd=workspace, text=True).strip()
+    execution_root = subprocess.check_output(["bazel", "info", "execution_root"], cwd=workspace, text=True).strip()
     reuse_report.snapshot(directory, name, Path(execution_root))
 
 

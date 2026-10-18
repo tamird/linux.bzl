@@ -52,6 +52,15 @@ class ReuseTest(unittest.TestCase):
             "\n".join(json.dumps(entry) for entry in [{"invocation": name, "hashFunctionName": "SHA-256"}, *entries]) + "\n"
         )
 
+    def native_recipe_files(self, directory: Path) -> dict[str, str]:
+        directory.mkdir(parents=True, exist_ok=True)
+        paths = {role: directory / name for role, name in reuse_report.NATIVE_RECIPE_FILES.items()}
+        paths["report"].write_text(json.dumps({"payload_size": 257, "trailer_hex": "01010000", "expanded": "quoted value|no|$literal", "roundtrip": True, "lz4": "declared/bin/lz4c"}))
+        paths["compressed"].write_bytes(b"compressed fixture" + b"\x01\x01\x00\x00")
+        paths["expanded"].write_bytes(b"quoted value|no|$literal")
+        paths["restored"].write_bytes(b"x" * 257)
+        return {role: path.relative_to(self.directory).as_posix() for role, path in paths.items()}
+
     def test_decoder_projection_preserves_real_digest_and_defaults(self) -> None:
         raw = [
             {"file": {"path": "a" * 70000}, "id": 1},
@@ -149,9 +158,145 @@ class ReuseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "native compiler descriptor"):
             reuse_report.read_manifest(self.directory, "base", self.directory, graph)
 
+    def native_recipe_graph(self) -> tuple[reuse_report.ActionGraph, dict]:
+        _, manifest = self.native_graph()
+        paths = self.native_recipe_files(self.directory / "controls")
+        manifest["native_recipe_checks"] = paths
+        query = json.loads((self.directory / "query.json").read_text())
+        outputs = []
+        for path in paths.values():
+            identity = str(len(query["artifacts"]) + 1)
+            query["pathFragments"].append({"id": identity, "label": path})
+            query["artifacts"].append({"id": identity, "pathFragmentId": identity})
+            outputs.append(identity)
+        query["actions"].append({"mnemonic": "KernelArtifact", "outputIds": outputs})
+        return reuse_report.ActionGraph.read(self.write("query.json", query)), manifest
+
+    def test_native_recipe_controls_are_authenticated_and_not_compiler_work(self) -> None:
+        graph, manifest = self.native_recipe_graph()
+        evidence = reuse_report.snapshot_native_recipe_checks(self.directory, "base", self.directory, manifest, graph)
+        self.assertEqual(evidence, reuse_report.read_native_recipe_checks(self.directory, "base"))
+        self.assertEqual(evidence["report"]["payload_size"], 257)
+        reached, compilers = reuse_report.authenticate_compilers(manifest, graph)
+        self.assertEqual(set(compilers), {"unit.o"})
+        self.assertTrue(set(manifest["native_recipe_checks"].values()).isdisjoint(reached))
+        self.log("controls", [{"id": 1, "path": manifest["native_recipe_checks"]["report"]}, spawn(1)])
+        measured = reuse_report.phase(self.directory / "controls.execution.jsonl", {("backend.o",)})
+        self.assertEqual(measured.executed, set())
+
+    def test_native_recipe_controls_reject_missing_or_invented_producers(self) -> None:
+        for defect in ("missing", "missing_role", "unknown_file", "shared_roles", "wrong_producer", "different_producers", "compiler_producer"):
+            with self.subTest(defect=defect):
+                graph, manifest = self.native_recipe_graph()
+                checks = manifest["native_recipe_checks"]
+                if defect == "missing":
+                    del manifest["native_recipe_checks"]
+                elif defect == "missing_role":
+                    del checks["compressed"]
+                elif defect == "unknown_file":
+                    checks["compressed"] = "missing.lz4"
+                elif defect == "shared_roles":
+                    checks["restored"] = checks["expanded"]
+                elif defect == "wrong_producer":
+                    graph.producer(checks["report"])["mnemonic"] = "FileWrite"
+                elif defect == "different_producers":
+                    graph.producers[graph.identities[checks["compressed"]]] = graph.producers[graph.identities["frontend.bc"]]
+                else:
+                    manifest["compiler_jobs"].append({"outputs": [checks["report"]]})
+                with self.assertRaises(ValueError):
+                    reuse_report.snapshot_native_recipe_checks(self.directory, "bad", self.directory, manifest, graph)
+
+    def test_native_recipe_controls_require_actual_bytes_and_pass_fields(self) -> None:
+        for defect in ("literal_octal", "expanded", "restored", "payload_size", "trailer_hex", "report_expanded", "roundtrip", "lz4"):
+            with self.subTest(defect=defect):
+                graph, manifest = self.native_recipe_graph()
+                checks = manifest["native_recipe_checks"]
+                if defect == "literal_octal":
+                    (self.directory / checks["compressed"]).write_bytes(b"compressed fixture" + br"\001\001\000\000")
+                elif defect == "expanded":
+                    (self.directory / checks["expanded"]).write_bytes(b"quoted value|yes|$literal")
+                elif defect == "restored":
+                    (self.directory / checks["restored"]).write_bytes(b"y" * 257)
+                else:
+                    path = self.directory / checks["report"]
+                    report = json.loads(path.read_text())
+                    field = "expanded" if defect == "report_expanded" else defect
+                    report[field] = {"payload_size": 256, "trailer_hex": "00010100", "report_expanded": "quoted value|yes|$literal", "roundtrip": False, "lz4": "declared/bin/other"}[defect]
+                    path.write_text(json.dumps(report))
+                with self.assertRaises(ValueError):
+                    reuse_report.snapshot_native_recipe_checks(self.directory, "bad", self.directory, manifest, graph)
+
+    def diagnostic_graph(self) -> tuple[reuse_report.ActionGraph, dict]:
+        _, manifest = self.native_graph()
+        cases = diagnostics()
+        bitcodes = {case["bitcode"]: "scheduled/" + case["name"] + ".bc" for case in cases}
+        report = "scheduled/diagnostics.json"
+        self.write(report, cases)
+        for planned, actual in bitcodes.items():
+            (self.directory / actual).write_bytes(planned.encode())
+        manifest["compiler_diagnostics"] = [report, *bitcodes.values()]
+        manifest["compiler_diagnostic_cases"] = bitcodes
+        query = json.loads((self.directory / "query.json").read_text())
+        outputs = []
+        for path in manifest["compiler_diagnostics"]:
+            identity = str(len(query["artifacts"]) + 1)
+            query["pathFragments"].append({"id": identity, "label": path})
+            query["artifacts"].append({"id": identity, "pathFragmentId": identity})
+            outputs.append(identity)
+        query["actions"].append({"mnemonic": "KernelArtifact", "outputIds": outputs})
+        return reuse_report.ActionGraph.read(self.write("query.json", query)), manifest
+
+    def test_diagnostic_paths_use_actual_scheduled_files(self) -> None:
+        graph, manifest = self.diagnostic_graph()
+        ir_reuse_report.snapshot_diagnostics(self.directory, "base", self.directory, manifest, graph)
+        cases = json.loads((self.directory / "diagnostics/base/report.json").read_text())
+        for original, retained in zip(diagnostics(), cases, strict=True):
+            self.assertEqual(retained, dict(original, bitcode=manifest["compiler_diagnostic_cases"][original["bitcode"]]))
+            self.assertEqual((self.directory / "diagnostics/base" / (original["name"] + ".bc")).read_bytes(), original["bitcode"].encode())
+        self.assertEqual(ir_compare.check_diagnostics(cases), ir_compare.check_diagnostics(diagnostics()))
+
+    def test_diagnostic_mapping_and_producers_are_required(self) -> None:
+        for defect in ("missing_map", "missing_key", "shared_file", "shared_report", "wrong_membership", "missing_producer", "wrong_producer", "different_producers", "extra_output", "compiler_producer", "unknown_case", "duplicate_case", "empty_bitcode"):
+            with self.subTest(defect=defect):
+                graph, manifest = self.diagnostic_graph()
+                paths = manifest["compiler_diagnostics"]
+                bitcodes = manifest["compiler_diagnostic_cases"]
+                if defect == "missing_map":
+                    del manifest["compiler_diagnostic_cases"]
+                elif defect == "missing_key":
+                    del bitcodes["attribute.bc"]
+                elif defect == "shared_file":
+                    bitcodes["attribute.bc"] = bitcodes["assembly.bc"]
+                elif defect == "shared_report":
+                    bitcodes["attribute.bc"] = paths[0]
+                elif defect == "wrong_membership":
+                    paths.append("source.c")
+                elif defect == "missing_producer":
+                    del graph.producers[graph.identities[paths[1]]]
+                elif defect == "wrong_producer":
+                    graph.producer(paths[0])["mnemonic"] = "FileWrite"
+                elif defect == "different_producers":
+                    graph.producers[graph.identities[paths[1]]] = graph.producers[graph.identities["frontend.bc"]]
+                elif defect == "extra_output":
+                    graph.producer(paths[0])["outputIds"].append(graph.identities["other.c"])
+                elif defect == "compiler_producer":
+                    manifest["compiler_jobs"].append({"outputs": [paths[1]]})
+                elif defect == "empty_bitcode":
+                    (self.directory / paths[1]).write_bytes(b"")
+                else:
+                    cases = diagnostics()
+                    if defect == "unknown_case":
+                        cases[0]["bitcode"] = "unmapped.bc"
+                    else:
+                        cases[1] = cases[0]
+                    self.write(paths[0], cases)
+                with self.assertRaises(ValueError):
+                    ir_reuse_report.snapshot_diagnostics(self.directory, "bad", self.directory, manifest, graph)
+
     def family(self) -> None:
         targets = ["kernel/panic.o", "arch/x86/boot/string.o", "lib/ctype.o", "lib/string.o"]
         for phase in ir_reuse_report.FAMILY_PHASES:
+            self.native_recipe_files(self.directory / "native-recipes" / phase)
             selected = targets + (["debug/only.o"] if phase == "debug" else [])
             if phase == "changed":
                 selected = targets[:2]
@@ -217,6 +362,22 @@ class ReuseTest(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     ir_compare.compare_family(self.directory)
 
+    def test_family_and_mutation_reports_require_native_recipe_evidence(self) -> None:
+        for family in (True, False):
+            with self.subTest(family=family):
+                if family:
+                    self.family()
+                    report = ir_reuse_report.summarize
+                    phase = "btf"
+                else:
+                    self.mutation()
+                    report = reuse_report.report
+                    phase = "incbin"
+                path = self.directory / "native-recipes" / phase / "compressed.lz4"
+                path.unlink()
+                with self.assertRaises(FileNotFoundError):
+                    report(self.directory)
+
     def test_unchanged_backend_execution_and_missing_role_are_not_reuse(self) -> None:
         self.family()
         value = ir_reuse_report.read_snapshot(self.directory / "unchanged.ir.json")
@@ -236,6 +397,7 @@ class ReuseTest(unittest.TestCase):
         roles = {target: {role: (f"bazel-out/mapped/bin/{role}/{target}",) for role in ("frontend", "backend")} for target in c_targets}
         roles.update({target: {"single": (f"bazel-out/mapped/bin/single/{target}",)} for target in singles})
         for phase in reuse_report.PHASES:
+            self.native_recipe_files(self.directory / "native-recipes" / phase)
             records = {}
             for target, outputs in roles.items():
                 changed = target == "init/do_mounts.o" and phase in ("header", "incbin", "gzip")
