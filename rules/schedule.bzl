@@ -9,15 +9,17 @@ _CODES = {c: _HEX[(i + 32) // 16] + _HEX[(i + 32) % 16] for i, c in enumerate(_A
 
 def write_payload(tctx, python, emit, root, value, python_files):
     text = json.encode(value)
-    encoded = "".join([_CODES[c] for c in text.elems()])
-    if (len(encoded) + 179) // 180 > 100000000:
+    if (len(text) + 89) // 90 > 100000000:
         fail("Payload exceeds the eight-digit chunk range")
     report = tctx.declare_file("report.json", directory = root)
     writer(tctx, python, emit, root, python_files)(report, text)
     outputs = []
-    for start in range(0, len(encoded), 180):
-        number = ("00000000" + str(start // 180))[-8:]
-        path = "/".join([number[:2], number[2:4], number[4:6], number + "=" + encoded[start:start + 180]])
+    for start in range(0, len(text), 90):
+        # The transport encodes printable ASCII JSON bytes as pairs of hex
+        # digits. Bound the temporary list to one existing 180-hex chunk.
+        encoded = "".join([_CODES[c] for c in text[start:start + 90].elems()])
+        number = ("00000000" + str(start // 90))[-8:]
+        path = "/".join([number[:2], number[2:4], number[4:6], number + "=" + encoded])
         outputs.append(tctx.declare_file(path, directory = root))
     for start in range(0, len(outputs), 500):
         batch = outputs[start:start + 500]
