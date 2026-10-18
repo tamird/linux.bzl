@@ -20,6 +20,14 @@ def main() -> None:
     syntax = export_syntax(linux, Path(os.environ["TEST_TMPDIR"]), executable=args.tool.resolve())
     commands = json.loads((Path(os.environ["TEST_TMPDIR"]) / "capability-commands.json").read_text())
     arch_config = (linux / "arch/Kconfig").read_text()
+    initial_config = (linux / "init/Kconfig").read_text()
+    for option, symbol, field in (
+        ("allnoconfig_y", "EMBEDDED", "allnoconfig_y"),
+        ("defconfig_list", "DEFCONFIG_LIST", "no_write"),
+    ):
+        if "option " + option in initial_config:
+            entry = next(entry for entry in syntax["init/Kconfig"] if entry["symbol"] == symbol)
+            assert entry[field], entry
     for tool in ("NM", "AR"):
         query = f"$({tool}) --help | head -n 1 | grep -qi llvm"
         if query in arch_config:
@@ -78,6 +86,8 @@ def main() -> None:
         for entry in entries:
             assert entry["source"] == path, (path, entry)
             assert isinstance(entry["transitional"], bool), (path, entry)
+            assert isinstance(entry["allnoconfig_y"], bool), (path, entry)
+            assert isinstance(entry["no_write"], bool), (path, entry)
     inputs = {
         "CC_IS_GCC": {"__KCONFIG_CC_IS_GCC"},
         "CC_IS_CLANG": {"__KCONFIG_CC_IS_CLANG"},

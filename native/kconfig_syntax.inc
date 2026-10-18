@@ -18,8 +18,16 @@ static void syntax_walk(struct menu *menu, unsigned parent)
          * comments accept dependencies, but not a help statement. */
         int source = !sym && menu->help;
         int transitional = 0;
+        int allnoconfig_y = 0;
+        int no_write = 0;
 #ifdef SYMBOL_TRANS
         transitional = sym && (sym->flags & SYMBOL_TRANS);
+#endif
+#ifdef SYMBOL_ALLNOCONFIG_Y
+        allnoconfig_y = sym && (sym->flags & SYMBOL_ALLNOCONFIG_Y);
+#endif
+#ifdef SYMBOL_NO_WRITE
+        no_write = sym && (sym->flags & SYMBOL_NO_WRITE);
 #endif
         if (!first) putchar(',');
         first = 0;
@@ -29,9 +37,11 @@ static void syntax_walk(struct menu *menu, unsigned parent)
         fputs(",\"symbol\":", stdout); string(sym ? sym->name : "");
         fputs(",\"type\":", stdout); string(sym ? sym_type_name(sym->type) : "unknown");
         fputs(",\"source\":", stdout); string(prototype_menu_filename(menu));
-        printf(",\"line\":%d,\"modules\":%s,\"transitional\":%s", menu->lineno,
+        printf(",\"line\":%d,\"modules\":%s,\"transitional\":%s,\"allnoconfig_y\":%s,\"no_write\":%s", menu->lineno,
                sym && sym == modules_sym ? "true" : "false",
-               transitional ? "true" : "false");
+               transitional ? "true" : "false",
+               allnoconfig_y ? "true" : "false",
+               no_write ? "true" : "false");
         fputs(",\"path\":", stdout); string(source ? menu->help : "");
         fputs(",\"depends\":", stdout); bytecode(menu->dep, "y");
         fputs(",\"visibility\":", stdout); bytecode(menu->visibility, "y");

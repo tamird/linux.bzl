@@ -82,6 +82,8 @@ def link_sources(files, architecture):
                 "implied": _N,
                 "modules": node["modules"],
                 "transitional": node["transitional"],
+                "allnoconfig_y": node["allnoconfig_y"],
+                "no_write": node["no_write"],
                 "source": path,
                 "line": node["line"],
             })

@@ -227,7 +227,7 @@ def resolve_options(records, requested, request_order):
     for name in sorted(symbols):
         value = values[name]
         public[name] = json.encode(value) if types[name] == "string" else value
-        if not written.get(name, False):
+        if not written.get(name, False) or any([r["no_write"] for r in symbols[name]]):
             continue
         if types[name] in ("bool", "tristate"):
             output.append("# CONFIG_%s is not set" % name if value == "n" else "CONFIG_%s=%s" % (name, value))

@@ -9,7 +9,8 @@ load(":expressions.bzl", "evaluate", "program")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 load(":image.bzl", "kbuild_resolved_build")
 load(":multi_platform.bzl", "KernelPlatformsInfo", "SUPPORTED_KERNEL_CPUS", "kernel_multi_platform")
-load(":rules.bzl", "KernelConfigInfo", "kernel_config")
+load(":rules.bzl", "KernelConfigInfo", "allnoconfig_requests", "bool_option", "default", "kernel_config", "literal", "prompt", "string_option")
+load(":solver.bzl", "resolve_options")
 load(":toolchain.bzl", "KernelToolchainInfo")
 
 SnapshotInfo = provider(doc = "Snapshot Info.", fields = ["architecture", "values", "flags"])
@@ -119,6 +120,27 @@ def _compiler_controls_impl(ctx):
 
 _compiler_controls_test = unittest.make(_compiler_controls_impl)
 
+def _config_flags_impl(ctx):
+    env = unittest.begin(ctx)
+    records = [
+        bool_option("FLAGGED", allnoconfig_y = True, prompts = [prompt("Flagged")], order = 1),
+        bool_option("FLAGGED", order = 2),
+        bool_option("ORDINARY", prompts = [prompt("Ordinary")], defaults = [default(literal("y"))], order = 3, evaluation_rank = 1),
+        string_option("INTERNAL", no_write = True, defaults = [default(literal("internal", "string"))], order = 4, evaluation_rank = 2),
+        string_option("INTERNAL", order = 5, evaluation_rank = 2),
+    ]
+    for requested, expected in [({}, "y"), ({"FLAGGED": "n"}, "n")]:
+        baseline = allnoconfig_requests(records, requested, "y")
+        result = resolve_options(records, baseline, baseline.keys())
+        asserts.equals(env, expected, result.values["FLAGGED"])
+        asserts.equals(env, "n", result.values["ORDINARY"])
+        asserts.equals(env, '"internal"', result.values["INTERNAL"])
+        asserts.false(env, "CONFIG_INTERNAL" in result.config, result.config)
+        asserts.false(env, "CONFIG_INTERNAL" in result.header, result.header)
+    return unittest.end(env)
+
+_config_flags_test = unittest.make(_config_flags_impl)
+
 def _deferred_condition_impl(ctx):
     capture = [{"op": "function", "name": "shell", "arguments": [[{"op": "literal", "value": "printf y"}]]}]
     sources = {"__shell_commands__": []}
@@ -193,6 +215,7 @@ def architecture_tests(native_cpu = False):
         kbuild_resolved_build(name = "native_cpu", config = ":native_cpu_config", catalog = "//:catalog", roots = ["init/main.o"], required_options = {"X86_NATIVE_CPU": "y"}, tags = ["manual"])
         _expected_failure_test(name = "native_cpu_test", target_under_test = ":native_cpu", message = "Native CPU code generation requires a declared execution-host CPU/features contract")
     _compiler_controls_test(name = "compiler_controls_test")
+    _config_flags_test(name = "config_flags_test")
     _native_shell_test(name = "native_shell_recipe_test")
     checks = [":native_shell_recipe_test"]
     for directive in [False, True]:

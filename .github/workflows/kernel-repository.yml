@@ -74,6 +74,7 @@ jobs:
               @kernel//architecture_tests:recursive_flags_test
               @kernel//architecture_tests:realmode_flags_test
               @kernel//architecture_tests:compiler_controls_test
+              @kernel//architecture_tests:config_flags_test
               @kernel//architecture_tests:native_cpu_test
               @kernel//architecture_tests:native_shell_test
             build: '@kernel//multi_platform:configs @linux.bzl//execution_tools:check'

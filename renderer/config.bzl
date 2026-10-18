@@ -104,6 +104,8 @@ def _option(
         ranges = [],
         modules = False,
         transitional = False,
+        allnoconfig_y = False,
+        no_write = False,
         direct = None,
         reverse = None,
         implied = None,
@@ -118,6 +120,8 @@ def _option(
         "depends_on": depends_on if depends_on != None else literal("y"),
         "modules": modules,
         "transitional": transitional,
+        "allnoconfig_y": allnoconfig_y,
+        "no_write": no_write,
         "properties": prompts + defaults + selects + implies + ranges,
         "direct": direct if direct != None else literal("y"),
         "reverse": reverse if reverse != None else literal("n"),
@@ -144,6 +148,18 @@ def string_option(name, **kwargs):
 def choice_option(**kwargs):
     return _option("bool", choice = True, **kwargs)
 
+def allnoconfig_requests(records, requested, width):
+    """Seed native allnoconfig defaults, then retain explicit caller requests."""
+    minimum = {r["symbol"]: "n" for r in records if r["symbol"] and not r.get("parent_choice") and r["type"] in ("bool", "tristate") and any([p["kind"] == "prompt" for p in r["properties"]])}
+
+    # Native flags belong to a symbol, even when it has several definitions.
+    for r in records:
+        if r["symbol"] in minimum and r["allnoconfig_y"]:
+            minimum[r["symbol"]] = "y"
+    minimum["64BIT"] = width
+    minimum.update(requested)
+    return minimum
+
 def _kernel_config_impl(ctx):
     architecture = ctx.attr._architecture[KernelArchitectureInfo]
     options = ctx.attr.options[KernelOptionsInfo]
@@ -168,12 +184,8 @@ def _kernel_config_impl(ctx):
     if "64BIT" in requested and requested["64BIT"] != width:
         fail("CONFIG_64BIT=%s conflicts with platform CPU %s (%s-bit)" % (requested["64BIT"], architecture.cpu, architecture.bits))
     if ctx.attr.allnoconfig:
-        minimum = {r["symbol"]: "n" for r in records if r["symbol"] and not r.get("parent_choice") and r["type"] in ("bool", "tristate") and any([p["kind"] == "prompt" for p in r["properties"]])}
-
         # A CPU platform fixes width even when Kconfig exposes it as a prompt.
-        minimum["64BIT"] = width
-        minimum.update(requested)
-        requested = minimum
+        requested = allnoconfig_requests(records, requested, width)
     order = [n for n in requested if n not in ctx.attr.request_order] + ctx.attr.request_order
     result = resolve_options(records, requested, order)
     if result.values.get("64BIT", "n") != width:
