@@ -32,7 +32,7 @@ jobs:
     name: Example / ${{ matrix.example }}
     needs: static-generator-linux
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       USE_BAZEL_VERSION: 9.1.0
     strategy:
@@ -117,27 +117,35 @@ jobs:
           TEST_TARGETS: ${{ matrix.test }}
         run: |
           read -r -a targets <<< "$TEST_TARGETS"
+          mkdir -p "$RUNNER_TEMP/kernel-profiles"
           bazel test "${targets[@]}" --jobs=4 --test_output=errors \
+            --profile="$RUNNER_TEMP/kernel-profiles/analysis.profile.gz" \
             --experimental_sandbox_async_tree_delete_idle_threads=0
 
       - name: Build example with host tools blocked
+        # Leave job time for evidence upload and cache post steps.
+        timeout-minutes: 150
         working-directory: examples
         env:
           BUILD_TARGETS: ${{ matrix.build }}
         run: |
           read -r -a targets <<< "$BUILD_TARGETS"
+          mkdir -p "$RUNNER_TEMP/kernel-profiles"
           # Apply backpressure when retiring the native build's sandboxes.
           bazel build "${targets[@]}" --output_groups=+boot --jobs=4 \
+            --profile="$RUNNER_TEMP/kernel-profiles/build.profile.gz" \
             --experimental_sandbox_async_tree_delete_idle_threads=0 \
             --sandbox_block_path=/bin --sandbox_block_path=/usr/bin \
             --sandbox_block_path=/usr/local/bin
 
       - name: Upload example test logs
-        if: ${{ !cancelled() }}
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: example-${{ matrix.example }}-logs
-          path: examples/bazel-testlogs/**/test.log
+          path: |
+            examples/bazel-testlogs/**/test.log
+            ${{ runner.temp }}/kernel-profiles/*.profile.gz
           if-no-files-found: ignore
           retention-days: 7
 
@@ -149,7 +157,7 @@ jobs:
       fail-fast: false
       matrix:
         source: [linux_5_10, linux_5_15, linux_6_1, linux_6_6, linux_6_12, linux_6_18]
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       USE_BAZEL_VERSION: 9.1.0
     steps:
@@ -192,23 +200,29 @@ jobs:
           exit "$verification_status"
 
       - name: Build x86 and ARM64 BTF kernels, boot images and ingress modules
+        # Leave job time for evidence upload and cache post steps.
+        timeout-minutes: 150
         working-directory: examples
         run: |
+          mkdir -p "$RUNNER_TEMP/kernel-profiles"
           # Apply backpressure when retiring the native build's sandboxes.
           bazel --host_jvm_args=-Xmx8g build //:aarch64_modules //:x86_64_modules --output_groups=kernel,boot,modules --jobs=4 \
+            --profile="$RUNNER_TEMP/kernel-profiles/build.profile.gz" \
             --experimental_sandbox_async_tree_delete_idle_threads=0 \
             --sandbox_block_path=/bin --sandbox_block_path=/usr/bin \
             --sandbox_block_path=/usr/local/bin
           bazel --host_jvm_args=-Xmx8g test //:aarch64_modules_btf_test //:x86_64_modules_btf_test //:x86_64_config_test --jobs=4 --test_output=errors \
+            --profile="$RUNNER_TEMP/kernel-profiles/test.profile.gz" \
             --experimental_sandbox_async_tree_delete_idle_threads=0
 
       - name: Upload LTS test logs
-        if: ${{ !cancelled() }}
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.source }}-kernel-logs
           path: |
             examples/bazel-testlogs/**/test.log
             _tmp/capability-reports/*.json
+            ${{ runner.temp }}/kernel-profiles/*.profile.gz
           if-no-files-found: ignore
           retention-days: 7
