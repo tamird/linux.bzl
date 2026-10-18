@@ -535,6 +535,7 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
         # The adapted script has a declared timestamp prerequisite. Preserve
         # its source-selected argument list; postlink is lowered separately.
         variables["<"] = {"value": ctx.file._link_script.path}
+    if native.get("final_link") or native.get("postlink_lowered"):
         variables["ARCH_POSTLINK"] = {"value": ""}
     if native["function"] == "script":
         lines = []
@@ -551,8 +552,11 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
     for post in native.get("postlink", []):
         post_variables = dict(variables)
         post_variables.update(post["variables"])
-        for key in ["@", "@F", "@D", "<", "^", "*", "real-prereqs", "CONFIG_SHELL"] + list(setup.tools):
+        for key in ["CONFIG_SHELL"] + list(setup.tools):
             post_variables[key] = variables[key]
+        if not post.get("own_automatic_variables"):
+            for key in ["@", "@F", "@D", "<", "^", "*", "real-prereqs"]:
+                post_variables[key] = variables[key]
         if pahole != None:
             post_variables["PAHOLE"] = variables["PAHOLE"]
         post_name = evaluate(post["arguments"][0], post_variables, setup.sources).strip()
