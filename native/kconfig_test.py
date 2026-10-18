@@ -27,6 +27,20 @@ def main() -> None:
             assert commands[f"__KCONFIG_{tool}_LLVM_HELP"] == [expected], (tool, commands)
     if "$(as-instr64,wrussq" in (linux / "arch/x86/Kconfig.assembler").read_text():
         assert all("__selected_m64_flag__" in command for command in commands["__KCONFIG_AS_WRUSSQ"]), commands
+    for path, script, slot in (
+        ("init/Kconfig", "gcc-goto.sh", "__KCONFIG_CC_ASM_GOTO_SCRIPT"),
+        ("arch/x86/Kconfig", "gcc-x86_64-has-stack-protector.sh", "__KCONFIG_CC_X86_STACK_PROTECTOR_SCRIPT"),
+    ):
+        native = (linux / path).read_text()
+        query = f"$(srctree)/scripts/{script} $(CC)"
+        if query in native:
+            expected = f"__selected_srctree__/scripts/{script} __selected_cc__"
+            if query + " $(CLANG_FLAGS)" in native:
+                expected += " __selected_clang_flags__"
+            assert commands[slot] == [expected], (script, commands)
+    operand = r"vpclmulqdq \$0x10,%ymm0,%ymm1,%ymm2"
+    if "$(as-instr,vpclmulqdq" in (linux / "arch/x86/Kconfig.assembler").read_text():
+        assert all(operand in command for command in commands["__KCONFIG_AS_VPCLMULQDQ"]), commands
     for path, symbol in (
         ("init/Kconfig", "CC_VERSION_TEXT"),
         ("arch/x86/Kconfig", "X86_64"),

@@ -516,5 +516,175 @@
     },
     "description": "Clang accepts the native-CPU option on the declared Linux x86_64 execution platform",
     "argument_aliases": [" -march=native"]
+  },
+  {
+    "input": "__KCONFIG_CC_GDWARF4",
+    "probe": "cc-option",
+    "argument": "-gdwarf-4",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-gdwarf-4)",
+    "argument_aliases": [" -gdwarf-4"]
+  },
+  {
+    "input": "__KCONFIG_CC_PATCHABLE_ENTRY_2",
+    "probe": "cc-option",
+    "argument": "-fpatchable-function-entry=2",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fpatchable-function-entry=2)",
+    "argument_aliases": [" -fpatchable-function-entry=2"]
+  },
+  {
+    "input": "__KCONFIG_CC_SANCOV_TRACE_PC",
+    "probe": "cc-option",
+    "argument": "-fsanitize-coverage=trace-pc",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fsanitize-coverage=trace-pc)",
+    "argument_aliases": [" -fsanitize-coverage=trace-pc"]
+  },
+  {
+    "input": "__KCONFIG_CC_ASM_GOTO_SCRIPT",
+    "probe": "success",
+    "argument": "__selected_srctree__/scripts/gcc-goto.sh __selected_cc__",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "Native asm-goto and ARM jump-label operand check",
+    "scripts": ["scripts/gcc-goto.sh"]
+  },
+  {
+    "input": "__KCONFIG_CC_X86_STACK_PROTECTOR_SCRIPT",
+    "probe": "success",
+    "argument": "__selected_srctree__/scripts/gcc-x86_64-has-stack-protector.sh __selected_cc__",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "Native x86-64 kernel stack-protector assembly check",
+    "scripts": ["scripts/gcc-x86_64-has-stack-protector.sh"],
+    "argument_aliases": ["__selected_srctree__/scripts/gcc-x86_64-has-stack-protector.sh __selected_cc__ __selected_clang_flags__"]
+  },
+  {
+    "input": "__KCONFIG_AS_VPMOVM2B",
+    "probe": "as-instr",
+    "argument": "vpmovm2b %k1,%zmm5",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(vpmovm2b %k1,%zmm5)"
+  },
+  {
+    "input": "__KCONFIG_AS_SHA1MSG1",
+    "probe": "as-instr",
+    "argument": "sha1msg1 %xmm0,%xmm1",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(sha1msg1 %xmm0,%xmm1)"
+  },
+  {
+    "input": "__KCONFIG_AS_SHA256MSG1",
+    "probe": "as-instr",
+    "argument": "sha256msg1 %xmm0,%xmm1",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(sha256msg1 %xmm0,%xmm1)"
+  },
+  {
+    "input": "__KCONFIG_AS_TPAUSE",
+    "probe": "as-instr",
+    "argument": "tpause %ecx",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(tpause %ecx)"
+  },
+  {
+    "input": "__KCONFIG_AS_VGF2P8MULB",
+    "probe": "as-instr",
+    "argument": "vgf2p8mulb %xmm0,%xmm1,%xmm2",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(vgf2p8mulb %xmm0,%xmm1,%xmm2)"
+  },
+  {
+    "input": "__KCONFIG_AS_VAESENC",
+    "probe": "as-instr",
+    "argument": "vaesenc %ymm0,%ymm1,%ymm2",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(vaesenc %ymm0,%ymm1,%ymm2)"
+  },
+  {
+    "input": "__KCONFIG_AS_VPCLMULQDQ",
+    "probe": "as-instr",
+    "argument": "vpclmulqdq \\$0x10,%ymm0,%ymm1,%ymm2",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(vpclmulqdq \\$0x10,%ymm0,%ymm1,%ymm2)"
+  },
+  {
+    "input": "__KCONFIG_AS_LSE",
+    "probe": "as-instr",
+    "argument": ".arch_extension lse",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(.arch_extension lse)"
+  },
+  {
+    "input": "__KCONFIG_AS_RCPC",
+    "probe": "as-instr",
+    "argument": ".arch_extension rcpc",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(.arch_extension rcpc)"
+  },
+  {
+    "input": "__KCONFIG_AS_ARMV8_2_SHA3",
+    "probe": "as-instr",
+    "argument": ".arch armv8.2-a+sha3",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "as-instr(.arch armv8.2-a+sha3)"
+  },
+  {
+    "input": "__KCONFIG_CC_ARMV8_2",
+    "probe": "cc-option",
+    "argument": "-Wa,-march=armv8.2-a",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-Wa,-march=armv8.2-a)",
+    "argument_aliases": [" -Wa,-march=armv8.2-a"]
+  },
+  {
+    "input": "__KCONFIG_CC_ARMV8_3",
+    "probe": "cc-option",
+    "argument": "-Wa,-march=armv8.3-a",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-Wa,-march=armv8.3-a)",
+    "argument_aliases": [" -Wa,-march=armv8.3-a"]
+  },
+  {
+    "input": "__KCONFIG_CC_ARMV8_4",
+    "probe": "cc-option",
+    "argument": "-Wa,-march=armv8.4-a",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-Wa,-march=armv8.4-a)",
+    "argument_aliases": [" -Wa,-march=armv8.4-a"]
+  },
+  {
+    "input": "__KCONFIG_LD_FIX_CORTEX_A53_843419",
+    "probe": "ld-option",
+    "argument": "--fix-cortex-a53-843419",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "ld-option(--fix-cortex-a53-843419)",
+    "argument_aliases": [" --fix-cortex-a53-843419"]
+  },
+  {
+    "input": "__KCONFIG_CC_COUNTED_BY",
+    "probe": "success",
+    "argument": "echo 'struct flex { int count; int array[] __attribute__((__counted_by__(count))); };' | __selected_cc__ __selected_clang_flags__ -x c - -c -o /dev/null -Werror",
+    "cpus": ["x86_64", "aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "Native counted_by flexible-array attribute check"
   }
 ]

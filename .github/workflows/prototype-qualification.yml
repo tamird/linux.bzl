@@ -51,12 +51,18 @@ jobs:
           source_root="$(bazel info output_base)/$(dirname "$source_anchor")"
           python3 example.py --linux "$source_root" --generated _tmp/capability-generator/support --tool _tmp/capability-generator/kernel-repository
           cd examples
+          verification_status=0
           for cpu in x86_64 aarch64; do
             flags=(--platforms=@llvm//platforms:linux_$cpu --extra_execution_platforms=@llvm//platforms:linux_x86_64)
-            bazel build @kernel//:compiler_capability_checks "${flags[@]}" --jobs=4
             report=$(bazel cquery @kernel//:compiler_capability_checks "${flags[@]}" --output=files | sed -n '/\.report\.json$/p')
-            cp "$report" "../_tmp/capability-reports/$cpu.json"
+            if bazel build @kernel//:compiler_capability_checks "${flags[@]}" --jobs=4; then
+              cp "$report" "../_tmp/capability-reports/$cpu.json"
+            else
+              verification_status=$?
+              if [[ -f "$report" ]]; then cp "$report" "../_tmp/capability-reports/$cpu.json" || true; fi
+            fi
           done
+          exit "$verification_status"
       - uses: actions/upload-artifact@v7
         if: inputs.experiment == 'compiler-family' || inputs.experiment == 'generator'
         with:
