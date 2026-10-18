@@ -151,3 +151,46 @@ kernel_execution_tools = rule(
         "@rules_flex//flex:toolchain_type",
     ],
 )
+
+def _check_impl(ctx):
+    execution = ctx.toolchains[EXECUTION_TOOLS_TYPE].execution
+    payload = ctx.actions.declare_file(ctx.label.name + ".payload")
+    modern = ctx.actions.declare_file(ctx.label.name + ".lz4.decoded")
+    legacy = ctx.actions.declare_file(ctx.label.name + ".lz4c.decoded")
+    report = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(payload, "declared LZ4 input\nsecond line\n")
+    ctx.actions.run(
+        executable = execution.shell,
+        arguments = [
+            "-e",
+            "-u",
+            "-o",
+            "pipefail",
+            "-c",
+            '''export KBUILD_EXEC_ROOT="$PWD"
+export PATH="$PWD/%s"
+cat "$1" | lz4 -l -9 - - | lz4 -dc > "$2"
+cmp "$1" "$2"
+cat "$1" | lz4c -l -c1 stdin stdout | lz4 -dc > "$3"
+cmp "$1" "$3"
+printf 'PASS: declared lz4 and lz4c native command forms\\n' > "$4"
+''' % execution.bin_dir,
+            "execution-tools-check",
+            payload.path,
+            modern.path,
+            legacy.path,
+            report.path,
+        ],
+        inputs = depset([payload], transitive = [execution.build_files]),
+        tools = execution.build_tools,
+        outputs = [modern, legacy, report],
+        env = {"LC_ALL": "C", "LANG": "C", "TZ": "UTC"},
+        use_default_shell_env = False,
+        mnemonic = "KernelExecutionToolsCheck",
+    )
+    return [DefaultInfo(files = depset([report]))]
+
+kernel_execution_tools_check = rule(
+    implementation = _check_impl,
+    toolchains = [EXECUTION_TOOLS_TYPE],
+)

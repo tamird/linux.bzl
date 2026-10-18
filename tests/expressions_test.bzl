@@ -41,6 +41,27 @@ def _context_test(ctx):
     evaluate([explicit], result.variables, sources)
     asserts.equals(env, "explicit-compiler", requests.values()[-1]["compiler"])
     asserts.equals(env, "-m16", requests.values()[-1]["flags"])
+
+    # A simple assignment captures once in each recipe expansion context.
+    # Reusing the cell for another action must not reuse the previous slot.
+    captures = {"__shell_commands__": []}
+    command = [dict(op = "function", name = "shell", arguments = [_literal("printf captured")])]
+    result = program([
+        _assignment("SIMPLE", command),
+        _assignment("RECURSIVE", command, flavor = "recursive"),
+    ], {}, captures)
+    simple = [dict(op = "reference", name = _literal("SIMPLE"))]
+    recursive = [dict(op = "reference", name = _literal("RECURSIVE"))]
+    asserts.equals(env, "__KBUILD_SHELL_RESULT_0__", evaluate(simple, result.variables, captures))
+    asserts.equals(env, "__KBUILD_SHELL_RESULT_0__", evaluate(simple, result.variables, captures))
+    asserts.equals(env, ["printf captured"], captures["__shell_commands__"])
+    other = {"__shell_commands__": []}
+    asserts.equals(env, "__KBUILD_SHELL_RESULT_0__", evaluate(simple, result.variables, other))
+    asserts.equals(env, "__KBUILD_SHELL_RESULT_0__", evaluate(simple, result.variables, other))
+    asserts.equals(env, "__KBUILD_SHELL_RESULT_1__", evaluate(recursive, result.variables, other))
+    asserts.equals(env, "__KBUILD_SHELL_RESULT_2__", evaluate(recursive, result.variables, other))
+    asserts.equals(env, ["printf captured"] * 3, other["__shell_commands__"])
+    asserts.equals(env, ["printf captured"], captures["__shell_commands__"])
     return unittest.end(env)
 
 probe_context_test = unittest.make(_context_test)

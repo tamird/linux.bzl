@@ -76,7 +76,56 @@ def probe_command(request, work, execution_root):
     return [*compiler, '-Werror', *flags, *options, '-c', '-x', 'c', '/dev/null', '-o', str(obj)]
 
 
+def stage_output_directories(directory: Path, execution_root: Path, names: object) -> dict[Path, str]:
+    """Create declared output namespaces without writing through input symlinks."""
+    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        raise ValueError(f'Expected declared probe directory names, got {names!r}')
+    logical = set()
+    for name in names:
+        path = Path(name)
+        if path.is_absolute() or '..' in path.parts or len(path.parts) < 2 or path.parts[0] != 'bazel-out':
+            raise ValueError(f'Probe output directory is not a declared output path: {name!r}')
+        logical.add(path)
+    if not logical:
+        return {}
+
+    # Preserve access to the existing declared inputs at sibling paths. Only
+    # ancestors of writable outputs need directories instead of symlinks; the
+    # outputs themselves start empty, as the native parent's mkdir requires.
+    ancestors = {parent for path in logical for parent in path.parents if parent != Path('.')}
+    for path in sorted(logical | ancestors, key=lambda path: len(path.parts)):
+        destination = directory / path
+        destination.mkdir()
+        original = execution_root / path
+        if path not in logical and original.is_dir():
+            for child in original.iterdir():
+                relative = path / child.name
+                if relative not in logical and relative not in ancestors:
+                    (destination / child.name).symlink_to(child, target_is_directory=child.is_dir())
+    return {directory / path: path.as_posix() for path in logical}
+
+
+def logical_probe_output(stdout: str, directories: dict[Path, str], work: Path) -> str:
+    """Translate path-valued native stdout only within declared output roots."""
+    result = []
+    roots = sorted(directories, key=lambda path: len(path.parts), reverse=True)
+    for line in stdout.splitlines(keepends=True):
+        text = line.removesuffix('\n')
+        for actual in roots:
+            prefix = str(actual)
+            if text == prefix or text.startswith(prefix + '/'):
+                line = directories[actual] + text[len(prefix):] + ('\n' if line.endswith('\n') else '')
+                break
+        else:
+            if str(work) in text:
+                raise ValueError(f'Native probe returned a path outside its declared output namespaces: {text!r}')
+        result.append(line)
+    return ''.join(result)
+
+
 def probes(spec, output):
+    from native_recipe import expand
+
     previous = json.loads((Path(spec['previous']) / 'report.json').read_text())
     if not spec['requests']:
         previous['converged'] = True
@@ -86,14 +135,15 @@ def probes(spec, output):
     execution_root = Path.cwd()
     for key, request in sorted(spec['requests'].items()):
         with tempfile.TemporaryDirectory() as temporary:
-            work = Path(temporary)
+            work = Path(temporary).resolve()
             logical_directory = request['directory'].removeprefix('__object__').lstrip('/')
             if Path(request['directory']).is_absolute() or '..' in Path(logical_directory).parts:
                 raise ValueError('Probe working directory escapes the object tree: ' + request['directory'])
             directory = work / 'object' / logical_directory
             directory.mkdir(parents=True)
+            directories = stage_output_directories(directory, execution_root, request.get('directories', []))
             for namespace in ('external', 'bazel-out'):
-                if (execution_root / namespace).exists():
+                if (execution_root / namespace).exists() and not (directory / namespace).exists():
                     (directory / namespace).symlink_to(execution_root / namespace)
             (directory / '__source__').symlink_to(execution_root / request['source'])
             (directory / '__object__').symlink_to(directory)
@@ -104,12 +154,18 @@ def probes(spec, output):
             environment = absolute_environment(request['environment'], execution_root)
             infrastructure_error = work / 'infrastructure-error'
             environment.update(LC_ALL='C', TMP=str(work / 'tmp'), TMPDIR=str(work), KBUILD_EXEC_ROOT=str(execution_root), KBUILD_PROBE_ERROR=str(infrastructure_error))
+            if captures := request.get('shell_commands'):
+                command[-1] = os.fsdecode(expand(command[0], [request['command']], captures, cwd=directory, env=environment)[0])
             result = subprocess.run(command, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30, env=environment)
             if infrastructure_error.exists():
                 raise RuntimeError('Kbuild probe infrastructure failed: ' + infrastructure_error.read_text())
             if request['kind'] != 'host-shell' and result.returncode not in (0, 1):
                 raise RuntimeError(f'{key}: unexpected exit {result.returncode}\n{result.stderr}')
-            answers[key] = result.stdout.rstrip('\n').replace('\n', ' ') if request['kind'] == 'host-shell' else result.returncode == 0
+            if request['kind'] == 'host-shell':
+                stdout = logical_probe_output(result.stdout, directories, work) if directories else result.stdout
+                answers[key] = stdout.rstrip('\n').replace('\n', ' ')
+            else:
+                answers[key] = result.returncode == 0
             records.append(dict(key=key, argv=[arg.replace(str(work), '__probe_tmp__') for arg in command], status=result.returncode, stdout=result.stdout.replace(str(work), '__probe_tmp__'), stderr=result.stderr.replace(str(work), '__probe_tmp__')))
     previous['capabilities'] = answers
     previous['history'].append(records)

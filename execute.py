@@ -27,6 +27,11 @@ def execute(spec, scanner=None):
     with tempfile.TemporaryDirectory(prefix='kernel-action-') as temporary:
         work = Path(temporary)
         directories = set(spec['directory_inputs'])
+        for name in spec.get('empty_directories', []):
+            path = Path(name)
+            if path.is_absolute() or '..' in path.parts:
+                raise ValueError('Invalid empty input directory: ' + name)
+            (work / path).mkdir(parents=True, exist_ok=True)
         for name in sorted(set(spec['inputs']), key=lambda path: (len(Path(path).parts), path)):
             path = Path(name)
             if path.is_absolute():

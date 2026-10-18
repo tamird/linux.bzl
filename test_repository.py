@@ -12,15 +12,15 @@ from pathlib import Path
 from build import assert_self_contained
 
 
-def assignments(value):
+def nodes(value):
     if isinstance(value, dict):
-        if value.get('kind') == 'assignment':
+        if 'kind' in value:
             yield value
         for child in value.values():
-            yield from assignments(child)
+            yield from nodes(child)
     elif isinstance(value, list):
         for child in value:
-            yield from assignments(child)
+            yield from nodes(child)
 
 
 def main() -> None:
@@ -65,8 +65,64 @@ def main() -> None:
         encoded = json.dumps(program)
         assert 'CONFIG_' in encoded and 'SRCARCH' in encoded
         assert '.generation-' not in encoded and str(linux) not in encoded
-        assert data['actions'] and '${MAKE}' not in data['link_script']
-        host = list(assignments(program['image_host_objtool']))
+        assert data['actions'], 'Native producer catalogue is empty'
+        original_link = (linux / 'scripts/link-vmlinux.sh').read_text()
+        init_goal = 'need-builtin=1' if program['image_script_link'] else 'init/version-timestamp.o'
+        init_call = '${MAKE} -f "${srctree}/scripts/Makefile.build" obj=init ' + init_goal
+        assert original_link.count(init_call) == 1, init_call
+        expected_link = original_link.replace(init_call, ': # init inputs are declared Bazel prerequisites')
+        modpost_call = '${MAKE} -f "${srctree}/scripts/Makefile.modpost" MODPOST_VMLINUX=1'
+        if program['image_script_link']:
+            assert expected_link.count(modpost_call) == 1, modpost_call
+            expected_link = expected_link.replace(modpost_call, '__KBUILD_VMLINUX_MODPOST__')
+        assert data['link_script'] == expected_link, 'Export changed native link commands outside declared Make boundaries'
+        assert '${MAKE}' not in data['link_script'], 'Unowned recursive Make remains in the link script'
+
+        version = program['image_version']
+        literals = {'VERSION', 'PATCHLEVEL', 'SUBLEVEL', 'EXTRAVERSION'}
+        assert {node.get('name') for node in version if node['kind'] == 'assignment'} >= literals, version
+        version_nodes = list(nodes(version))
+        version_assignments = [node for node in version_nodes if node['kind'] == 'assignment']
+        assert {node['name'] for node in version_assignments} == literals | {'KERNELVERSION'}, version
+        assert all(node['file'] == 'Makefile' and not node.get('targets') for node in version_assignments), version
+        assert all(node['kind'] in ('assignment', 'conditional') or
+                   (node['kind'] == 'directive' and node['directive'] in ('ifeq', 'ifneq', 'ifdef', 'ifndef', 'else'))
+                   for node in version_nodes), version
+        native_makefile = args.source_anchor.read_text()
+        if not re.search(r'^\s*(?:export\s+)?ARCH_CORE\s*[:+?]?=', native_makefile, re.MULTILINE):
+            descent = list(nodes(program['image_root_descent']))
+            assert any(node['kind'] == 'rule' and node['targets'] == 'descend' for node in descent), descent
+            assert any(node['kind'] == 'recipe' for node in descent), descent
+        if re.search(r'^\s*cmd_ar_vmlinux\.a\s*[:+?]?=', native_makefile, re.MULTILINE):
+            assert any(node.get('name') == 'cmd_ar_vmlinux.a' and node['file'] == 'Makefile'
+                       for node in nodes(program['image_archive'])), program['image_archive']
+        native_object_link = linux / 'scripts/Makefile.vmlinux_o'
+        if native_object_link.exists():
+            body = native_object_link.read_text()
+            link_nodes = list(nodes(program['image_link']['vmlinux_o']))
+            initcalls = {'op': 'reference', 'name': [{'op': 'literal', 'value': 'initcalls-lds'}]}
+            assert any(node['kind'] == 'rule' and node['targets'] == 'vmlinux.o' and initcalls in node['tail_expression'] for node in link_nodes), link_nodes
+            if 'cmd_check_function_names' in body:
+                assert 'check_function_names' in program['image_link_postprocess']['ld_vmlinux.o'], program['image_link_postprocess']
+                assert any(node.get('name') == 'cmd_check_function_names' for node in link_nodes), link_nodes
+        graph = {(node['file'], node['line']) for node in nodes(program['graph_helpers'])
+                 if node['kind'] in ('assignment', 'define')}
+        helpers = {(node['file'], node['line']) for node in nodes(program['image_helpers'])
+                   if node['kind'] in ('assignment', 'define')}
+        assert graph and not graph.intersection(helpers), 'Graph transformations were dropped or replayed by compiler helpers'
+        assert program['image_modules_order'], 'Native selected-module list writer is missing'
+        assert any(node.get('name') == 'cmd_ld_ko_o' for node in nodes(program['image_modfinal'])), 'Native module link command is missing'
+        assert program['image_host_objtool_final'] and program['image_host_subcmd_final'], 'Native host final link/archive recipes are missing'
+        assert {'cmd_ld_multi', 'cmd_host_ld_multi'} <= {node.get('name') for node in nodes(program['image_host_link_commands'])}, 'Native target/host aggregate commands are missing'
+        if '$(LIBSUBCMD_OUTPUT):' in (linux / 'tools/objtool/Makefile').read_text():
+            prerequisites = list(nodes(program['image_host_subcmd_directories']))
+            assert any(node['kind'] == 'rule' and node['targets'] == '$(LIBSUBCMD_OUTPUT)' for node in prerequisites), prerequisites
+            assert any(node['kind'] == 'recipe' for node in prerequisites), prerequisites
+        if program['image_recordmcount'] is not None:
+            assert program['image_recordmcount']['excluded'] == 'scripts/mod/empty.o', program['image_recordmcount']
+            assert 'record_mcount' in program['image_compile_postprocess']['cc_o_c'], program['image_compile_postprocess']
+
+        host = list(nodes(program['image_host_objtool']))
         pound = [node for node in host if node.get('name') == 'pound']
         assert len(pound) == 1 and pound[0]['value_expression'] == [{'op': 'literal', 'value': '#'}], pound
         elfshdr = [node for node in host if node.get('name') == 'elfshdr']

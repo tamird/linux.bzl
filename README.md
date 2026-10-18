@@ -10,7 +10,9 @@ One generic Make/Python exporter, built with Bazel and pinned by host artifact
 integrity, exports source-only Kbuild syntax at repository time. Execution-time
 callbacks measure native compiler and host-library queries and register separate
 compiler, generator, archive, and linker actions. Dependency scans select the
-source/header inputs for each compiler action. Product actions do not run Make.
+source and generated header inputs for each compiler action. Target product
+actions do not run Make. The BTF resolver uses a host libbpf archive and installed
+headers built together by its selected kernel source's native Make rules.
 
 ## Consumer interface
 
@@ -79,9 +81,13 @@ not a bootstrap of LLVM itself.
 `//:kernel_acceptance_test` checks the existing minimal vmlinux, its ELF/entry
 symbols, and six ordered flag groups against native GNU Make. It uses the
 already-produced native configuration, without configuring the kernel again.
-`check_reuse.py` retains the baseline/unchanged/source-edit experiment using actual
-execution logs and producer dependencies. Expensive build/configuration targets
-are explicitly tagged `manual`.
+`check_reuse.py` runs the six source-mutation phases using actual execution logs
+and producer dependencies. The qualification reporters authenticate native
+compiler inventory, split C object ancestry, integrated reference parity, and
+cross-configuration backend action identity. Reference objects are enabled by
+`--//:validate_native_objects`; production builds omit them. Example variants
+transition one build label so corresponding backend paths share an action owner.
+Expensive build/configuration targets are explicitly tagged `manual`.
 
 The native-config checkpoint is qualified. The migrated product path still needs
 runtime qualification. Complete boot/module support across all six source lines,

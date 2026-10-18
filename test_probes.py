@@ -14,7 +14,7 @@ tools, remaining = parser.parse_known_args()
 COMPILER, SHELL = str(tools.compiler.absolute()), str(tools.shell.absolute())
 sys.argv[1:] = remaining
 
-from probe_runtime import absolute_arguments, probe_command, probes
+from probe_runtime import absolute_arguments, probe_command, probes, stage_output_directories
 
 
 class ProbeTest(unittest.TestCase):
@@ -94,6 +94,57 @@ class ProbeTest(unittest.TestCase):
             request['command'] = 'printf unsupported > "$KBUILD_PROBE_ERROR"; exit 0'
             with self.assertRaisesRegex(RuntimeError, 'infrastructure failed: unsupported'):
                 probes(dict(previous=str(previous), requests={json.dumps(request): request}), root / 'answers')
+
+    def test_host_shell_resolves_native_output_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = root / 'previous'
+            previous.mkdir()
+            (previous / 'report.json').write_text(json.dumps(dict(capabilities={}, history=[])))
+            logical = 'bazel-out/config/bin/kernel.generated/libsubcmd'
+            request = self.request(kind='host-shell')
+            request.update(
+                directories=['bazel-out/config/bin/kernel.generated', logical],
+                environment={'CONFIG_SHELL': SHELL, 'O': logical},
+                # The selected native Makefile computes ABSOLUTE_O this way.
+                # Keep the final pwd independent of cd's status: an absent
+                # parent directory must not turn into a successful wrong path.
+                command='cd "$PWD"; cd "$O"; pwd',
+            )
+            key = json.dumps(request)
+            output = root / 'answers'
+            probes(dict(previous=str(previous), requests={key: request}), output)
+            report = json.loads((output / 'report.json').read_text())
+            self.assertEqual(report['capabilities'][key], logical)
+            self.assertEqual(report['history'][0][0]['status'], 0)
+            self.assertEqual(report['history'][0][0]['stderr'], '')
+
+            # A typo outside the declared parent must fail, rather than
+            # publishing the probe's own temporary cwd as ABSOLUTE_O.
+            request['environment']['O'] = 'bazel-out/config/bin/undeclared/libsubcmd'
+            with self.assertRaisesRegex(ValueError, 'outside its declared output namespaces'):
+                probes(dict(previous=str(previous), requests={json.dumps(request): request}), root / 'invalid')
+
+    def test_output_directories_preserve_inputs_without_mutating_them(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            execution, work = root / 'exec', root / 'work'
+            work.mkdir()
+            logical = 'bazel-out/config/bin/kernel.generated'
+            original = execution / logical
+            original.mkdir(parents=True)
+            (original / 'unrelated').write_text('original output')
+            sibling = original.with_name('selected-tool')
+            sibling.write_text('declared input')
+            directories = stage_output_directories(work, execution, [logical, logical + '/libsubcmd'])
+            self.assertEqual(directories[work / logical], logical)
+            self.assertEqual((work / sibling.relative_to(execution)).read_text(), 'declared input')
+            self.assertFalse((work / logical / 'unrelated').exists(), 'Output contents must not be inherited from another action')
+            (work / logical / 'libsubcmd/probe').write_text('new output')
+            self.assertEqual((original / 'unrelated').read_text(), 'original output')
+            self.assertFalse((original / 'libsubcmd').exists(), 'The probe must not create outputs in the execution input tree')
+            with self.assertRaisesRegex(ValueError, 'not a declared output path'):
+                stage_output_directories(work, execution, ['bazel-out/../external/tool'])
 
 
 if __name__ == '__main__':

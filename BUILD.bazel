@@ -1,5 +1,6 @@
 load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@rules_cc//cc/toolchains:cc_toolchain.bzl", "cc_toolchain")
 load("@rules_python//python:defs.bzl", "py_binary", "py_test")
 load("//rules:compiler.bzl", "kernel_compiler")
@@ -11,9 +12,15 @@ load("//rules:validation.bzl", "kernel_validation")
 
 package(default_visibility = ["//visibility:public"])
 
+bool_flag(
+    name = "validate_native_objects",
+    build_setting_default = False,
+)
+
 exports_files([
     "test_config_values.py",
     "probe_runtime.py",
+    "native_recipe.py",
     "execute.py",
     "scheduler.py",
     "emit.py",
@@ -53,6 +60,38 @@ kernel_build(
     syntax = "@kernel_syntax//:program",
     tags = ["manual"],
 )
+
+[
+    kernel_config(
+        name = name + "_config",
+        fragments = [
+            "//examples/configs:x86_64.config",
+            "//examples/configs:btf.config",
+        ],
+        pahole = "@pahole//:pahole",
+        source = source,
+        tags = ["manual"],
+    )
+    for name, source in [
+        ("native_btf_tools", "//native:source"),
+        ("native_btf_tools_5_10", "//native:source_5_10"),
+    ]
+]
+
+[
+    kernel_build(
+        name = name,
+        config = ":" + name + "_config",
+        required_options = {"DEBUG_INFO_BTF": "y"},
+        roots = ["tools/bpf/resolve_btfids/resolve_btfids"],
+        syntax = syntax,
+        tags = ["manual"],
+    )
+    for name, syntax in [
+        ("native_btf_tools", "@kernel_syntax//:program"),
+        ("native_btf_tools_5_10", "@kernel_syntax_5_10//:program"),
+    ]
+]
 
 kernel_validation(
     name = "kernel_validation",
@@ -185,6 +224,7 @@ py_test(
     name = "execute_test",
     srcs = [
         "execute.py",
+        "scheduler.py",
         "test_execute.py",
     ],
     main = "test_execute.py",
@@ -210,6 +250,7 @@ py_test(
 py_test(
     name = "probes_test",
     srcs = [
+        "native_recipe.py",
         "probe_runtime.py",
         "test_probes.py",
     ],
@@ -235,7 +276,7 @@ py_test(
     srcs = [
         "check_reuse.py",
         "test_reuse.py",
-    ],
+    ] + glob(["qualification/*.py"]),
     main = "test_reuse.py",
 )
 
@@ -244,8 +285,8 @@ filegroup(
     srcs = glob(["renderer/*.py"]),
 )
 
-py_test(
-    name = "repository_test",
+[py_test(
+    name = name,
     timeout = "long",
     srcs = [
         "build.py",
@@ -255,20 +296,47 @@ py_test(
         "--tool",
         "$(location //native:exporter)",
         "--source-anchor",
-        "$(location @linux_source//:Makefile)",
+        "$(location @%s//:Makefile)" % source,
     ],
     data = [
         "//native:exporter",
-        "@linux_source//:Makefile",
-        "@linux_source//:sources",
+        "@%s//:Makefile" % source,
+        "@%s//:sources" % source,
     ],
     main = "test_repository.py",
     tags = ["manual"],
+) for name, source in [("repository_test", "linux_source")] + [
+    (
+        "repository_%s_test" % line,
+        "linux_" + line,
+    )
+    for line in [
+        "5_10",
+        "5_15",
+        "6_1",
+        "6_6",
+        "6_12",
+        "6_18",
+    ]
+]]
+
+test_suite(
+    name = "repository_tests",
+    tags = ["manual"],
+    tests = [":repository_test"] + [":repository_%s_test" % line for line in [
+        "5_10",
+        "5_15",
+        "6_1",
+        "6_6",
+        "6_12",
+        "6_18",
+    ]],
 )
 
 py_test(
     name = "prototype_test",
     srcs = [
+        "native_recipe.py",
         "prototype_test.py",
         "//examples:initramfs.py",
         "//native:configure.py",

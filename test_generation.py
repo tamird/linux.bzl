@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from export import native_events, parse_events
-from programs import lower_probes
+from programs import lower_probes, slice_program
 from syntax import runtime_program
 
 
@@ -51,6 +51,15 @@ class SymbolicExportTest(unittest.TestCase):
         self.assertEqual(result['name'], 'kbuild_probe')
         self.assertEqual(result['probe_context'], {'compiler': compiler, 'flags': flags})
         self.assertEqual(result['arguments'], [literal('cc-option'), literal('-Werror'), literal('fallback')])
+
+    def test_native_ifdef_keeps_its_literal_variable_dependency(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / 'Makefile'
+            fixture.write_text('NATIVE_MODE := selected\nifdef NATIVE_MODE\nRESULT := selected\nelse\nRESULT := absent\nendif\nUNRELATED := omit\n')
+            body = parse_events(native_events([MAKE], [fixture], expressions=True))['files'][0]['body']
+            selected = slice_program(body, {'RESULT'})
+            self.assertEqual([node.get('name') for node in selected], ['NATIVE_MODE', None])
+            self.assertEqual([branch['body'][0]['value'] for branch in selected[1]['branches']], ['selected', 'absent'])
 
     def test_native_condition_preserves_both_config_dependent_branches(self):
         events = [dict(kind='file_begin', file='Kbuild'),

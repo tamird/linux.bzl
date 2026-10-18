@@ -1,5 +1,6 @@
 """Schedule measured compiler dependencies before declaring compiler spawn inputs."""
 
+load(":compiler_arguments.bzl", "compiler_arguments")
 load(":runtime.bzl", "read_payload", "writer")
 
 _ASCII = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
@@ -17,16 +18,82 @@ def write_payload(tctx, python, emit, root, value, python_files):
 
 def _available(input_directories, tools, additional_inputs, params):
     available = {f.path: f for f in input_directories["literals"].children}
-    for name in ["execution_files", "compiler_files"]:
+    available.update({f.path: f for f in input_directories["config"].children})
+    available[tools["config_root"].path] = tools["config_root"]
+    for name in ["execution_files", "compiler_files", "backend_files"]:
         available.update({f.path: f for f in tools[name].to_list()})
     available.update({f.path: f for f in additional_inputs["originals"].to_list()})
     available.update({tool.path: tool for tool in tools.values() if type(tool) == "File"})
+    for tool in tools.values():
+        executable = getattr(tool, "executable", None)
+        if executable != None:
+            available[executable.path] = executable
     available[params["source_prefix"]] = tools["source_root"]
     for name, prefix in json.decode(params["stage_prefixes"]).items():
         for file in input_directories[name].children:
             if file.path.startswith(prefix + "/artifacts/"):
                 available[params["plan_prefix"] + "/" + file.path.removeprefix(prefix + "/artifacts/")] = file
     return available
+
+def _is_backend(job):
+    return job.get("compiler", {}).get("phase") == "backend"
+
+def _compiler_inputs(job, dependencies, available, source_files, originals, source_prefix):
+    """Replace the scan's generated closure with measured and mandatory Files."""
+    scan = job["scan"]
+    generated = scan.get("generated", {})
+    header_tree = scan.get("header_tree")
+    mandatory = scan.get("mandatory", [])
+    if header_tree != None:
+        if header_tree not in job["inputs"] or "generated" not in scan or "mandatory" not in scan or "directories" not in scan:
+            fail("Compiler header tree requires its complete generated mapping and mandatory inputs")
+        if any([path not in job["inputs"] for path in generated.values()]):
+            fail("Compiler generated mapping contains a File outside the scan input closure")
+    elif generated or mandatory:
+        fail("Generated compiler dependency pruning requires a header tree namespace")
+    removed = {path: True for path in generated.values()}
+    removed[source_prefix] = True
+    if header_tree != None:
+        removed[header_tree] = True
+    selected = {path: True for path in job["inputs"] if path not in removed}
+    for path in mandatory:
+        if path == source_prefix or path == header_tree or path not in available:
+            fail("Mandatory compiler input is not an available individual File: " + path)
+        if available[path].is_directory:
+            fail("Mandatory compiler input must not retain an aggregate tree: " + path)
+        selected[path] = True
+    measured = {}
+    for logical in dependencies["generated"]:
+        if logical not in generated:
+            fail("Compiler dependency was not declared as a generated input: " + logical)
+        measured[logical] = True
+        selected[generated[logical]] = True
+    if header_tree != None:
+        aggregates = [path for path in selected if available[path].is_directory]
+        if aggregates:
+            fail("Pruned compiler inputs retain an aggregate directory: " + str(aggregates))
+    aliases = {path: available[path].path for path in selected}
+    empty_directories = []
+    if header_tree != None:
+        empty_directories.append(header_tree)
+        for directory in scan["directories"]:
+            if directory.startswith("/") or ".." in directory.split("/"):
+                fail("Compiler working directory escapes its header tree: " + directory)
+            empty_directories.append(header_tree + "/" + directory)
+        for logical, path in generated.items():
+            # .incbin and other native prerequisites need their logical names
+            # even when preprocessing does not report them as included files.
+            if logical not in measured and path not in mandatory:
+                continue
+            if not logical or logical == "." or logical.startswith("/") or ".." in logical.split("/"):
+                fail("Generated compiler input escapes its header tree: " + logical)
+            aliases[header_tree + "/" + logical] = available[path].path
+    source_inputs = []
+    for logical in dependencies["sources"]:
+        if logical not in source_files or logical not in originals:
+            fail("Compiler dependency was not declared as a kernel source: " + logical)
+        source_inputs.extend([source_files[logical], originals[logical]])
+    return struct(inputs = [available[path] for path in selected], source_inputs = source_inputs, aliases = aliases, empty_directories = empty_directories)
 
 # Fixed map_directory callback signature.
 # buildifier: disable=unused-variable
@@ -47,6 +114,8 @@ def _stage(tctx, input_directories, output_directories, tools, additional_inputs
     if unknown:
         fail("Kernel graph inputs were not supplied as sources, tools or artifacts: " + str(unknown.keys()[:20]))
     for index, job in enumerate(jobs):
+        if _is_backend(job):
+            continue
         if all([path in available for path in job["outputs"]]):
             continue
         if any([path not in available for path in job["inputs"]]):
@@ -62,20 +131,22 @@ def _stage(tctx, input_directories, output_directories, tools, additional_inputs
                 original_prefix = params["original_prefix"],
             ))
             continue
-        inputs = [available[path] for path in job["inputs"] if path != params["source_prefix"] or job["scan"] == None]
+        inputs = [available[path] for path in job["inputs"]]
         source_inputs = []
+        empty_directories = []
         if job["scan"] != None:
-            aliases.pop(params["source_prefix"], None)
-            for logical in scanned[str(index)]:
-                if logical not in source_files or logical not in originals:
-                    fail("Compiler dependency was not declared as a kernel source: " + logical)
-                source_inputs.extend([source_files[logical], originals[logical]])
+            narrowed = _compiler_inputs(job, scanned[str(index)], available, source_files, originals, params["source_prefix"])
+            inputs = narrowed.inputs
+            source_inputs = narrowed.source_inputs
+            aliases = narrowed.aliases
+            empty_directories = narrowed.empty_directories
         output_files = [tctx.declare_file("artifacts/" + path.removeprefix(params["plan_prefix"] + "/"), directory = output_directories["stage"]) for path in job["outputs"]]
         manifest = tctx.declare_file("actions/%d.json" % index, directory = output_directories["stage"])
         spec = dict(
             manifest = job["manifest"],
             aliases = aliases,
             source_inputs = [f.path for f in source_inputs],
+            empty_directories = empty_directories,
             outputs = {path: f.path for path, f in zip(job["outputs"], output_files)},
         )
         write(manifest, json.encode(spec))
@@ -93,6 +164,49 @@ def _stage(tctx, input_directories, output_directories, tools, additional_inputs
 
 # Fixed map_directory callback signature.
 # buildifier: disable=unused-variable
+def _backend(tctx, input_directories, output_directories, tools, additional_inputs, additional_params):
+    """Compile ready IR directly; only this template supports path mapping."""
+    params = additional_params
+    available = _available(input_directories, tools, additional_inputs, params)
+    environment = json.decode(params["backend_environment"])
+    prefix = params["plan_prefix"] + "/"
+    for job in read_payload(input_directories["schedule"]):
+        if not _is_backend(job):
+            continue
+        if job["scan"] != None or len(job["outputs"]) != 1:
+            fail("An LLVM backend job must have one raw object output and no source scan")
+        if all([path in available for path in job["outputs"]]):
+            continue
+        if any([path not in available for path in job["inputs"]]):
+            continue
+        compiler = job["compiler"]
+        if compiler["environment"] != environment:
+            fail("LLVM backend environment differs from its action template")
+        executable = available.get(compiler["executable"])
+        if executable == None or executable.is_directory:
+            fail("LLVM backend compiler has no declared executable File: " + compiler["executable"])
+        path = job["outputs"][0]
+        if not path.startswith(prefix):
+            fail("LLVM backend output is outside the planned kernel tree: " + path)
+        output = tctx.declare_file("artifacts/" + path.removeprefix(prefix), directory = output_directories["backend"])
+        operands = dict(available)
+        operands[path] = output
+        args = compiler_arguments(tctx, compiler["arguments"], operands, [params["plan_prefix"], params["source_prefix"], params["original_prefix"]])
+        tctx.run(
+            executable = executable,
+            arguments = [args],
+            inputs = depset([available[path] for path in job["inputs"]], transitive = [tools["backend_files"]]),
+            tools = [tool for name, tool in tools.items() if name.startswith("backend_tool_")],
+            outputs = [output],
+            progress_message = job["message"],
+        )
+
+        # Keep raw objects unavailable to the current native stage. Its next
+        # round receives this tree before scheduling postprocessing, archives,
+        # links or generated sources that depend on completed backend objects.
+
+# Fixed map_directory callback signature.
+# buildifier: disable=unused-variable
 def _export(tctx, input_directories, output_directories, tools, additional_inputs, additional_params):
     available = _available(input_directories, tools, additional_inputs, additional_params)
     jobs = read_payload(input_directories["schedule"])
@@ -100,6 +214,8 @@ def _export(tctx, input_directories, output_directories, tools, additional_input
     if missing:
         fail("Kernel dependency scheduling did not converge; missing outputs: " + str(missing[:20]))
     prefix = additional_params["plan_prefix"] + "/"
+    mappings = tctx.declare_file("scheduled-paths.json", directory = output_directories["kernel"])
+    writer(tctx, tools["python"], tools["emit"], output_directories["kernel"], tools["python_files"])(mappings, json.encode(dict(paths = {path: file.path for path, file in available.items()}, compiler_jobs = [job for job in jobs if job.get("compiler")])))
     for path, file in available.items():
         if not path.startswith(prefix):
             continue
@@ -109,17 +225,18 @@ def _export(tctx, input_directories, output_directories, tools, additional_input
         output = tctx.declare_file(relative, directory = output_directories["kernel"])
         tctx.run(
             executable = tools["python"],
-            arguments = [tools["runner"].path, "copy", file.path, output.path],
-            inputs = depset([tools["runner"], tools["executor"], file], transitive = [tools["python_files"]]),
+            arguments = [tools["runner"].path, "manifest", file.path, mappings.path, output.path] if relative == "kernel.json" else [tools["runner"].path, "copy", file.path, output.path],
+            inputs = depset([tools["runner"], tools["executor"], file] + ([mappings] if relative == "kernel.json" else []), transitive = [tools["python_files"]]),
             outputs = [output],
             progress_message = "Export kernel artifact " + relative,
         )
 
-def schedule(ctx, literals, metadata, sources, originals, original_prefix, tools, compiler_files, execution_files, steps = 32):
-    directories = {"literals": literals, "schedule": metadata, "sources": sources}
+def schedule(ctx, literals, metadata, sources, originals, original_prefix, tools, compiler_files, execution_files, backend_files, backend_tools, backend_environment, config, steps = 32):
+    directories = {"literals": literals, "schedule": metadata, "sources": sources, "config": config}
     prefixes = {}
-    parameters = dict(plan_prefix = literals.path, source_prefix = sources.path, original_prefix = original_prefix, stage_prefixes = "{}")
-    tool_files = dict(tools, source_root = sources, compiler_files = compiler_files, execution_files = execution_files)
+    parameters = dict(plan_prefix = literals.path, source_prefix = sources.path, original_prefix = original_prefix, stage_prefixes = "{}", backend_environment = json.encode(backend_environment))
+    tool_files = dict(tools, source_root = sources, config_root = config, compiler_files = compiler_files, execution_files = execution_files, backend_files = backend_files)
+    tool_files.update({"backend_tool_%d" % index: tool for index, tool in enumerate(backend_tools)})
     for step in range(steps):
         stage = ctx.actions.declare_directory(ctx.label.name + ".stage%d" % step)
         scratch = ctx.actions.declare_directory(ctx.label.name + ".stage-scratch%d" % step)
@@ -142,8 +259,22 @@ def schedule(ctx, literals, metadata, sources, originals, original_prefix, tools
             mnemonic = "KernelDependencyScan",
         )
         directories["stage_%d" % step] = stage
-        directories["scan_%d" % step] = scans
         prefixes["stage_%d" % step] = stage.path
+        backend = ctx.actions.declare_directory(ctx.label.name + ".backend%d" % step)
+        ctx.actions.map_directory(
+            input_directories = dict(directories),
+            output_directories = {"backend": backend},
+            additional_inputs = {"originals": originals},
+            tools = tool_files,
+            additional_params = dict(parameters, stage_prefixes = json.encode(prefixes)),
+            implementation = _backend,
+            mnemonic = "KernelLLVMBackend",
+            execution_requirements = {"supports-path-mapping": "1"},
+            env = backend_environment,
+        )
+        directories["backend_%d" % step] = backend
+        prefixes["backend_%d" % step] = backend.path
+        directories["scan_%d" % step] = scans
     result = ctx.actions.declare_directory(ctx.label.name + ".tree")
     ctx.actions.map_directory(
         input_directories = directories,
@@ -154,4 +285,6 @@ def schedule(ctx, literals, metadata, sources, originals, original_prefix, tools
         implementation = _export,
         mnemonic = "KernelExport",
     )
-    return result
+    manifest = ctx.actions.declare_file(ctx.label.name + ".manifest.json")
+    ctx.actions.run(executable = tools["python"], arguments = [tools["runner"].path, "copy", result.path + "/kernel.json", manifest.path], inputs = depset([result, tools["runner"], tools["executor"]], transitive = [tools["python_files"]]), outputs = [manifest], mnemonic = "KernelManifest")
+    return struct(directory = result, manifest = manifest)

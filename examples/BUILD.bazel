@@ -1,4 +1,5 @@
 load("@rules_python//python:defs.bzl", "py_binary")
+load("//rules:kernel.bzl", "kernel_build")
 load(":kernel.bzl", "example_config_test", "example_initramfs", "kernel_example")
 
 package(default_visibility = ["//visibility:public"])
@@ -14,6 +15,23 @@ py_binary(
 example_initramfs(
     name = "example_initramfs",
     motd = "README.md",
+)
+
+# Variants transition this label flag, keeping one action owner for native C.
+label_flag(
+    name = "configuration",
+    build_setting_default = ":x86_64_kernel_configuration",
+)
+
+kernel_build(
+    name = "kernel",
+    config = ":configuration",
+    roots = ["vmlinux"] + select({
+        "@platforms//cpu:aarch64": ["arch/arm64/boot/Image"],
+        "@platforms//cpu:x86_64": ["arch/x86/boot/bzImage"],
+    }),
+    syntax = "@kernel_syntax//:program",
+    tags = ["manual"],
 )
 
 [

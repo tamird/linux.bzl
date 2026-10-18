@@ -1,6 +1,7 @@
 load(":expressions.bzl", "evaluate", "program", "source_index")
 
 def make_setup(ctx, config, prepared, execution, tools, builtin_include, _compile_flags, host_compile_flags, host_link_flags, capabilities, requests, files, flag_program):
+    tools = dict(tools)
     source = prepared.root.path
     sources = source_index([source + "/" + p for p in prepared.logical])
     sources["__execution_tools__"] = {n: f.path for n, f in execution.commands.items()}
@@ -41,6 +42,11 @@ def make_setup(ctx, config, prepared, execution, tools, builtin_include, _compil
     for name, tool in tools.items():
         variables[name] = {"value": tool}
     variables = program(flag_program["image_utilities"], variables, sources, cells = True).variables
+    lz4 = evaluate([{"op": "reference", "name": [{"op": "literal", "value": "LZ4"}]}], variables, sources).strip()
+    if lz4 not in ("lz4", "lz4c"):
+        fail("Unsupported source-selected LZ4 command: " + lz4)
+    tools["LZ4"] = execution.commands[lz4].path
+    variables["LZ4"] = {"value": tools["LZ4"]}
     variables = program(flag_program["image_version"], variables, sources, cells = True).variables
     variables = program(flag_program["image_cpp"], variables, sources, cells = True).variables
 
