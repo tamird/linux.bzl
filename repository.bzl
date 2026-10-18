@@ -1,5 +1,59 @@
 """Pinned generic exporter and source-only, lazily loaded Kbuild syntax."""
 
+def _source_archive_impl(ctx):
+    ctx.download_and_extract(
+        url = ctx.attr.urls,
+        integrity = ctx.attr.integrity,
+        stripPrefix = ctx.attr.strip_prefix,
+        type = ctx.attr.type,
+    )
+    for patch in ctx.attr.patches:
+        ctx.patch(ctx.path(patch), strip = ctx.attr.patch_strip)
+
+    # Build is a native Make input, but also matches BUILD on case-insensitive
+    # filesystems. Give each such directory an explicit Bazel package without
+    # changing its native input. POSIX find supplies recursive traversal on the
+    # supported Linux/macOS hosts; repository path.readdir is shallow.
+    find = ctx.path("/usr/bin/find")
+    if not find.exists:
+        fail("Kernel source packaging requires /usr/bin/find on the repository host")
+    result = ctx.execute([find, "-L", ".", "-type", "f", "-iname", "build", "-print0"])
+    if result.return_code:
+        fail("Cannot enumerate native Build packages with %s (exit %d):\n%s" % (find, result.return_code, result.stderr))
+    packages = {path.removeprefix("./").rpartition("/")[0]: True for path in result.stdout.split("\000") if path}
+    root = str(ctx.path(".").realpath)
+    written = {}
+    for package in sorted(packages):
+        if not package:
+            continue
+        parent = str(ctx.path(package).realpath)
+        if not parent.startswith(root + "/"):
+            fail("Native Build package escapes its source repository: " + package)
+        if parent in written:
+            continue
+        build = package + "/BUILD.bazel"
+        if ctx.path(build).exists:
+            fail("Kernel source already contains Bazel package metadata: " + build)
+        ctx.file(build, "load(%r, \"kernel_source_files\")\nkernel_source_files(name = \"sources\")\n" % str(ctx.attr._source_files), executable = False)
+        written[parent] = True
+    if ctx.path("BUILD.bazel").exists:
+        fail("Kernel source already contains root Bazel package metadata")
+    ctx.symlink(ctx.path(ctx.attr.build_file), "BUILD.bazel")
+
+kernel_source_archive = repository_rule(
+    implementation = _source_archive_impl,
+    attrs = {
+        "urls": attr.string_list(mandatory = True),
+        "integrity": attr.string(mandatory = True),
+        "strip_prefix": attr.string(),
+        "type": attr.string(),
+        "patches": attr.label_list(),
+        "patch_strip": attr.int(default = 0),
+        "build_file": attr.label(mandatory = True, allow_single_file = True),
+        "_source_files": attr.label(default = "//rules:source_files.bzl"),
+    },
+)
+
 def _tool_impl(ctx):
     if not ctx.attr.manifest:
         fail("Build //native:exporter_archive and supply its directory with --override_repository=" + ctx.name + "=<output>; released consumers must provide a manifest")

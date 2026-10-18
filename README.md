@@ -24,6 +24,14 @@ fragments, and a declared `pahole`; architecture and compiler follow the target
 platform. A build consumes the configuration provider and requests native paths
 through `roots`. Artifact selectors expose individual native products.
 
+Use `kernel_source_archive` from `//:repository.bzl` for the pinned raw archive.
+It accepts `urls`, `integrity`, `strip_prefix`, native `patches`/`patch_strip`,
+and a caller `build_file`. That BUILD file should declare its source group with
+`kernel_source_files(name = "sources")` from `//rules:source_files.bzl`.
+The repository adds Bazel package metadata beside native `Build` files, whose
+names otherwise hide whole directories on case-insensitive filesystems. Native
+files remain unchanged; package discovery requires host `find` on Linux/macOS.
+
 A build also takes `syntax = "@source_syntax//:program"`. Create that repository
 with `kernel_syntax_repository(source = "@raw_source//:Makefile", tool =
 "@exporter//:kbuild-exporter")` from `//:repository.bzl`; use

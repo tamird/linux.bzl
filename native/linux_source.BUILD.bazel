@@ -1,3 +1,5 @@
+load("@linux.bzl//rules:source_files.bzl", "kernel_source_files")
+
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
@@ -5,7 +7,4 @@ exports_files([
     "usr/gen_init_cpio.c",
 ])
 
-filegroup(
-    name = "sources",
-    srcs = glob(["**"], exclude = [".git/**"]),
-)
+kernel_source_files(name = "sources")
