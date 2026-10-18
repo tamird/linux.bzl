@@ -2,6 +2,7 @@
 
 load("@bazel_skylib//lib:unittest.bzl", "asserts", "unittest")
 load("//rules:expressions.bzl", "evaluate", "program")
+load("//rules:host_tools.bzl", "resolve_subcmd_archive", "target_exports")
 
 def _literal(value):
     return [dict(op = "literal", value = value)]
@@ -41,6 +42,40 @@ def _context_test(ctx):
     evaluate([explicit], result.variables, sources)
     asserts.equals(env, "explicit-compiler", requests.values()[-1]["compiler"])
     asserts.equals(env, "-m16", requests.values()[-1]["flags"])
+
+    # Native subcmd's lazy OUTPUT must request its directory measurement
+    # before the owner decides that the current probe round has converged.
+    directory = "bazel-out/config/bin/kernel.generated/libsubcmd"
+    command = "cd __object__; cd " + directory + "; pwd"
+    subcmd_program = [
+        _assignment("ABSOLUTE_O", [dict(op = "function", name = "kbuild_host_shell", arguments = [_literal(command)])]),
+        _assignment("OUTPUT", [dict(op = "reference", name = _literal("ABSOLUTE_O"))] + _literal("/")),
+        _assignment("LIBFILE", [dict(op = "reference", name = _literal("OUTPUT"))] + _literal("libsubcmd.a")),
+    ]
+    request = dict(kind = "host-shell", command = command, environment = {}, directory = ".", source = "source", directories = [directory])
+    for capabilities in [{}, {json.encode(request): directory}]:
+        pending = {}
+        source_context = {"__requests__": pending, "__capabilities__": capabilities, "__probe_environment__": {}, "__source_root__": "source", "__probe_directories__": [directory]}
+        subcmd = program(subcmd_program, {}, source_context, cells = True).variables
+        asserts.equals(env, {}, pending)
+        archive = resolve_subcmd_archive(subcmd, source_context, directory + "/libsubcmd.a")
+        if capabilities:
+            asserts.equals(env, directory + "/libsubcmd.a", archive)
+            asserts.equals(env, {}, pending)
+        else:
+            asserts.equals(env, None, archive)
+            asserts.equals(env, {json.encode(request): request}, pending)
+
+    # ARM64 exports this flag lazily. Its compiler include belongs to the
+    # target context, even when a later host Make invocation inherits it.
+    target_sources = {"__compiler_include__": "target/compiler/include"}
+    target_variables = program([
+        _assignment("CC_FLAGS_FPU", _literal("-ffreestanding -isystem ") + [dict(op = "function", name = "kbuild_compiler_include", arguments = [])]),
+    ], {}, target_sources, cells = True).variables
+    target_variables["__exports__"] = {"CC_FLAGS_FPU": True}
+    inherited = target_exports(struct(variables = target_variables, sources = target_sources))
+    host_sources = {"__compiler_include__": "host/compiler/include"}
+    asserts.equals(env, "-ffreestanding -isystem target/compiler/include", evaluate([dict(op = "reference", name = _literal("CC_FLAGS_FPU"))], inherited, host_sources))
 
     # Both native include spellings refer to the already loaded auto.conf
     # values. Keep the native Make string representation unchanged.

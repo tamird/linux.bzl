@@ -22,6 +22,10 @@ def _recursive_variables(variables, index):
             result[name] = variables[name]
     return result
 
+def target_exports(setup):
+    """Expand inherited target variables before entering a host Make scope."""
+    return _recursive_variables(setup.variables, setup.sources)
+
 def _aggregate(ctx, setup, scope, index, inputs, output, mode = ""):
     """Bind actual objects after the native archive/link variable setup."""
     execution = execution_tools(ctx)
@@ -38,6 +42,15 @@ def _aggregate(ctx, setup, scope, index, inputs, output, mode = ""):
         "HOSTAR": execution.host_roles["AR"],
     }.items()})
     run_recipe(ctx, execution, command = value("cmd_" + mode + "ld_multi", local, index), inputs = inputs, outputs = [output], env = execution.host_link_env, mnemonic = "NativeHostAggregate")
+
+def resolve_subcmd_archive(variables, index, expected):
+    """Resolve the native archive only after its lazy host queries converge."""
+    archive = value("LIBFILE", variables, index)
+    if index["__requests__"]:
+        return None
+    if _normal(archive) != _normal(expected):
+        fail("Native subcmd archive differs from its objtool caller: " + archive + " != " + expected)
+    return archive
 
 def build_objtool(ctx, prepared, setup, capabilities, requests, package_command):
     architecture = setup.architecture
@@ -73,7 +86,7 @@ def build_objtool(ctx, prepared, setup, capabilities, requests, package_command)
     # output names; provisional action Files still belong to their own round.
     prefix = ctx.output_prefix + "/" + ctx.label.name + ".generated/"
     ctx.actions.write(probe, "")
-    initial = _recursive_variables(setup.variables, index)
+    initial = target_exports(setup)
     initial["__command_line__"] = dict(selected)
     initial.update({name: {"value": text} for name, text in dict(selected, SRCARCH = architecture.srcarch, HOSTARCH = "x86", srctree = source, CURDIR = source + "/tools/objtool", OUTPUT = prefix).items()})
     variables = program(flag_program["image_utilities"], initial, index, cells = True).variables
@@ -169,10 +182,8 @@ def build_objtool(ctx, prepared, setup, capabilities, requests, package_command)
     index["__probe_directories__"] = directories
     library_variables["PWD"] = {"value": "__object__"}
     subcmd = program(flag_program["image_host_subcmd"], library_variables, index, cells = True).variables
-    if requests:
+    if resolve_subcmd_archive(subcmd, index, library) == None:
         return struct(executable = None, architecture = architecture)
-    if _normal(value("LIBFILE", subcmd, index)) != _normal(library):
-        fail("Native subcmd archive differs from its objtool caller: " + value("LIBFILE", subcmd, index) + " != " + library)
 
     # Declare public header installation only when the native caller requests
     # it. Individual files let compiler dependency discovery prune headers
@@ -264,7 +275,7 @@ def build_resolve_btfids(ctx, prepared, setup, capabilities, requests, package_c
     prefix = ctx.output_prefix + "/resolve_btfids/"
     selected = dict(execution.host_roles)
     selected.update(HOSTCC = execution.host_cc, HOSTLD = execution.host_roles["LD"], HOSTAR = execution.host_roles["AR"], HOSTPKG_CONFIG = package_command.path, LIBBPF_INCLUDE = libbpf.include)
-    initial = _recursive_variables(setup.variables, index)
+    initial = target_exports(setup)
     initial["__command_line__"] = selected
     initial.update({name: {"value": text} for name, text in dict(selected, srctree = source, CURDIR = source + "/" + directory, OUTPUT = prefix, HOSTARCH = "x86", SUBCMD_INCLUDE = source + "/tools/lib", LIBELF_FLAGS = " ".join([shell_quote(flag) for flag in libraries.cflags])).items()})
     variables = program(setup.program["image_host_btfids"], initial, index, cells = True).variables
