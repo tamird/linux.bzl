@@ -590,6 +590,7 @@ def main(argv=None):
     program_file.write_text('FLAG_PROGRAM = json.decode(' + repr(json.dumps(data)) + ')\n')
     shutil.copyfile(HERE / 'host_toolchain.bzl', out / 'rules/host_toolchain.bzl')
     with (out / 'BUILD.bazel').open('a') as stream:
+        stream.write('load("//rules:image.bzl", "kbuild_resolved_core")\nkbuild_resolved_core(name="_kernel_build", tags=["manual"])\n')
         stream.write('load("//rules:host_toolchain.bzl","kernel_host_toolchain")\nkernel_host_toolchain(name="host_toolchain")\n')
         stream.write('load("//rules:host_tools.bzl","kernel_objtool","kernel_resolve_btfids")\nkernel_objtool(name="objtool")\nkernel_resolve_btfids(name="resolve_btfids")\n')
         stream.write('''load("//rules:pahole.bzl", "kernel_pahole", "kernel_pahole_test")
