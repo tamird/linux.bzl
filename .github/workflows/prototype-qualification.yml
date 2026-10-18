@@ -91,7 +91,7 @@ jobs:
     name: ${{ matrix.experiment }}
     runs-on: ubuntu-24.04
     needs: generator
-    timeout-minutes: ${{ matrix.experiment == 'compiler-family' && 360 || 150 }}
+    timeout-minutes: ${{ (matrix.experiment == 'compiler-family' || matrix.experiment == 'source-edit-reuse') && 360 || 150 }}
     strategy:
       fail-fast: false
       matrix:
@@ -145,6 +145,8 @@ jobs:
           chmod +x "$decoder"
       - name: Measure unchanged and edited source builds
         if: matrix.experiment == 'source-edit-reuse'
+        # Reserve job time for evidence upload and cache post steps.
+        timeout-minutes: 330
         working-directory: examples
         run: |
           set -euo pipefail
@@ -176,7 +178,9 @@ jobs:
             esac
             bazel build //:x86_64_kernel --output_groups=+boot,+manifest --jobs=4 "${mapping[@]}" \
               --sandbox_block_path=/bin --sandbox_block_path=/usr/bin --sandbox_block_path=/usr/local/bin \
-              --execution_log_compact_file="$results/$phase.execution.pb.zst"
+              --experimental_sandbox_async_tree_delete_idle_threads=0 \
+              --execution_log_compact_file="$results/$phase.execution.pb.zst" \
+              --profile="$results/$phase.profile.gz"
             # Decode compact entries without expanding every action's source-tree inputs.
             "$results/bb" print --compact_execution_log="$results/$phase.execution.pb.zst" --raw=true --sort=false |
               jq -c '

@@ -281,6 +281,7 @@ def snapshot(directory: Path, name: str, workspace: Path) -> None:
         case _:
             raise ValueError(f"Invalid kernel manifest: {manifest_path}")
     reached = graph.ancestry([artifacts[root] for root in roots])
+    assert artifacts["vmlinux.o"] in graph.ancestry([artifacts[".vmlinux.export.c"]]), ".vmlinux.export.c"
     inventory = {}
     paths = {}
     boot_headers = {header: hashlib.sha256((workspace / artifacts[header]).read_bytes()).hexdigest() for header in BOOT_HEADERS}
@@ -332,14 +333,14 @@ def snapshot(directory: Path, name: str, workspace: Path) -> None:
             actual.add(tuple(sorted(mapped(path) for path in outputs)))
     recorded = {tuple(paths) for record in inventory.values() for paths in record["outputs"].values()}
     assert actual == recorded, {"unrecorded": sorted(actual - recorded), "unreachable": sorted(recorded - actual)}
-    for target in ("usr/initramfs_inc_data", ".vmlinux.export.c", PIGGY_SOURCE, GZIP_PAYLOAD):
+    for target in ("usr/initramfs_inc_data", "vmlinux.o", ".vmlinux.export.c", PIGGY_SOURCE, GZIP_PAYLOAD):
         paths[target] = artifacts[target]
     # Authenticate the extra boot compiler reached by a changed initramfs.
     assert graph.consumes(compilers["usr/initramfs_data.o"]["object"], artifacts["usr/initramfs_inc_data"]), "usr/initramfs_data.o"
     assert graph.consumes(compilers[PIGGY_OBJECT]["object"], artifacts[GZIP_PAYLOAD]), PIGGY_OBJECT
     assert artifacts["usr/initramfs_data.o"] in graph.ancestry([artifacts[GZIP_PAYLOAD]]), GZIP_PAYLOAD
     controls = ("init/main.o", "kernel/fork.o", "usr/initramfs_data.o", ".vmlinux.export.o", PIGGY_OBJECT,
-                "usr/initramfs_inc_data", ".vmlinux.export.c", PIGGY_SOURCE, GZIP_PAYLOAD)
+                "usr/initramfs_inc_data", "vmlinux.o", ".vmlinux.export.c", PIGGY_SOURCE, GZIP_PAYLOAD)
     digests = {target: hashlib.sha256((workspace / paths[target]).read_bytes()).hexdigest() for target in controls}
     digests.update(boot_headers)
     digests["decompressed_gzip"] = hashlib.sha256(gzip.decompress((workspace / paths[GZIP_PAYLOAD]).read_bytes())).hexdigest()
@@ -488,7 +489,7 @@ def report(directory: Path) -> dict[str, object]:
             if outputs not in phases["incbin"].executed | phases["incbin"].cached:
                 raise ValueError(f"Changed native boot header has no observed compiler: {target} {role}")
     digests = {name: json.loads((directory / f"{name}.digests.json").read_text()) for name in PHASES}
-    for target in ("usr/initramfs_inc_data", "usr/initramfs_data.o", GZIP_PAYLOAD, PIGGY_OBJECT):
+    for target in ("usr/initramfs_inc_data", "usr/initramfs_data.o", "vmlinux.o", GZIP_PAYLOAD, PIGGY_OBJECT):
         if digests["header"][target] == digests["incbin"][target]:
             raise ValueError(f"The initramfs edit did not change {target}")
     if len({value["kernel/fork.o"] for value in digests.values()}) != 1:

@@ -71,6 +71,7 @@ class ReuseReportTest(unittest.TestCase):
                 "init/main.o": "unchanged",
                 "usr/initramfs_data.o": "modified" if name in ("incbin", "gzip") else "original",
                 "usr/initramfs_inc_data": "modified" if name in ("incbin", "gzip") else "original",
+                "vmlinux.o": "modified" if name in ("incbin", "gzip") else "original",
                 ".vmlinux.export.c": "unchanged",
                 ".vmlinux.export.o": "unchanged",
                 reuse_report.PIGGY_SOURCE: "unchanged",
@@ -327,22 +328,27 @@ class ReuseReportTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 reuse_report.read_compilers(path)
 
-    def test_mutation_snapshot_rejects_unpromoted_clang_c(self) -> None:
-        paths = ["vmlinux", "logical.o", "raw.o", "source.c", "kernel.json"]
+    def test_mutation_snapshot_requires_generated_input_and_split_c(self) -> None:
+        paths = ["vmlinux", "logical.o", "raw.o", "source.c", "kernel.json", "vmlinux.o", ".vmlinux.export.c"]
         graph = query(paths)
-        graph["depSetOfFiles"] = [{"id": 1, "directArtifactIds": [2]}, {"id": 2, "directArtifactIds": [3]}]
+        graph["depSetOfFiles"] = [{"id": 1, "directArtifactIds": [2]}, {"id": 2, "directArtifactIds": [3]}, {"id": 3, "directArtifactIds": [6]}]
         graph["actions"][0]["inputDepSetIds"] = [1]
         graph["actions"][1]["inputDepSetIds"] = [2]
-        graph["actions"][-1]["mnemonic"] = "FileWrite"
+        graph["actions"][4]["mnemonic"] = "FileWrite"
+        graph["actions"][-1]["inputDepSetIds"] = [3]
         (self.directory / "baseline.aquery.json").write_text(json.dumps(graph))
         (self.directory / "baseline.manifest-path").write_text("kernel.json\n")
         (self.directory / "kernel.json").write_text(json.dumps({
             "compiler": "clang", "roots": ["vmlinux"],
-            "artifacts": {"vmlinux": "vmlinux", "init/main.o": "logical.o", **{header: "source.c" for header in reuse_report.BOOT_HEADERS}},
+            "artifacts": {"vmlinux": "vmlinux", "init/main.o": "logical.o", "vmlinux.o": "vmlinux.o", ".vmlinux.export.c": ".vmlinux.export.c", **{header: "source.c" for header in reuse_report.BOOT_HEADERS}},
             "compilers": {"init/main.o": {"kind": "c", "source": "source.c", "object": "raw.o"}},
         }))
         (self.directory / "source.c").write_text("int source;\n")
         with self.assertRaisesRegex(ValueError, "requires split target C"):
+            reuse_report.snapshot(self.directory, "baseline", self.directory)
+        graph["actions"][-1]["inputDepSetIds"] = []
+        (self.directory / "baseline.aquery.json").write_text(json.dumps(graph))
+        with self.assertRaisesRegex(AssertionError, r"\.vmlinux\.export\.c"):
             reuse_report.snapshot(self.directory, "baseline", self.directory)
 
     def test_split_mutation_counts_phases_without_doubling_objects(self) -> None:
@@ -430,6 +436,11 @@ class ReuseReportTest(unittest.TestCase):
         digests[".vmlinux.export.c"] = "changed"
         path.write_text(json.dumps(digests))
         with self.assertRaisesRegex(ValueError, "initramfs edit unexpectedly changed"):
+            reuse_report.report(self.directory)
+        digests[".vmlinux.export.c"] = "unchanged"
+        digests["vmlinux.o"] = "original"
+        path.write_text(json.dumps(digests))
+        with self.assertRaisesRegex(ValueError, "initramfs edit did not change vmlinux.o"):
             reuse_report.report(self.directory)
 
     def test_gzip_trial_requires_actual_embedding_execution(self) -> None:
