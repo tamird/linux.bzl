@@ -337,12 +337,47 @@ def _architecture_invocations(roots, state):
                 if text and text != ":":
                     preceding.append(text)
 
+def _postlink(path, state):
+    post = state["contexts"].get("@postlink")
+    if post == None:
+        return struct(commands = [], outputs = [], prerequisites = [])
+    native = _local_recipe(path, "@postlink", state)
+    prerequisites = native["prerequisites"] if native != None else []
+    variables = dict(_target_scope(path, "@postlink", state).variables)
+    for name, text in {
+        "@": path,
+        "@F": path.rsplit("/", 1)[-1],
+        "@D": path.rpartition("/")[0] or ".",
+        "<": native["first"] if native != None else "",
+        "^": " ".join(prerequisites),
+        "*": native["stem"] if native != None else "",
+        "real-prereqs": " ".join(prerequisites),
+    }.items():
+        variables[name] = {"value": text}
+    commands, outputs = [], []
+    for rule in _rules_for_path(path, post, state):
+        for terms in rule.get("recipes", []):
+            significant = [term for term in terms if term.get("op") != "literal" or term["value"].strip() not in ("", "@", "+")]
+            if len(significant) == 1 and significant[0].get("op") == "literal" and significant[0]["value"].lstrip("@+").strip() == "true":
+                continue
+            if len(significant) != 1 or significant[0].get("name") != "call":
+                fail("Unsupported native postlink recipe: " + str(terms))
+            arguments = significant[0]["arguments"]
+            function = evaluate(arguments[0], variables, state["sources"]).strip()
+            if function not in ("cmd", "if_changed", "if_changed_dep") or len(arguments) < 2:
+                fail("Unsupported native postlink command: " + str(terms))
+            name = evaluate(arguments[1], variables, state["sources"]).strip()
+            commands.append({"arguments": arguments[1:], "variables": variables, "own_automatic_variables": True})
+            outputs.extend([_normalize(evaluate(expr, variables, state["sources"])) for expr in FLAG_PROGRAM["image_postlink_outputs"][state["postlink_file"]].get(name, [])])
+    return struct(commands = commands, outputs = outputs, prerequisites = prerequisites)
+
 def _link_descriptor(path, state):
     if path in ("built-in-fixup.a", "vmlinux.a"):
         native = _recipe(path, "@archive", state)
         if native == None:
             fail("No native kernel archive producer for " + path)
-        return {"target": path, "directory": ".", "outs": [path], "deps": native["prerequisites"], "kind": "generate", "driver": "link", "native": native}
+        dependencies = [p for p in native["prerequisites"] if p not in state["empty_archive_controls"]]
+        return {"target": path, "directory": ".", "outs": [path], "deps": dependencies, "kind": "generate", "driver": "link", "native": native}
     variables = dict(_context(".", state).variables)
     for name, val in {"objtree": ".", "srctree": "__source__", "srcroot": "__source__"}.items():
         variables[name] = {"value": val}
@@ -375,7 +410,9 @@ def _link_descriptor(path, state):
         return None
     driver, command, deps, outs = stages[path]
     if final_link:
-        outs = outs + state["postlink_outputs"]
+        post = state["postlinks"][path]
+        outs = outs + post.outputs
+        deps.extend(post.prerequisites)
         scripts = _context("scripts", state)
         deps.extend(["scripts/" + name for name in make_words(_value("hostprogs-always-y", scripts.variables, state["sources"]))])
     variables["KBUILD_MODULES"] = {"value": "y" if state["modules"] else ""}
@@ -399,7 +436,7 @@ def _link_descriptor(path, state):
         "stem": "",
         "assignments": [],
         "final_link": final_link,
-        "postlink": state["postlink_commands"] if final_link else [],
+        "postlink": state["postlinks"][path].commands if final_link else [],
         "pahole": state["pahole"] if final_link else None,
     }
     return {"target": outs[0], "directory": ".", "outs": outs, "deps": deps, "kind": "generate", "driver": "link", "native": native}
@@ -532,18 +569,23 @@ def _prepare_contexts(state, arch_context):
         fail("Architecture preparation graph exceeded 10000 goals")
     state["preparation"] = {p: True for p in state["preparation"]}.keys()
 
+def _module_order_variables(state):
+    variables = dict(state["setup"].variables)
+    variables["single-ko"] = {"value": " ".join(state["modules"])}
+    variables["Q"] = {"value": ""}
+    return variables
+
 def _describe(path, state, owner = None):
+    path = state["postlink_outputs"].get(path, path)
     if path in state["preparation_checks"]:
         return state["preparation_checks"][path]
-    if path in state["postlink_outputs"] or path == "System.map":
+    if path == "System.map":
         return _link_descriptor(state["final_link"], state)
     link = _link_descriptor(path, state) if path in ["built-in-fixup.a", "vmlinux.a", "vmlinux.o", "vmlinux.symvers", "Module.symvers", ".vmlinux.export.c", "vmlinux.unstripped", "vmlinux"] or path in [m[:-3] + ".mod.c" for m in state["modules"]] else None
     if link:
         return link
     if state["modules"] and path == "modules.order":
-        variables = dict(state["setup"].variables)
-        variables["single-ko"] = {"value": " ".join(state["modules"])}
-        variables["Q"] = {"value": ""}
+        variables = _module_order_variables(state)
         return {
             "target": path,
             "directory": ".",
@@ -560,17 +602,24 @@ def _describe(path, state, owner = None):
         compiling = path.endswith(".o")
         native["phase"] = "modfinal"
         dependencies = list(native["prerequisites"])
+        outputs = [path]
         if compiling:
             dependencies.extend(state["preparation"])
             dependencies.extend(["include/generated/uapi/linux/version.h", "include/generated/utsrelease.h", "include/generated/compile.h", "include/generated/utsversion.h"])
-        elif state["config"].get("CONFIG_DEBUG_INFO_BTF_MODULES") == "y":
-            native["pahole"] = state["pahole"]
-            native["postlink"] = [{
-                "arguments": [[{"op": "literal", "value": "btf_ko"}]],
-                "variables": native["variables"],
-            }]
-            dependencies.append("tools/bpf/resolve_btfids/resolve_btfids")
-        return {"target": path, "directory": ".", "outs": [path], "deps": dependencies, "kind": "compile" if compiling else "generate", "driver": "link", "native": native}
+        else:
+            post = state["postlinks"][path]
+            native["postlink_lowered"] = True
+            native["postlink"] = list(post.commands)
+            outputs.extend(post.outputs)
+            dependencies.extend(post.prerequisites)
+            if state["config"].get("CONFIG_DEBUG_INFO_BTF_MODULES") == "y":
+                native["pahole"] = state["pahole"]
+                native["postlink"].append({
+                    "arguments": [[{"op": "literal", "value": "btf_ko"}]],
+                    "variables": native["variables"],
+                })
+                dependencies.append("tools/bpf/resolve_btfids/resolve_btfids")
+        return {"target": path, "directory": ".", "outs": outputs, "deps": dependencies, "kind": "compile" if compiling else "generate", "driver": "link", "native": native}
     if path == "include/generated/utsversion.h":
         return {"target": path, "directory": "init", "outs": [path], "deps": [], "kind": "generate", "driver": "build", "native": _recipe(path, "init", state)}
     header_commands = {"include/generated/uapi/linux/version.h": "version.h", "include/generated/utsrelease.h": "utsrelease.h", "include/generated/compile.h": "compile.h"}
@@ -825,8 +874,19 @@ def _impl(ctx):
         variables = dict(setup.variables)
         for name, text in {"objtree": ".", "srctree": "__source__", "srcroot": "__source__", "KBUILD_BUILTIN": "1", "MAKEFLAGS": "-j1"}.items():
             variables[name] = {"value": text}
+        if FLAG_PROGRAM["image_module_order_contents"] != None:
+            variables["__selected_module_order"] = {"value": evaluate(FLAG_PROGRAM["image_module_order_contents"], _module_order_variables(state), state["sources"])}
         state["contexts"]["@modfinal"] = program(FLAG_PROGRAM["image_common"] + FLAG_PROGRAM["image_btf"] + FLAG_PROGRAM["image_modfinal"], variables, state["sources"], cells = True)
     state["contexts"]["@archive"] = program(FLAG_PROGRAM["image_archive"], _context(".", state).variables, state["sources"], cells = True)
+    controls = program(FLAG_PROGRAM["image_archive_controls"], dict(state["contexts"]["@archive"].variables, PHONY = {"value": ""}), state["sources"], cells = True)
+    phony = {p: True for rule in controls.rules if ".PHONY" in rule["targets"] for p in make_words(rule["prerequisites"])}
+    state["empty_archive_controls"] = {}
+    for path in phony:
+        # A phony target with no selected rule is also empty. Inspect the
+        # records directly: an unsupported active recipe must never disappear.
+        rules = [rule for rule in controls.rules if path in rule["targets"]]
+        if not any([rule.get("recipes") or make_words(rule["prerequisites"]) for rule in rules]):
+            state["empty_archive_controls"][path] = True
     link_context = program(FLAG_PROGRAM["image_programs"]["scripts/Makefile.vmlinux"], _context(".", state).variables, state["sources"], cells = True)
     state["contexts"]["@vmlinux"] = link_context
     state["link_owners"] = {p: True for p in make_words(_value("targets", link_context.variables, state["sources"]))}
@@ -840,28 +900,17 @@ def _impl(ctx):
         fail("Expected one native link_vmlinux target, got " + str(final_targets.keys()))
     state["final_link"] = final_targets.keys()[0]
     postlink = "arch/" + config.architecture.srcarch + "/Makefile.postlink"
-    state["postlink_outputs"] = []
-    state["postlink_commands"] = []
+    state["postlink_file"] = postlink
     if postlink in FLAG_PROGRAM["image_programs"]:
-        post = program(FLAG_PROGRAM["image_programs"][postlink], _context(".", state).variables, state["sources"], cells = True)
-        state["contexts"]["@postlink"] = post
-        variables = dict(post.variables)
-        variables["@"] = {"value": state["final_link"]}
-        for rule in _rules_for_path(state["final_link"], post, state):
-            for terms in rule.get("recipes", []):
-                significant = [term for term in terms if term.get("op") != "literal" or term["value"].strip() not in ("", "@", "+")]
-                if len(significant) == 1 and significant[0].get("op") == "literal" and significant[0]["value"].lstrip("@+").strip() == "true":
-                    continue
-                if len(significant) != 1 or significant[0].get("name") != "call":
-                    fail("Unsupported native postlink recipe: " + str(terms))
-                arguments = significant[0]["arguments"]
-                function = evaluate(arguments[0], variables, state["sources"]).strip()
-                if function not in ("cmd", "if_changed", "if_changed_dep") or len(arguments) < 2:
-                    fail("Unsupported native postlink command: " + str(terms))
-                name = evaluate(arguments[1], variables, state["sources"]).strip()
-                state["postlink_commands"].append({"arguments": arguments[1:], "variables": post.variables})
-                state["postlink_outputs"].extend([_normalize(evaluate(expr, variables, state["sources"])) for expr in FLAG_PROGRAM["image_postlink_outputs"][postlink].get(name, [])])
-    state["known_products"] = {p: True for p in ["built-in-fixup.a", "vmlinux.a", "vmlinux.o", "vmlinux.symvers", ".vmlinux.export.c", "vmlinux.unstripped", "vmlinux", "System.map", ".config", "include/config/auto.conf", "include/generated/autoconf.h"] + state["postlink_outputs"] + state["module_final"].keys() + [m[:-3] + suffix for m in modules for suffix in [".o", ".mod", ".mod.c"]]}
+        state["contexts"]["@postlink"] = program(FLAG_PROGRAM["image_programs"][postlink], _context(".", state).variables, state["sources"], cells = True)
+    state["postlinks"] = {path: _postlink(path, state) for path in [state["final_link"]] + modules}
+    state["postlink_outputs"] = {}
+    for path, post in state["postlinks"].items():
+        for output in post.outputs:
+            if output == path or output in state["postlink_outputs"]:
+                fail("Multiple native postlink producers for " + output)
+            state["postlink_outputs"][output] = path
+    state["known_products"] = {p: True for p in ["built-in-fixup.a", "vmlinux.a", "vmlinux.o", "vmlinux.symvers", ".vmlinux.export.c", "vmlinux.unstripped", "vmlinux", "System.map", ".config", "include/config/auto.conf", "include/generated/autoconf.h"] + state["postlink_outputs"].keys() + state["module_final"].keys() + [m[:-3] + suffix for m in modules for suffix in [".o", ".mod", ".mod.c"]]}
     _architecture_invocations(ctx.attr.architecture_roots.get(config.architecture.srcarch, []), state)
     pending = [(path, None, {}) for path in reversed(list(ctx.attr.roots) + ctx.attr.architecture_roots.get(config.architecture.srcarch, []) + modules)]
     descriptors, producers = {}, {}

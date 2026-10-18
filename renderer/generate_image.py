@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Whole-kernel extension of the native Make/Kconfig experiment."""
 import argparse
+import copy
 import json
 import re
 from pathlib import Path
@@ -168,13 +169,99 @@ def target_rules(body, targets):
             active = False
         elif node['kind'] == 'rule':
             names = make_text(node['targets_expression'])
-            active = bool(set(names.split()) & targets)
+            pattern, separator, _ = make_text(node['tail_expression']).partition(':')
+            active = bool(set(names.split()) & targets or
+                          (separator and pattern.strip() in targets))
             if active:
                 result.append(node)
         elif node['kind'] == 'recipe' and active:
             result.append(node)
         else:
             active = False
+    return result
+
+
+def module_order_input(body, recipe):
+    """Bind a selected list writer's words at its native modfinal read."""
+    match output_redirections(recipe):
+        case [destination]:
+            pass
+        case outputs:
+            raise ValueError(f'Expected one selected-module order output, got {outputs}')
+    match recipe:
+        case [qualifier, {'op': 'literal', 'value': opening},
+              {'op': 'function', 'name': 'foreach', 'arguments': [variable, words, emission]} as loop, *tail]:
+            if (qualifier != {'op': 'reference', 'name': backend.literal('Q')} or
+                    opening.strip() != '{' or
+                    make_text(tail).strip() != '} > ' + make_text(destination)):
+                raise ValueError(f'Unsupported selected-module order writer: {recipe}')
+        case _:
+            raise ValueError(f'Unsupported selected-module order writer: {recipe}')
+    match emission:
+        case [{'op': 'literal', 'value': before}, *word, {'op': 'literal', 'value': after}] if before.strip() == 'echo' and after.strip() == ';':
+            contents = [dict(loop, arguments=[variable, words, word])]
+        case _:
+            raise ValueError(f'Unsupported selected-module order entry: {emission}')
+    assignments = [n for n, _ in walk(body) if n.get('name') == 'modules']
+    match assignments:
+        case [assignment]:
+            pass
+        case _:
+            raise ValueError(f'Expected one native module list assignment, got {assignments}')
+    match assignment['value_expression']:
+        case [{'op': 'function', 'name': 'sort', 'arguments': [[{'op': 'function', 'name': 'shell', 'arguments': [query]}]]} as sort]:
+            if make_text(query).strip() != 'cat ' + make_text(destination):
+                raise ValueError(f'Module list reads a different selected output: {query}')
+        case expression:
+            raise ValueError(f'Unsupported native module list read: {expression}')
+    # Preserve the native sort and the writer's word expression. The only
+    # substituted operation is reading this already-known generated list.
+    assignment['value_expression'] = [dict(sort, arguments=[[
+        {'op': 'reference', 'name': backend.literal('__selected_module_order')}]])]
+    assignment['value'] = make_text(assignment['value_expression'])
+    return contents
+
+
+def archive_controls(body, rules):
+    """Retain source-declared phony prerequisites without replaying setup."""
+    prerequisites = {word for node, _ in walk(rules) if node['kind'] == 'rule'
+                     for term in node['tail_expression'] if term['op'] == 'literal'
+                     for word in term['value'].split()}
+    nodes = list(walk(body))
+    guards = {(node['file'], node['line']): branch for node, branch in nodes}
+    archive_guards = [guards[(node['file'], node['line'])] for node, _ in walk(rules) if node['kind'] == 'rule']
+    assignments = [node for node, _ in nodes if node.get('name') == 'PHONY']
+    selected = [(node, set(value.split()) & prerequisites) for node in assignments
+                if (value := backend.const(node['value_expression'])) is not None and
+                set(value.split()) & prerequisites]
+    if not selected:
+        return []
+    for index, node in enumerate(assignments):
+        if node['flavor'] != 'append' and not (index == 0 and node['flavor'] in ('simple', 'recursive') and backend.const(node['value_expression']) is not None):
+            raise ValueError(f'Cannot prove monotonic native PHONY membership: {node}')
+    declarations = target_rules(body, {'.PHONY'})
+    match [node for node, _ in walk(declarations) if node['kind'] == 'rule']:
+        case [declaration] if declaration['tail_expression'] == [{'op': 'reference', 'name': backend.literal('PHONY')}]:
+            pass
+        case _:
+            raise ValueError(f'Unsupported native phony declaration: {declarations}')
+    result = []
+    for assignment, names in selected:
+        membership_guards = guards[(assignment['file'], assignment['line'])]
+        if any(branch[:len(membership_guards)] != membership_guards for branch in archive_guards):
+            raise ValueError(f'Phony membership has a separate native selection guard: {assignment}')
+        controls = target_rules(body, names)
+        control_lines = [node['line'] for node, _ in walk(controls)
+                         if node['kind'] in ('rule', 'recipe')]
+        if any(line < assignment['line'] for line in control_lines):
+            raise ValueError(f'Native phony control precedes its membership declaration: {assignment}')
+        last = max([assignment['line']] + control_lines)
+        # Strip outer invocation orchestration as for the archive itself,
+        # retaining CONFIG guards within this source-selected control phase.
+        phase = backend.bounded(body, assignment['line'], last)
+        result.extend(backend.selected(phase, {'PHONY'}))
+        result.extend(target_rules(phase, names))
+    result.extend(declarations)
     return result
 
 
@@ -420,6 +507,7 @@ def main(argv=None):
     _INCLUDE_DIRECTIVES = False
     data['image_link'] = {}
     archive = bodies.get('scripts/Makefile.vmlinux_a')
+    archive_owner = archive if archive is not None else top
     if archive is None:
         # Older sources own this action in the top Makefile. Its compiler and
         # architecture setup has already run; retain only the archive phase.
@@ -428,6 +516,7 @@ def main(argv=None):
                    if n['kind'] in ('rule', 'recipe'))
         archive = backend.bounded(top, first, last)
     rules = target_rules(archive, {'built-in-fixup.a', 'vmlinux.a'})
+    data['image_archive_controls'] = archive_controls(archive_owner, rules)
     data['image_archive'] = backend.slice_program(
         bodies['scripts/Makefile.lib'] + archive,
         {'cmd_ar_builtin_fixup', 'cmd_ar_vmlinux.a', 'cmd_copy'} | backend.refs(rules)) + rules
@@ -436,11 +525,12 @@ def main(argv=None):
     modpost = bodies['scripts/Makefile.modpost']
     data['image_link']['modpost'] = backend.slice_program(modpost, {'cmd_modpost', 'modpost-deps', 'output-symdump', 'missing-input'})
     modfinal = bodies['scripts/Makefile.modfinal']
+    modfinal_rules = target_rules(modfinal, {'%.mod.o', '.module-common.o', '$(extmod_prefix).module-common.o', '%.ko'})
     data['image_modfinal'] = backend.slice_program(
         bodies['scripts/Makefile.lib'] + modfinal,
         {'cmd_cc_o_c', 'cmd_ld_single', 'cmd_objtool', 'objtool-enabled', 'cmd_ld_ko_o', 'cmd_btf_ko',
-         'modname', 'part-of-module', 'GCOV_PROFILE', 'ccflags-remove-y'})
-    data['image_modfinal'].extend(target_rules(modfinal, {'%.mod.o', '.module-common.o', '$(extmod_prefix).module-common.o', '%.ko'}))
+         'modname', 'part-of-module', 'GCOV_PROFILE', 'ccflags-remove-y'} | backend.refs(modfinal_rules))
+    data['image_modfinal'].extend(modfinal_rules)
     single_modules = target_rules(top, {'single_modules'})
     order_recipes = [n['value_expression'] for n, _ in walk(single_modules)
                      if n['kind'] == 'recipe' and any(backend.const(expr) == 'modules.order' or
@@ -449,6 +539,10 @@ def main(argv=None):
     if len(order_recipes) != 1:
         raise ValueError(f'Expected one native selected-module order recipe, got {order_recipes}')
     data['image_modules_order'] = order_recipes
+    data['image_module_order_contents'] = None
+    if 'modules' in backend.refs(modfinal_rules):
+        data['image_modfinal'] = copy.deepcopy(data['image_modfinal'])
+        data['image_module_order_contents'] = module_order_input(data['image_modfinal'], order_recipes[0])
     data['image_module_variables'] = [n for n in top_nodes if n.get('name') == 'MODORDER']
     # The timestamp object is a separate Bazel action. Remove just its recursive
     # Make dispatch; the native script still performs the native final link.
