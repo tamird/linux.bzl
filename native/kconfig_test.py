@@ -27,6 +27,19 @@ def main() -> None:
             assert commands[f"__KCONFIG_{tool}_LLVM_HELP"] == [expected], (tool, commands)
     if "$(as-instr64,wrussq" in (linux / "arch/x86/Kconfig.assembler").read_text():
         assert all("__selected_m64_flag__" in command for command in commands["__KCONFIG_AS_WRUSSQ"]), commands
+    if "$(cc-option,-fpatchable-function-entry=16,16)" in (linux / "arch/x86/Kconfig").read_text():
+        # The literal comma separates two Kconfig arguments. The source's
+        # cc-option helper consumes only $(1), so capture its actual command.
+        slot = "__KCONFIG_CC_ENTRY_PADDING"
+        match commands[slot]:
+            case [command]:
+                assert "-fpatchable-function-entry=16 " in command, command
+                assert "-fpatchable-function-entry=16,16" not in command, command
+            case actual:
+                raise AssertionError(f"Expected one native entry-padding command, got {actual}")
+        entry = next(entry for entry in syntax["arch/x86/Kconfig"] if entry["symbol"] == "CC_HAS_ENTRY_PADDING")
+        defaults = [prop["value"] for prop in entry["properties"] if prop["kind"] == "default"]
+        assert any(token[0] in ("sym", "lit") and token[1] == slot for code in defaults for token in code), defaults
     for path, script, slot in (
         ("init/Kconfig", "gcc-goto.sh", "__KCONFIG_CC_ASM_GOTO_SCRIPT"),
         ("arch/x86/Kconfig", "gcc-x86_64-has-stack-protector.sh", "__KCONFIG_CC_X86_STACK_PROTECTOR_SCRIPT"),

@@ -279,10 +279,10 @@
     "input": "__KCONFIG_CC_ENTRY_PADDING",
     "probe": "cc-option",
     "argument": "-fpatchable-function-entry=16,16",
+    "arguments": ["-fpatchable-function-entry=16", "16"],
     "cpus": ["x86_64"],
     "compilers": ["clang", "llvm"],
-    "description": "cc-option(-fpatchable-function-entry=16,16)",
-    "argument_aliases": [" -fpatchable-function-entry=16,16"]
+    "description": "Native cc-option(-fpatchable-function-entry=16,16) expansion"
   },
   {
     "input": "__KCONFIG_CC_KCFI_ARITY",
