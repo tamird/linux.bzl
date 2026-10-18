@@ -125,6 +125,7 @@ _deferred_condition = rule(implementation = _deferred_condition_impl, attrs = {"
 def _native_shell_impl(ctx):
     execution = execution_tools(ctx)
     payload = ctx.actions.declare_file(ctx.label.name + ".input")
+    staged = ctx.actions.declare_file(ctx.label.name + ".payload")
     trailer = ctx.actions.declare_file(ctx.label.name + ".size")
     report = ctx.actions.declare_file(ctx.label.name + ".checked")
     marker = ctx.actions.declare_file(ctx.label.name + ".marker")
@@ -132,7 +133,7 @@ def _native_shell_impl(ctx):
     ctx.actions.write(payload, "x" * 257)
     setup = struct(tools = {"CONFIG_SHELL": execution.shell.path})
     variables = {name: {"value": text} for name, text in {
-        "real-prereqs": payload.path,
+        "real-prereqs": staged.path,
         "@": trailer.path,
         "CONFIG_SHELL": execution.shell.path,
         "srctree": ctx.file._size_script.path.removesuffix("/scripts/file-size.sh"),
@@ -160,9 +161,11 @@ def _native_shell_impl(ctx):
     run_recipe(
         ctx,
         execution,
-        command = invocation + "\n" + " ".join([shell_quote(word) for word in [execution.python.path, "-c", check, trailer.path, report.path, quoted.path]]),
+        # Native codegen stages regular files; file-size.sh measures a sandbox
+        # input symlink itself when the declared input is passed directly.
+        command = "cp -L " + shell_quote(payload.path) + " " + shell_quote(staged.path) + "\n" + invocation + "\n" + " ".join([shell_quote(word) for word in [execution.python.path, "-c", check, trailer.path, report.path, quoted.path]]),
         inputs = [payload, ctx.file._size_script] + files,
-        outputs = [trailer, report, marker, quoted],
+        outputs = [staged, trailer, report, marker, quoted],
         mnemonic = "NativeShellCheck",
     )
     executable = ctx.actions.declare_file(ctx.label.name + ".sh")
