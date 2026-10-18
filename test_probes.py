@@ -66,7 +66,7 @@ class ProbeTest(unittest.TestCase):
             )
             key = json.dumps(request)
             output = root / 'answers'
-            probes(dict(previous=str(previous), requests={key: request}), output)
+            probes(dict(previous=str(previous), requests={key: request}), output, consumer_final=False)
             self.assertTrue(json.loads((output / 'report.json').read_text())['capabilities'][key])
 
     def test_host_shell_preserves_output_despite_failed_status(self):
@@ -86,7 +86,7 @@ class ProbeTest(unittest.TestCase):
             request['command'] = "printf 'first\\nsecond\\n\\n'; printf 'warning\\n' >&2; exit 1"
             key = json.dumps(request)
             output = root / 'answers'
-            probes(dict(previous=str(previous), requests={key: request}), output)
+            probes(dict(previous=str(previous), requests={key: request}), output, consumer_final=False)
             report = dict(capabilities={key: 'first second'}, history=[[dict(
                 key=key, argv=[SHELL, '-c', request['command']], status=1,
                 stdout='first\nsecond\n\n', stderr='warning\n',
@@ -95,10 +95,24 @@ class ProbeTest(unittest.TestCase):
             self.assertEqual((output / 'report.json').read_text(), json.dumps(report, indent=2))
 
             converged = root / 'converged'
-            probes(dict(previous=str(output), requests={}), converged)
+            probes(dict(previous=str(output), requests={}), converged, consumer_final=False)
             report['converged'] = True
-            self.assertEqual(planner_answers(converged), dict(capabilities=report['capabilities'], converged=True))
+            self.assertEqual(planner_answers(converged), dict(converged=True))
             self.assertEqual((converged / 'report.json').read_text(), json.dumps(report, indent=2))
+
+            # The last handoff recovers capabilities from the full report,
+            # even though its predecessor's filenames no longer carry them.
+            final = root / 'final'
+            probes(dict(previous=str(converged), requests={}), final, consumer_final=True)
+            self.assertEqual(planner_answers(final), dict(capabilities=report['capabilities'], converged=True))
+            self.assertEqual((final / 'report.json').read_text(), json.dumps(report, indent=2))
+
+            # A real probe at the final boundary must not claim convergence.
+            pending = root / 'pending'
+            probes(dict(previous=str(previous), requests={key: request}), pending, consumer_final=True)
+            self.assertEqual(planner_answers(pending), dict(capabilities=report['capabilities']))
+            del report['converged']
+            self.assertEqual((pending / 'report.json').read_text(), json.dumps(report, indent=2))
 
     def test_host_shell_rejects_infrastructure_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -109,7 +123,7 @@ class ProbeTest(unittest.TestCase):
             request = self.request(kind='host-shell')
             request['command'] = 'printf unsupported > "$KBUILD_PROBE_ERROR"; exit 0'
             with self.assertRaisesRegex(RuntimeError, 'infrastructure failed: unsupported'):
-                probes(dict(previous=str(previous), requests={json.dumps(request): request}), root / 'answers')
+                probes(dict(previous=str(previous), requests={json.dumps(request): request}), root / 'answers', consumer_final=False)
 
     def test_host_shell_resolves_native_output_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -130,7 +144,7 @@ class ProbeTest(unittest.TestCase):
                 request['command'] = f'cd {cwd}; cd "$O"; pwd'
                 key = json.dumps(request)
                 output = root / f'answers{index}'
-                probes(dict(previous=str(previous), requests={key: request}), output)
+                probes(dict(previous=str(previous), requests={key: request}), output, consumer_final=False)
                 report = json.loads((output / 'report.json').read_text())
                 self.assertEqual(report['capabilities'][key], logical)
                 self.assertEqual(report['history'][0][0]['status'], 0)
@@ -142,7 +156,7 @@ class ProbeTest(unittest.TestCase):
             # publishing the probe's own temporary cwd as ABSOLUTE_O.
             request['environment']['O'] = 'bazel-out/config/bin/undeclared/libsubcmd'
             with self.assertRaisesRegex(ValueError, 'outside its declared output namespaces'):
-                probes(dict(previous=str(previous), requests={json.dumps(request): request}), root / 'invalid')
+                probes(dict(previous=str(previous), requests={json.dumps(request): request}), root / 'invalid', consumer_final=False)
 
     def test_output_directories_preserve_inputs_without_mutating_them(self):
         with tempfile.TemporaryDirectory() as temporary:

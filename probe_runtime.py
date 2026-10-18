@@ -10,9 +10,9 @@ import tempfile
 from payload import JsonValue, publish
 
 
-def publish_answers(output: Path | str, report: dict[str, JsonValue]) -> None:
+def publish_answers(output: Path | str, report: dict[str, JsonValue], *, include_capabilities: bool = True) -> None:
     """Send planner state through filenames and retain the complete probe audit."""
-    answers = {'capabilities': report['capabilities']}
+    answers = {'capabilities': report['capabilities']} if include_capabilities else {}
     if 'converged' in report:
         answers['converged'] = report['converged']
     publish(output, answers, report=report)
@@ -126,13 +126,13 @@ def logical_probe_output(stdout: str, directories: dict[Path, str], work: Path) 
     return ''.join(result)
 
 
-def probes(spec, output):
+def probes(spec, output, *, consumer_final: bool):
     from native_recipe import expand
 
     previous = json.loads((Path(spec['previous']) / 'report.json').read_text())
     if not spec['requests']:
         previous['converged'] = True
-        publish_answers(output, previous)
+        publish_answers(output, previous, include_capabilities=consumer_final)
         return
     answers, records = dict(previous['capabilities']), []
     execution_root = Path.cwd()
@@ -180,6 +180,6 @@ if __name__ == '__main__':
     if sys.argv[1] == 'seed':
         publish_answers(sys.argv[3], dict(capabilities={}, history=[]))
     elif sys.argv[1] == 'kbuild':
-        probes(inputs, sys.argv[3])
+        probes(inputs, sys.argv[3], consumer_final={'true': True, 'false': False}[sys.argv[4]])
     else:
         raise ValueError(f'Unsupported probe operation: {sys.argv[1]!r}')

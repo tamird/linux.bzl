@@ -198,7 +198,7 @@ def _impl(ctx):
             next_answers = ctx.actions.declare_directory(ctx.label.name + ".answers%d" % round)
             ctx.actions.run(
                 executable = execution.python,
-                arguments = ["-B", ctx.file._probe.path, "kbuild", output.path + "/requests.json", next_answers.path],
+                arguments = ["-B", ctx.file._probe.path, "kbuild", output.path + "/requests.json", next_answers.path, json.encode(round + 1 == ctx.attr.rounds)],
                 inputs = depset([output, answers, ctx.file._probe, ctx.file._payload, ctx.file._native_recipe, prepared], transitive = [base_tools["compiler_files"], execution_files]),
                 outputs = [next_answers],
                 tools = compiler.tools + host.tools + execution.build_tools,
