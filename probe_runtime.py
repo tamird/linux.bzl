@@ -102,10 +102,14 @@ def logical_probe_output(stdout: str, directories: dict[Path, str], work: Path) 
     roots = sorted(directories, key=lambda path: len(path.parts), reverse=True)
     for line in stdout.splitlines(keepends=True):
         text = line.removesuffix('\n')
+        # Native pwd may retain the __object__ symlink used to enter this
+        # workdir. Compare physical paths with the declared output roots.
+        path = Path(text)
+        resolved = str(path.resolve()) if path.is_relative_to(work) else text
         for actual in roots:
             prefix = str(actual)
-            if text == prefix or text.startswith(prefix + '/'):
-                line = directories[actual] + text[len(prefix):] + ('\n' if line.endswith('\n') else '')
+            if resolved == prefix or resolved.startswith(prefix + '/'):
+                line = directories[actual] + resolved[len(prefix):] + ('\n' if line.endswith('\n') else '')
                 break
         else:
             if str(work) in text:

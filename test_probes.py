@@ -14,7 +14,7 @@ tools, remaining = parser.parse_known_args()
 COMPILER, SHELL = str(tools.compiler.absolute()), str(tools.shell.absolute())
 sys.argv[1:] = remaining
 
-from probe_runtime import absolute_arguments, probe_command, probes, stage_output_directories
+from probe_runtime import absolute_arguments, logical_probe_output, probe_command, probes, stage_output_directories
 
 
 class ProbeTest(unittest.TestCase):
@@ -106,18 +106,21 @@ class ProbeTest(unittest.TestCase):
             request.update(
                 directories=['bazel-out/config/bin/kernel.generated', logical],
                 environment={'CONFIG_SHELL': SHELL, 'O': logical},
-                # The selected native Makefile computes ABSOLUTE_O this way.
-                # Keep the final pwd independent of cd's status: an absent
-                # parent directory must not turn into a successful wrong path.
-                command='cd "$PWD"; cd "$O"; pwd',
             )
-            key = json.dumps(request)
-            output = root / 'answers'
-            probes(dict(previous=str(previous), requests={key: request}), output)
-            report = json.loads((output / 'report.json').read_text())
-            self.assertEqual(report['capabilities'][key], logical)
-            self.assertEqual(report['history'][0][0]['status'], 0)
-            self.assertEqual(report['history'][0][0]['stderr'], '')
+            # Native Make's PWD expands to the logical __object__ alias.
+            # Accept both physical and logical pwd spellings, retaining raw
+            # stdout evidence. An absent cd target must still be rejected.
+            for index, cwd in enumerate(['"$PWD"', '__object__']):
+                request['command'] = f'cd {cwd}; cd "$O"; pwd'
+                key = json.dumps(request)
+                output = root / f'answers{index}'
+                probes(dict(previous=str(previous), requests={key: request}), output)
+                report = json.loads((output / 'report.json').read_text())
+                self.assertEqual(report['capabilities'][key], logical)
+                self.assertEqual(report['history'][0][0]['status'], 0)
+                self.assertEqual(report['history'][0][0]['stderr'], '')
+                spelling = '__object__/' if cwd == '__object__' else ''
+                self.assertEqual(report['history'][0][0]['stdout'], '__probe_tmp__/object/' + spelling + logical + '\n')
 
             # A typo outside the declared parent must fail, rather than
             # publishing the probe's own temporary cwd as ABSOLUTE_O.
@@ -143,6 +146,9 @@ class ProbeTest(unittest.TestCase):
             (work / logical / 'libsubcmd/probe').write_text('new output')
             self.assertEqual((original / 'unrelated').read_text(), 'original output')
             self.assertFalse((original / 'libsubcmd').exists(), 'The probe must not create outputs in the execution input tree')
+            (work / logical / 'escape').symlink_to(original, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'outside its declared output namespaces'):
+                logical_probe_output(str(work / logical / 'escape') + '\n', directories, work)
             with self.assertRaisesRegex(ValueError, 'not a declared output path'):
                 stage_output_directories(work, execution, ['bazel-out/../external/tool'])
 
