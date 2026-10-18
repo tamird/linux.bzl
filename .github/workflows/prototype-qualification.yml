@@ -15,11 +15,13 @@ permissions:
 
 jobs:
   examples:
-    if: inputs.experiment == 'all' || inputs.experiment == 'examples'
+    if: inputs.experiment == 'all' || inputs.experiment == 'examples' || inputs.experiment == 'generator'
     uses: ./.github/workflows/kernel-repository.yml
+    with:
+      verify_only: ${{ inputs.experiment == 'generator' }}
 
   generator:
-    if: inputs.experiment != 'examples'
+    if: inputs.experiment != 'examples' && inputs.experiment != 'generator'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -38,12 +40,12 @@ jobs:
       # Qualify a source-specific release asset for external consumers. The
       # maintained family below retains the default source/generator pair.
       - name: Qualify the Linux 6.18 consumer generator
-        if: inputs.experiment == 'compiler-family' || inputs.experiment == 'generator'
+        if: inputs.experiment == 'compiler-family'
         run: |
           bazel test //native/linux_6_18:repository_test --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4 --test_output=errors
           bazel build //native/linux_6_18:consumer_support --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4
       - name: Verify declared Linux 6.18 toolchain capabilities
-        if: inputs.experiment == 'compiler-family' || inputs.experiment == 'generator'
+        if: inputs.experiment == 'compiler-family'
         run: |
           mkdir -p _tmp/capability-generator _tmp/capability-reports
           tar -xzf bazel-bin/native/linux_6_18/consumer-support.tar.gz -C _tmp/capability-generator
@@ -64,7 +66,7 @@ jobs:
           done
           exit "$verification_status"
       - uses: actions/upload-artifact@v7
-        if: inputs.experiment == 'compiler-family' || inputs.experiment == 'generator'
+        if: inputs.experiment == 'compiler-family'
         with:
           name: qualification-generator-linux_6_18
           path: bazel-bin/native/linux_6_18/consumer-support.tar.gz
