@@ -89,7 +89,7 @@ jobs:
     name: ${{ matrix.experiment }}
     runs-on: ubuntu-24.04
     needs: generator
-    timeout-minutes: 150
+    timeout-minutes: ${{ matrix.experiment == 'compiler-family' && 360 || 150 }}
     strategy:
       fail-fast: false
       matrix:
@@ -199,6 +199,8 @@ jobs:
       - name: Qualify native compiler IR and configuration reuse
         if: matrix.experiment == 'compiler-ir' || matrix.experiment == 'compiler-family'
         working-directory: examples
+        # Reserve job time for evidence upload and cache saving.
+        timeout-minutes: ${{ matrix.experiment == 'compiler-family' && 330 || 150 }}
         run: |
           set -euo pipefail
           results="$RUNNER_TEMP/linux-prototype-qualification"
@@ -247,7 +249,8 @@ jobs:
               esac
             fi
             bazel build "$target" "${build_flags[@]}" --jobs=4 \
-              "${mapping[@]}" --execution_log_compact_file="$results/$phase.execution.pb.zst"
+              "${mapping[@]}" --execution_log_compact_file="$results/$phase.execution.pb.zst" \
+              --profile="$results/$phase.profile.gz"
             "$results/bb" print --compact_execution_log="$results/$phase.execution.pb.zst" --raw=true --sort=false |
               jq -c '
                 if has("invocation") then {invocation: .invocation.id, hashFunctionName: .invocation.hashFunctionName}
@@ -286,6 +289,7 @@ jobs:
             ${{ runner.temp }}/linux-prototype-qualification/*.jsonl
             ${{ runner.temp }}/linux-prototype-qualification/*.manifest-path
             ${{ runner.temp }}/linux-prototype-qualification/*.pb.zst
+            ${{ runner.temp }}/linux-prototype-qualification/*.profile.gz
             ${{ runner.temp }}/linux-prototype-qualification/storage-*.log
             ${{ runner.temp }}/linux-prototype-qualification/diagnostics/**
             ${{ runner.temp }}/linux-prototype-qualification/mismatches/**
