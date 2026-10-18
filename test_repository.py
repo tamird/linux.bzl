@@ -116,6 +116,12 @@ def main() -> None:
         assert program['image_modules_order'], 'Native selected-module list writer is missing'
         assert any(node.get('name') == 'cmd_ld_ko_o' for node in nodes(program['image_modfinal'])), 'Native module link command is missing'
         assert program['image_host_objtool_final'] and program['image_host_subcmd_final'], 'Native host final link/archive recipes are missing'
+        resolver_makefile = (linux / 'tools/bpf/resolve_btfids/Makefile').read_text()
+        resolver_call = program['image_host_btfids_subcmd_call']
+        assert resolver_call, 'Native resolver subcmd invocation is missing'
+        native_call = re.search(r'^\$\(SUBCMDOBJ\):[^\n]*\n((?:\t[^\n]*\n)+)', resolver_makefile, re.MULTILINE)
+        assert native_call is not None, 'Native resolver subcmd rule is missing'
+        assert ('install_headers' in json.dumps(resolver_call)) == ('install_headers' in native_call[1]), resolver_call
         assert {'cmd_ld_multi', 'cmd_host_ld_multi'} <= {node.get('name') for node in nodes(program['image_host_link_commands'])}, 'Native target/host aggregate commands are missing'
         if '$(LIBSUBCMD_OUTPUT):' in (linux / 'tools/objtool/Makefile').read_text():
             prerequisites = list(nodes(program['image_host_subcmd_directories']))

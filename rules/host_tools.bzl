@@ -49,8 +49,62 @@ def resolve_subcmd_archive(variables, index, expected):
     if index["__requests__"]:
         return None
     if _normal(archive) != _normal(expected):
-        fail("Native subcmd archive differs from its objtool caller: " + archive + " != " + expected)
+        fail("Native subcmd archive differs from its caller: " + archive + " != " + expected)
     return archive
+
+def _subcmd_invocation(variables, index, expression, source, library, allow_default = False):
+    invocation = dict(variables)
+    for name, text in {"MAKE": "__subcmd__", "Q": "", "@": library}.items():
+        invocation[name] = {"value": text}
+    words = shell_words(evaluate(expression, invocation, index).lstrip("@+"))
+    if len(words) < 3 or words[:2] != ["__subcmd__", "-C"] or words[2].rstrip("/") != source + "/tools/lib/subcmd":
+        fail("Unsupported native subcmd invocation: " + str(words))
+    child = _recursive_variables(variables, index)
+    child["__command_line__"] = dict(child.get("__command_line__", {}))
+    goals = []
+    for word in words[3:]:
+        if "=" in word:
+            name, text = word.split("=", 1)
+            child[name] = {"value": text, "command_line": True}
+            child["__command_line__"][name] = text
+        elif word == "install_headers" or _normal(word) == _normal(library):
+            goals.append(word)
+        else:
+            fail("Unsupported native subcmd goal: " + word)
+    if not (allow_default and not goals) and not any([_normal(goal) == _normal(library) for goal in goals]):
+        fail("Native subcmd invocation does not build its declared archive: " + str(words))
+    return struct(variables = child, goals = goals)
+
+def _install_subcmd_headers(ctx, prepared, setup, variables, index, goals, directory, include = None):
+    # Individual native installed headers retain their own producer edges,
+    # including when compiler dependency discovery runs before compilation.
+    if "install_headers" not in goals:
+        return []
+    execution = execution_tools(ctx)
+    headers = program(setup.program["image_host_subcmd_headers"], variables, index, cells = True).variables
+    install_prefix = _normal(value("INSTALL_HDRS_PFX", headers, index)) + "/"
+    targets = make_words(value("INSTALL_HDRS", headers, index))
+    if not targets:
+        fail("Native subcmd install_headers has no exported header inventory")
+    prefix = ctx.output_prefix + "/" + directory + "/"
+    installed = []
+    for target in targets:
+        target = _normal(target)
+        if not target.startswith(prefix) or not target.startswith(install_prefix):
+            fail("Native subcmd header install escapes the declared output: " + target)
+        if include != None and not target.startswith(_normal(include) + "/"):
+            fail("Native subcmd header differs from its caller's include path: " + target + " != " + include)
+        source_header = "tools/lib/subcmd/" + target.removeprefix(install_prefix)
+        header = ctx.actions.declare_file(directory + "/" + target.removeprefix(prefix))
+        ctx.actions.run(
+            executable = execution.commands["cp"],
+            arguments = [prepared.logical[source_header].path, header.path],
+            inputs = [prepared.logical[source_header]],
+            outputs = [header],
+            env = execution.host_compile_env,
+        )
+        installed.append(header)
+    return installed
 
 def build_objtool(ctx, prepared, setup, capabilities, requests, package_command):
     architecture = setup.architecture
@@ -148,25 +202,11 @@ def build_objtool(ctx, prepared, setup, capabilities, requests, package_command)
         if tail and tail[0].startswith("../"):
             for target in rule["targets"]:
                 aliases[_normal("tools/objtool/" + target.removeprefix(prefix))] = _normal("tools/objtool/" + tail[0])
-    invocation = dict(variables)
     library = value("LIBSUBCMD", variables, index)
-    for name, text in {"MAKE": "__subcmd__", "Q": "", "@": library}.items():
-        invocation[name] = {"value": text}
-    words = shell_words(evaluate(flag_program["image_host_subcmd_call"], invocation, index).lstrip("@+"))
-    if len(words) < 3 or words[:2] != ["__subcmd__", "-C"] or words[2].rstrip("/") != source + "/tools/lib/subcmd":
-        fail("Unsupported native objtool subcmd invocation: " + str(words))
-    library_variables = _recursive_variables(variables, index)
-    library_variables["__command_line__"] = dict(library_variables.get("__command_line__", {}))
-    goals = []
-    for word in words[3:]:
-        if "=" in word:
-            name, text = word.split("=", 1)
-            library_variables[name] = {"value": text, "command_line": True}
-            library_variables["__command_line__"][name] = text
-        elif word in (library, "install_headers"):
-            goals.append(word)
-        else:
-            fail("Unsupported native subcmd goal: " + word)
+
+    # Older objtool callers select subcmd's native default all target.
+    invocation = _subcmd_invocation(variables, index, flag_program["image_host_subcmd_call"], source, library, allow_default = True)
+    library_variables = invocation.variables
     directory_rules = program(flag_program["image_host_subcmd_directories"], variables, index, cells = True)
     directories = []
     for rule in directory_rules.rules:
@@ -185,29 +225,7 @@ def build_objtool(ctx, prepared, setup, capabilities, requests, package_command)
     if resolve_subcmd_archive(subcmd, index, library) == None:
         return struct(executable = None, architecture = architecture)
 
-    # Declare public header installation only when the native caller requests
-    # it. Individual files let compiler dependency discovery prune headers
-    # without depending on an entire generated directory.
-    installed_headers = []
-    if "install_headers" in goals:
-        headers = program(flag_program["image_host_subcmd_headers"], library_variables, index, cells = True).variables
-        install_prefix = value("INSTALL_HDRS_PFX", headers, index) + "/"
-        targets = make_words(value("INSTALL_HDRS", headers, index))
-        if not targets:
-            fail("Native subcmd install_headers has no exported header inventory")
-        for target in targets:
-            if not target.startswith(prefix) or not target.startswith(install_prefix):
-                fail("Native subcmd header install escapes the declared objtool output: " + target)
-            source_header = "tools/lib/subcmd/" + target.removeprefix(install_prefix)
-            header = ctx.actions.declare_file(ctx.label.name + ".generated/" + target.removeprefix(prefix))
-            ctx.actions.run(
-                executable = execution.commands["cp"],
-                arguments = [prepared.logical[source_header].path, header.path],
-                inputs = [prepared.logical[source_header]],
-                outputs = [header],
-                env = execution.host_compile_env,
-            )
-            installed_headers.append(header)
+    installed_headers = _install_subcmd_headers(ctx, prepared, setup, library_variables, index, invocation.goals, ctx.label.name + ".generated")
     objects.update({"tools/lib/subcmd/" + path: ("libsubcmd", subcmd) for path in make_words(value("libsubcmd-y", subcmd, index))})
     outputs = {"objtool": [], "libsubcmd": []}
     for obj, (owner, scope) in objects.items():
@@ -287,18 +305,14 @@ def build_resolve_btfids(ctx, prepared, setup, capabilities, requests, package_c
     mode = value("host", variables, index)
     if mode not in ("", "host_"):
         fail("Unsupported native resolver compiler mode: " + mode)
-    library_variables = _recursive_variables(variables, index)
-    library_variables["__command_line__"] = dict(library_variables.get("__command_line__", {}))
-    for assignment in shell_words(value("HOST_OVERRIDES", variables, index)):
-        name, separator, text = assignment.partition("=")
-        if not separator:
-            fail("Native resolver library override is not an assignment: " + assignment)
-        library_variables[name] = {"value": text, "command_line": True}
-        library_variables["__command_line__"][name] = text
-    library_variables.update(OUTPUT = {"value": prefix + "libsubcmd/"}, CURDIR = {"value": source + "/tools/lib/subcmd"})
+    library = value("SUBCMDOBJ", variables, index)
+    invocation = _subcmd_invocation(variables, index, setup.program["image_host_btfids_subcmd_call"], source, library)
+    library_variables = invocation.variables
+    library_variables["CURDIR"] = {"value": source + "/tools/lib/subcmd"}
     subcmd = program(setup.program["image_host_subcmd"], library_variables, index, cells = True).variables
-    if requests:
+    if resolve_subcmd_archive(subcmd, index, library) == None:
         return None
+    installed_headers = _install_subcmd_headers(ctx, prepared, setup, library_variables, index, invocation.goals, "resolve_btfids", include = value("SUBCMD_INCLUDE", variables, index))
     objects = [(directory + "/" + obj, "resolve_btfids", variables, mode + "c_flags") for obj in make_words(value("resolve_btfids-y", variables, index))]
     objects.extend([("tools/lib/subcmd/" + obj, "libsubcmd", subcmd, "c_flags") for obj in make_words(value("libsubcmd-y", subcmd, index))])
     outputs = {"resolve_btfids": [], "libsubcmd": []}
@@ -323,7 +337,7 @@ def build_resolve_btfids(ctx, prepared, setup, capabilities, requests, package_c
         flags = [flag for flag in shell_words(value(flag_name, local, index)) if not flag.startswith(("-Wp,-MD,", "-Wp,-MMD,", "-Wp,-MT,"))]
         output = ctx.actions.declare_file("resolve_btfids/objects/" + obj)
         arguments = setup.host_compile_flags + libraries.cflags + flags + ["-c", prepared.logical[src].path, "-o", output.path]
-        ctx.actions.run(executable = execution.host_cc, arguments = arguments, inputs = depset([prepared.logical[src]], transitive = [prepared.files, libbpf.files, libraries.files]), outputs = [output], env = execution.host_compile_env, mnemonic = "ResolveBtfidsCC", progress_message = "Compile resolver host object " + obj)
+        ctx.actions.run(executable = execution.host_cc, arguments = arguments, inputs = depset([prepared.logical[src]] + installed_headers, transitive = [prepared.files, libbpf.files, libraries.files]), outputs = [output], env = execution.host_compile_env, mnemonic = "ResolveBtfidsCC", progress_message = "Compile resolver host object " + obj)
         outputs[owner].append(output)
     aggregates = {}
     for owner, scope in [("resolve_btfids", variables), ("libsubcmd", subcmd)]:

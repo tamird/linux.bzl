@@ -563,7 +563,15 @@ def extract(tree, linux, make):
         raise ValueError('Native host-tool aggregate link/archive recipes are missing')
     data['image_host_link_commands'] = backend.slice_program(bodies['tools/build/Makefile.build'], {'cmd_ld_multi', 'cmd_host_ld_multi'})
     data['image_host_subcmd_headers'] = backend.slice_program(subcmd, {'INSTALL_HDRS'})
-    data['image_host_btfids'] = host_fallback(backend.slice_program(bodies['tools/bpf/resolve_btfids/Makefile'], {'CFLAGS', 'HOSTCFLAGS_resolve_btfids', 'HOST_OVERRIDES', 'LDFLAGS', 'KBUILD_HOSTLDFLAGS', 'EXTRA_LDFLAGS'}))
+    btfids = bodies['tools/bpf/resolve_btfids/Makefile']
+    subcmd_calls = [node['value_expression'] for node, _ in walk(target_rules(btfids, {'$(SUBCMDOBJ)'}))
+                    if node['kind'] == 'recipe']
+    match subcmd_calls:
+        case [call]:
+            data['image_host_btfids_subcmd_call'] = call
+        case _:
+            raise ValueError(f'Expected one native resolver subcmd invocation, got {subcmd_calls}')
+    data['image_host_btfids'] = host_fallback(backend.slice_program(btfids, {'CFLAGS', 'HOSTCFLAGS_resolve_btfids', 'HOST_OVERRIDES', 'LDFLAGS', 'KBUILD_HOSTLDFLAGS', 'EXTRA_LDFLAGS', 'SUBCMDOBJ'} | backend.refs(call)))
     data['image_host_btfids_final'] = [node['value_expression'] for node, _ in walk(target_rules(bodies['tools/bpf/resolve_btfids/Makefile'], {'$(BINARY)'})) if node['kind'] == 'recipe']
     if not data['image_host_btfids_final']:
         raise ValueError('Native resolver final link recipe is missing')

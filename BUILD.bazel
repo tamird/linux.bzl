@@ -93,6 +93,7 @@ kernel_build(
     for name, source in [
         ("native_btf_tools", "//native:source"),
         ("native_btf_tools_5_10", "//native:source_5_10"),
+        ("native_btf_tools_6_18", "//native:source_6_18"),
     ]
 ]
 
@@ -108,6 +109,7 @@ kernel_build(
     for name, syntax in [
         ("native_btf_tools", "@kernel_syntax//:program"),
         ("native_btf_tools_5_10", "@kernel_syntax_5_10//:program"),
+        ("native_btf_tools_6_18", "@kernel_syntax_6_18//:program"),
     ]
 ]
 

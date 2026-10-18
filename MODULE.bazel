@@ -218,3 +218,10 @@ kernel_syntax_repository(
     source = "@linux_5_10//:Makefile",
     tool = "@kbuild_exporter//:kbuild-exporter",
 )
+
+kernel_syntax_repository(
+    name = "kernel_syntax_6_18",
+    dev_dependency = True,
+    source = "@linux_6_18//:Makefile",
+    tool = "@kbuild_exporter//:kbuild-exporter",
+)

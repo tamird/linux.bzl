@@ -149,7 +149,7 @@ jobs:
         if: ${{ inputs.scope == 'native-tools' }}
         timeout-minutes: 50
         run: |
-          bazel build //tests:scheduler //:native_btf_tools //:native_btf_tools_5_10 //execution_tools:check \
+          bazel build //tests:scheduler //:native_btf_tools //:native_btf_tools_5_10 //:native_btf_tools_6_18 //execution_tools:check \
             --override_repository=kbuild_exporter="$KBUILD_EXPORTER" \
             --platforms=@llvm//platforms:linux_x86_64 \
             --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
@@ -160,7 +160,7 @@ jobs:
       - name: Capture executed scheduler and BTF tool action graphs
         if: ${{ inputs.scope == 'native-tools' }}
         run: |
-          bazel aquery 'deps(set(//tests:scheduler //:native_btf_tools //:native_btf_tools_5_10 //execution_tools:check))' \
+          bazel aquery 'deps(set(//tests:scheduler //:native_btf_tools //:native_btf_tools_5_10 //:native_btf_tools_6_18 //execution_tools:check))' \
             --override_repository=kbuild_exporter="$KBUILD_EXPORTER" \
             --platforms=@llvm//platforms:linux_x86_64 \
             --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
@@ -272,6 +272,8 @@ jobs:
             bazel-out/**/bin/native_btf_tools.tree/**
             bazel-out/**/bin/native_btf_tools_5_10.manifest.json
             bazel-out/**/bin/native_btf_tools_5_10.tree/**
+            bazel-out/**/bin/native_btf_tools_6_18.manifest.json
+            bazel-out/**/bin/native_btf_tools_6_18.tree/**
             bazel-out/**/bin/native_compiler_checks.manifest.json
             bazel-out/**/bin/native_compiler_checks.tree/**
             bazel-out/**/bin/native_compiler_checks_5_10.manifest.json
