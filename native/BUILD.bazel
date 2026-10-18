@@ -5,6 +5,8 @@ load("@rules_python//python:defs.bzl", "py_test")
 load("//rules:compiler.bzl", "kernel_compiler")
 load("//rules:config.bzl", "kernel_config")
 load("//rules:source.bzl", "kernel_source")
+load(":bootstrap.bzl", "make_parser", "python_input", "syntax_exporter", "syntax_exporter_archive")
+load(":make_ast.bzl", "make_ast")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -13,14 +15,21 @@ exports_files(glob([
     "*.py",
     "*.patch",
     "*.bazel",
+    "*.inc",
 ]))
 
-filegroup(
-    name = "generator_sources",
-    srcs = glob(
-        ["*"],
-        exclude = ["BUILD.bazel"],
-    ),
+make_ast(
+    name = "make_ast",
+    glob_inputs = select({
+        ":linux_x86_64_musl": ["@make//:gnu_glob_inputs"],
+        "//conditions:default": [],
+    }),
+    tags = ["manual"],
+    exports = [
+        "ast_export.inc",
+        "expr_export.inc",
+        "setup_export.inc",
+    ],
 )
 
 subdirectory(
@@ -64,6 +73,7 @@ kernel_compiler(
         fragments = ["//examples/configs:x86_64.config"] + (["//examples/configs:lz4.config"] if lz4 else []),
         pahole = "@pahole//:pahole",
         source = source,
+        tags = ["manual"],
     )
     for name, source, lz4 in [
         ("config", ":source", False),
@@ -86,6 +96,7 @@ kernel_config(
     pahole = "@pahole//:pahole",
     probes = ":custom_probes",
     source = ":source",
+    tags = ["manual"],
 )
 
 kernel_config(
@@ -93,6 +104,7 @@ kernel_config(
     pahole = "@pahole//:pahole",
     requested = {"EMBEDDED": "n"},
     source = ":source_5_10",
+    tags = ["manual"],
 )
 
 [
@@ -105,6 +117,7 @@ kernel_config(
         # This source gates choice members on the parent prompt. Newer native
         # Kconfig permits an explicitly selected member under a hidden prompt.
         source = ":source_5_10",
+        tags = ["manual"],
     )
     for name, mode, requested in [
         (
@@ -130,6 +143,7 @@ kernel_config(
         ] + extra,
         data = [":" + name],
         main = "//:test_config_values.py",
+        tags = ["manual"],
     )
     for name, expected, extra in [
         (
@@ -202,6 +216,7 @@ kernel_config(
 
 test_suite(
     name = "config_tests",
+    tags = ["manual"],
     tests = [":" + name + "_test" for name in [
         "config",
         "lz4_config",
@@ -211,4 +226,62 @@ test_suite(
         "hidden_choice_config",
         "visible_choice_config",
     ]],
+)
+
+config_setting(
+    name = "linux_x86_64_musl",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+        "@llvm//constraints/libc:musl",
+    ],
+)
+
+config_setting(
+    name = "macos_aarch64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:aarch64",
+    ],
+)
+
+make_parser(
+    name = "make_parser",
+    tags = ["manual"],
+)
+
+syntax_exporter(
+    name = "exporter",
+    license_files = ["@make_ast_sources//:COPYING"] + select({
+        ":linux_x86_64_musl": ["@bootstrap_python//:licenses"],
+        ":macos_aarch64": ["@bootstrap_python_macos//:licenses"],
+    }),
+    make = ":make_parser",
+    python = python_input("runtime"),
+    python_metadata = python_input("PYTHON.json"),
+    renderer = ["//:kbuild_exporter_sources"],
+    stdlib = python_input("stdlib"),
+    tags = ["manual"],
+)
+
+syntax_exporter_archive(
+    name = "exporter_archive",
+    exporter = ":exporter",
+    tags = ["manual"],
+)
+
+# The static-musl artifact executes on the ordinary Linux x86-64 CI host.
+toolchain(
+    name = "static_musl_tests",
+    exec_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+        "@llvm//constraints/libc:musl",
+    ],
+    toolchain = "@bazel_tools//tools/test:empty_toolchain",
+    toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
 )

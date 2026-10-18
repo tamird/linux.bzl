@@ -8,7 +8,7 @@ import sys
 import tempfile
 
 from probe_runtime import absolute_arguments, absolute_environment
-from spec import mapping, string_list, strings, text_field
+from native.spec import mapping, string_list, strings, text_field
 
 
 def build(spec: dict[str, object], output: Path) -> None:

@@ -17,6 +17,13 @@ bazel_dep(name = "rules_bison", version = "0.4.bcr.1")
 bazel_dep(name = "rules_flex", version = "0.4.1")
 bazel_dep(name = "rules_m4", version = "0.3.bcr.1")
 bazel_dep(name = "sed", version = "4.10.bcr.2")
+bazel_dep(name = "elfutils", version = "0.195")
+bazel_dep(name = "ape", version = "1.1.0")
+bazel_dep(name = "lz4", version = "1.10.0.bcr.2")
+bazel_dep(name = "rules_perl", version = "1.2.0")
+bazel_dep(name = "rules_gzip", version = "1.0.0")
+bazel_dep(name = "rules_bzip2", version = "1.0.0")
+bazel_dep(name = "rules_xz", version = "1.0.1")
 
 bazel_dep(name = "pahole", version = "1.31", dev_dependency = True)
 
@@ -27,6 +34,19 @@ git_override(
 )
 
 bazel_dep(name = "buildifier_prebuilt", version = "8.2.1.1", dev_dependency = True)
+
+single_version_override(
+    module_name = "make",
+    patch_strip = 1,
+    patches = ["//native:make_inputs.patch"],
+)
+
+make_ast_sources = use_repo_rule("//native:make_ast.bzl", "make_ast_sources")
+
+make_ast_sources(
+    name = "make_ast_sources",
+    dev_dependency = True,
+)
 
 single_version_override(
     module_name = "rules_bison",
@@ -53,9 +73,17 @@ http_file(
     urls = ["https://github.com/robxu9/bash-static/releases/download/5.2.015-1.2.3-2/bash-linux-x86_64"],
 )
 
+http_file(
+    name = "kernel_exec_busybox_linux_x86_64",
+    executable = True,
+    sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348",
+    urls = ["https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"],
+)
+
 register_toolchains(
     "@llvm//toolchain:all",
     "//execution_tools:linux_x86_64",
+    "//native:static_musl_tests",
     dev_dependency = True,
 )
 
@@ -81,4 +109,35 @@ http_archive(
     integrity = "sha256-3nPVKLBL6R9uuGZgqmek1TuWu/ILtaMm54+ALXRN6+c=",
     strip_prefix = "linux-5.10.270",
     urls = ["https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.10.270.tar.xz"],
+)
+
+# One generic host tool, bootstrapped from canonical Bazel outputs during development.
+python_runtime = use_repo_rule("//native:repositories.bzl", "python_runtime_repository")
+
+python_runtime(
+    name = "bootstrap_python",
+    dev_dependency = True,
+    platform = "linux_x86_64_musl",
+)
+
+python_runtime(
+    name = "bootstrap_python_macos",
+    dev_dependency = True,
+    platform = "macos_aarch64",
+)
+
+kernel_syntax_tool = use_repo_rule("//:repository.bzl", "kernel_syntax_tool")
+
+kernel_syntax_tool(
+    name = "kbuild_exporter",
+    dev_dependency = True,
+)
+
+kernel_syntax_repository = use_repo_rule("//:repository.bzl", "kernel_syntax_repository")
+
+kernel_syntax_repository(
+    name = "kernel_syntax",
+    dev_dependency = True,
+    source = "@linux_source//:Makefile",
+    tool = "@kbuild_exporter//:kbuild-exporter",
 )

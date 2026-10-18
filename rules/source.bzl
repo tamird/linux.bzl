@@ -1,11 +1,11 @@
-"""Source-local native tools and optional symbolic Kbuild inputs."""
+"""Raw source inputs and source-selected native configuration tools."""
 
 load("//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE")
 load(":compiler.bzl", "KernelCompilerInfo")
 
 KernelSourceInfo = provider(
     "Raw source files and the native conf built from those same sources.",
-    fields = ["files", "anchor", "conf", "kbuild"],
+    fields = ["files", "anchor", "conf"],
 )
 
 def _native_conf_impl(ctx):
@@ -21,10 +21,10 @@ def _native_conf_impl(ctx):
     ]
     ctx.actions.write(spec, json.encode(dict(
         source = ctx.file.anchor.dirname,
-        tools = {name: file.path for name, file in execution.commands.items()},
+        tools = {name: file.path for name, file in execution.bootstrap_commands.items()},
         bin = execution.bin_dir,
-        environment = execution.environment,
-        path_environment = execution.path_environment,
+        environment = execution.bootstrap_environment,
+        path_environment = execution.bootstrap_path_environment,
         compiler = compiler.context.spec,
         main = ctx.file._main.path,
         process = ctx.file._process.path,
@@ -32,8 +32,8 @@ def _native_conf_impl(ctx):
     ctx.actions.run(
         executable = execution.python,
         arguments = ["-B", ctx.file._builder.path, spec.path, output.path],
-        inputs = depset(sources + [spec, ctx.file._builder, ctx.file._runtime, ctx.file._spec_types, ctx.file._main, ctx.file._process], transitive = [compiler.files, execution.files]),
-        tools = compiler.tools + execution.tools,
+        inputs = depset(sources + [spec, ctx.file._builder, ctx.file._runtime, ctx.file._spec_types, ctx.file._main, ctx.file._process], transitive = [compiler.files, execution.bootstrap_files]),
+        tools = compiler.tools + execution.bootstrap_tools,
         outputs = [output],
         env = {"PYTHONPATH": ctx.file._runtime.dirname, "PYTHONDONTWRITEBYTECODE": "1"},
         mnemonic = "NativeKconfigBootstrap",
@@ -61,7 +61,6 @@ def _source_impl(ctx):
         files = ctx.attr.sources[DefaultInfo].files,
         anchor = ctx.file.anchor,
         conf = ctx.attr.conf[DefaultInfo].files_to_run,
-        kbuild = ctx.file.kbuild,
     ), DefaultInfo(files = ctx.attr.sources[DefaultInfo].files)]
 
 _kernel_source = rule(
@@ -70,11 +69,10 @@ _kernel_source = rule(
         "sources": attr.label(mandatory = True),
         "anchor": attr.label(allow_single_file = True, mandatory = True),
         "conf": attr.label(executable = True, cfg = "exec", mandatory = True),
-        "kbuild": attr.label(allow_single_file = True),
     },
 )
 
-def kernel_source(name, sources, anchor, kbuild = None, **kwargs):
+def kernel_source(name, sources, anchor, **kwargs):
     """Bind one source tree and its native tools without a global repository name."""
     _native_conf(name = name + "_conf", sources = sources, anchor = anchor, tags = ["manual"])
-    _kernel_source(name = name, sources = sources, anchor = anchor, conf = ":" + name + "_conf", kbuild = kbuild, **kwargs)
+    _kernel_source(name = name, sources = sources, anchor = anchor, conf = ":" + name + "_conf", **kwargs)

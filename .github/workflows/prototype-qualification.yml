@@ -1,7 +1,16 @@
-name: Native configuration prerequisite
+name: Measured kernel qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      native_config_only:
+        description: Run only the focused native configuration prerequisite
+        type: boolean
+        default: true
+      syntax_only:
+        description: Run only the generic syntax exporter build and runtime audit
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,4 +23,5 @@ jobs:
   native-config:
     uses: ./.github/workflows/kernel.yml
     with:
-      native_config_only: true
+      native_config_only: ${{ inputs.native_config_only }}
+      syntax_only: ${{ inputs.syntax_only }}

@@ -7,7 +7,7 @@ load(":source.bzl", "KernelSourceInfo")
 
 KernelConfigInfo = provider(
     "Execution-time native outputs, their source, and exact selected compiler.",
-    fields = ["directory", "source", "compiler", "architecture"],
+    fields = ["directory", "source", "compiler", "host_compiler", "architecture", "pahole"],
 )
 
 # Fixed map_directory callback signature.
@@ -28,9 +28,9 @@ def _impl(ctx):
     host = ctx.attr.host_compiler[KernelCompilerInfo]
     execution = ctx.toolchains[EXECUTION_TOOLS_TYPE].execution
     architecture = None
-    for cpu, arch in [("x86_64", "x86_64"), ("aarch64", "arm64")]:
+    for cpu, arch, srcarch in [("x86_64", "x86_64", "x86"), ("aarch64", "arm64", "arm64")]:
         if ctx.target_platform_has_constraint(getattr(ctx.attr, "_" + cpu)[platform_common.ConstraintValueInfo]):
-            architecture = {"ARCH": arch}
+            architecture = struct(cpu = cpu, arch = arch, srcarch = srcarch, header_arch = srcarch, subarch = srcarch, bits = 64)
     if architecture == None:
         fail("Native configuration currently supports x86-64 and ARM64 target platforms")
     prefix = source.anchor.dirname + "/"
@@ -46,7 +46,7 @@ def _impl(ctx):
         host_compiler = host.context.spec,
         roles = compiler.roles,
         host_roles = host.roles,
-        architecture = architecture,
+        architecture = {"ARCH": architecture.arch},
         llvm_ias = "1" if "-fintegrated-as" in compiler.assembler_flags else "0",
         pahole = ctx.executable.pahole.path,
         tools = {name: file.path for name, file in execution.commands.items()},
@@ -72,7 +72,7 @@ def _impl(ctx):
             input_directories = {"probes": probes.results},
             output_directories = {"defaults": defaults},
             tools = dict(python = execution.python, emit = ctx.file._emit),
-            additional_inputs = {"execution": execution.files},
+            additional_inputs = {"execution": execution.python_files},
             implementation = _with_probes,
             mnemonic = "NativeKconfigDefaults",
         )
@@ -88,7 +88,7 @@ def _impl(ctx):
         mnemonic = "NativeKconfig",
     )
     return [
-        KernelConfigInfo(directory = output, source = source, compiler = compiler, architecture = architecture),
+        KernelConfigInfo(directory = output, source = source, compiler = compiler, host_compiler = host, architecture = architecture, pahole = ctx.attr.pahole[DefaultInfo]),
         DefaultInfo(files = depset([output])),
     ]
 

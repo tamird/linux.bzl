@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 
-from spec import mapping, string_list, strings, text_field
+from native.spec import mapping, string_list, strings, text_field
 
 
 def probe(arguments: list[str]) -> int:
@@ -56,6 +56,26 @@ def write_executable(path: Path, content: str) -> None:
     path.chmod(0o755)
 
 
+def compiler_wrappers(roles: dict[str, str], target: dict[str, object], host: dict[str, object],
+                      tools: dict[str, str], work: Path, execution_root: Path) -> dict[str, str]:
+    """Bind each declared compiler role to the selected flags and environment."""
+    from probe_runtime import absolute_arguments, absolute_environment
+
+    wrappers = {}
+    for role, path in roles.items():
+        context = host if role.startswith("HOST") else target
+        command = [str(execution_root / path)]
+        if role in {"CC", "HOSTCC"}:
+            command += absolute_arguments(string_list(context["compile_flags"]), execution_root)
+        tool_environment = absolute_environment(strings(context["compile_env"]), execution_root)
+        wrapper = work / "bin" / role.lower()
+        write_executable(wrapper, "#!" + tools["sh"] + "\nexec " + shlex.join([
+            tools["env"], *[f"{key}={value}" for key, value in tool_environment.items()], *command,
+        ]) + ' "$@"\n')
+        wrappers[role] = str(wrapper)
+    return wrappers
+
+
 def check_infrastructure(output: Path) -> None:
     if (error := output / "infrastructure-error").exists():
         raise RuntimeError("Native probe infrastructure failed: " + error.read_text())
@@ -96,7 +116,7 @@ def prepare_sources(sources: dict[str, str], root: Path, tools: dict[str, str], 
 
 
 def configure(spec: dict[str, object], output: Path, measured: dict[str, object]) -> None:
-    from probe_runtime import absolute_arguments, absolute_environment, publish
+    from probe_runtime import absolute_environment, publish
 
     started = time.monotonic()
     timings = {}
@@ -123,21 +143,8 @@ def configure(spec: dict[str, object], output: Path, measured: dict[str, object]
         timings["prepare_sources"] = time.monotonic() - started
         declared_roles = strings(spec["roles"])
         declared_roles.update({"HOST" + name: path for name, path in strings(spec["host_roles"]).items() if name in {"CC", "CXX"}})
-        roles = {}
-        for role, path in declared_roles.items():
-            context_name = "host_compiler" if role.startswith("HOST") else "compiler"
-            context = mapping(spec[context_name])
-            command = [str(execution_root / path)]
-            if role in {"CC", "HOSTCC"}:
-                command += absolute_arguments(string_list(context["compile_flags"]), execution_root)
-            tool_environment = absolute_environment(strings(context["compile_env"]), execution_root)
-            wrapper = work / "bin" / role.lower()
-            write_executable(wrapper, "#!" + tools["sh"] + "\nexec " + shlex.join([
-                tools["env"], *[f"{key}={value}" for key, value in tool_environment.items()], *command,
-            ]) + ' "$@"\n')
-            roles[role] = str(wrapper)
-        roles.update(CONFIG_SHELL=tools["sh"], BASH=tools["bash"], PYTHON3=tools["python3"],
-                     LEX=tools["flex"], YACC=tools["bison"], AWK=tools["awk"],
+        roles = compiler_wrappers(declared_roles, mapping(spec["compiler"]), mapping(spec["host_compiler"]), tools, work, execution_root)
+        roles.update(CONFIG_SHELL=tools["sh"], BASH=tools["bash"], PYTHON3=tools["python3"], AWK=tools["awk"],
                      PAHOLE=str(execution_root / text_field(spec, "pahole")))
         roles.update(strings(spec["architecture"]))
         roles["LLVM_IAS"] = text_field(spec, "llvm_ias")
