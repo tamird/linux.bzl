@@ -239,7 +239,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/linux-prototype-qualification" _tmp/kernel-repository
           tar -xzf _tmp/kernel-repository/consumer-support.tar.gz -C _tmp/kernel-repository
           python3 example.py --generated _tmp/kernel-repository/support
-      - name: Supply the original APE bootstrap downloads
+      - name: Supply the original declared Cosmos downloads
         if: inputs.checkpoint_run != ''
         run: |
           set -euo pipefail
@@ -251,10 +251,22 @@ jobs:
           curl --fail --location --connect-timeout 15 --max-time 90 \
             --output "$distdir/ape-x86_64.elf" \
             https://gitlab.arm.com/api/v4/projects/10212/packages/generic/cosmos.zip/4.0.2/ape-x86_64.elf
-          # These are the original APE 1.0.1 Cosmos 4.0.2 lock hashes.
+          curl --fail --location --connect-timeout 15 --max-time 90 \
+            --output "$distdir/bzip2" \
+            https://gitlab.arm.com/api/v4/projects/10212/packages/generic/cosmos.zip/4.0.2/bzip2
+          curl --fail --location --connect-timeout 15 --max-time 90 \
+            --output "$distdir/gzip.ape" \
+            https://gitlab.arm.com/api/v4/projects/10212/packages/generic/cosmos.zip/4.0.2/gzip.ape
+          curl --fail --location --connect-timeout 15 --max-time 90 \
+            --output "$distdir/xz" \
+            https://gitlab.arm.com/api/v4/projects/10212/packages/generic/cosmos.zip/3.3.1/xz
+          # The original APE 1.0.1 locks select these five Linux x86 tool blobs.
           printf '%s  %s\n' \
             93f63aac14046bc2530e4f98ff4dc7ade2e3a3aa3136ced3db598bf6b0026edc "$distdir/assimilate" \
             7c1cf8b24e1b6dd6ad7da3817045d582ada146b4d6ec0c6a45bea830e3a65f4d "$distdir/ape-x86_64.elf" \
+            594da492f43db9db3ef838ca10b11bdc2b9690bf7a1dfb7aeafeff75de87dd27 "$distdir/bzip2" \
+            c4b948a5befb1fc8bdb5d808636e69901223e01848c38a56b9c62195b743cdff "$distdir/gzip.ape" \
+            f385552c4be430554ab0d4ca5fc219f745c0a9e6c7a1f2786eccb72777fe5ded "$distdir/xz" \
             > "$RUNNER_TEMP/linux-prototype-qualification/ape-downloads.sha256"
           sha256sum --check "$RUNNER_TEMP/linux-prototype-qualification/ape-downloads.sha256"
       - name: Configure Bazel
