@@ -72,7 +72,7 @@ def _impl(ctx):
         "HOSTCXX": cc_common.get_tool_for_action(feature_configuration = host_features, action_name = ACTION_NAMES.cpp_compile),
     })
     execution = execution_tools(ctx)
-    for name, command in {"CONFIG_SHELL": "sh", "BASH": "bash", "PYTHON3": "python3", "PERL": "perl", "AWK": "awk", "LEX": "flex", "YACC": "bison", "KGZIP": "gzip", "KBZIP2": "bzip2", "KLZMA": "lzma", "LZOP": "lzop", "LZ4": "lz4", "XZ": "xz", "ZSTD": "zstd"}.items():
+    for name, command in {"CONFIG_SHELL": "sh", "BASH": "bash", "PYTHON3": "python3", "PERL": "perl", "AWK": "awk", "LEX": "flex", "YACC": "bison", "KGZIP": "gzip", "KBZIP2": "bzip2", "KLZMA": "lzma", "LZOP": "lzop", "XZ": "xz", "ZSTD": "zstd"}.items():
         if command in execution.commands:
             tools[name] = execution.commands[command].path
     prepared = ctx.attr._prepared_source[KernelSourceTreeInfo]
@@ -113,6 +113,14 @@ def _impl(ctx):
     for name, tool in tools.items():
         variables[name] = {"value": tool}
     variables = program(FLAG_PROGRAM["image_utilities"], variables, sources, cells = True).variables
+
+    # LZ4's legacy command name selects a different option parser. Preserve
+    # the native assignment when binding it to the declared executable.
+    lz4 = evaluate([{"op": "reference", "name": [{"op": "literal", "value": "LZ4"}]}], variables, sources)
+    if lz4 not in ["lz4", "lz4c"]:
+        fail("Unsupported native LZ4 command: " + lz4)
+    tools["LZ4"] = execution.commands[lz4].path
+    variables["LZ4"] = {"value": tools["LZ4"]}
     variables = program(FLAG_PROGRAM["image_version"], variables, sources, cells = True).variables
     variables = program(FLAG_PROGRAM["image_cpp"], variables, sources, cells = True).variables
     variables = program(FLAG_PROGRAM["image_module_variables"], variables, sources, cells = True).variables

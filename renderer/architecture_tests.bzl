@@ -234,16 +234,20 @@ def _native_shell_impl(ctx):
     report = ctx.actions.declare_file(ctx.label.name + ".checked")
     marker = ctx.actions.declare_file(ctx.label.name + ".marker")
     quoted = ctx.actions.declare_file(ctx.label.name + ".quoted")
+    compressed = ctx.actions.declare_file(ctx.label.name + ".lz4-with-size")
+    frame = ctx.actions.declare_file(ctx.label.name + ".lz4")
+    restored = ctx.actions.declare_file(ctx.label.name + ".restored")
     ctx.actions.write(payload, "x" * 257)
-    setup = struct(tools = {"CONFIG_SHELL": execution.shell.path})
+    setup = ctx.attr._setup[KernelToolchainInfo]
     variables = {name: {"value": text} for name, text in {
         "real-prereqs": staged.path,
         "@": trailer.path,
         "CONFIG_SHELL": execution.shell.path,
+        "LZ4": setup.tools["LZ4"],
         "srctree": ctx.file._size_script.path.removesuffix("/scripts/file-size.sh"),
     }.items()}
     sources = {"__shell_commands__": []}
-    definitions = [node for node in FLAG_PROGRAM["image_command_helpers"] if node.get("name") in ["size_append", "cmd_file_size"]]
+    definitions = [node for node in FLAG_PROGRAM["image_command_helpers"] if node.get("name") in ["size_append", "cmd_file_size", "cmd_lz4", "cmd_lz4_with_size"]]
     variables = program(definitions, variables, sources, cells = True).variables
     if "size_append" not in variables:
         fail("Native shell regression requires the source-owned size_append producer")
@@ -261,15 +265,20 @@ def _native_shell_impl(ctx):
         {"command": "printf '%s|%s|%s' " + slots[0] + " " + slots[1] + " '$literal' > " + shell_quote(quoted.path), "strict": False, "ignore_errors": False},
     ]
     invocation += "\n" + native_recipe(ctx, ctx.label.name + ".lines", lines, deferred, setup, files)
-    check = "from pathlib import Path; import sys; data=Path(sys.argv[1]).read_bytes(); assert data == (257).to_bytes(4, 'little'), data; quoted=Path(sys.argv[3]).read_text(); assert quoted == 'quoted value|no|$literal', quoted; Path(sys.argv[2]).write_text('native file_size passed\\n')"
+    variables["@"] = {"value": compressed.path}
+    compression_sources = {"__shell_commands__": []}
+    compression = value("cmd_lz4_with_size" if "cmd_lz4_with_size" in variables else "cmd_lz4", variables, compression_sources)
+    invocation += "\n" + native_recipe(ctx, ctx.label.name + ".lz4", [{"command": compression, "strict": True, "ignore_errors": False}], compression_sources, setup, files)
+    check = "from pathlib import Path; import sys; data=Path(sys.argv[1]).read_bytes(); assert data == (257).to_bytes(4, 'little'), data; quoted=Path(sys.argv[3]).read_text(); assert quoted == 'quoted value|no|$literal', quoted; compressed=Path(sys.argv[4]).read_bytes(); assert compressed[-4:] == data, compressed[-4:]; Path(sys.argv[5]).write_bytes(compressed[:-4]); Path(sys.argv[2]).write_text('native file_size and LZ4 passed\\n')"
     run_recipe(
         ctx,
         execution,
         # Native codegen stages regular files; file-size.sh measures a sandbox
         # input symlink itself when the declared input is passed directly.
-        command = "cp -L " + shell_quote(payload.path) + " " + shell_quote(staged.path) + "\n" + invocation + "\n" + " ".join([shell_quote(word) for word in [execution.python.path, "-c", check, trailer.path, report.path, quoted.path]]),
+        command = "cp -L " + shell_quote(payload.path) + " " + shell_quote(staged.path) + "\n" + invocation + "\n" + " ".join([shell_quote(word) for word in [execution.python.path, "-c", check, trailer.path, report.path, quoted.path, compressed.path, frame.path]]) + "\n" +
+                  shell_quote(execution.commands["lz4"].path) + " -dc " + shell_quote(frame.path) + " > " + shell_quote(restored.path) + "\ncmp " + shell_quote(staged.path) + " " + shell_quote(restored.path),
         inputs = [payload, ctx.file._size_script] + files,
-        outputs = [staged, trailer, report, marker, quoted],
+        outputs = [staged, trailer, report, marker, quoted, compressed, frame, restored],
         mnemonic = "NativeShellCheck",
     )
     executable = ctx.actions.declare_file(ctx.label.name + ".sh")
@@ -277,6 +286,7 @@ def _native_shell_impl(ctx):
     return [DefaultInfo(executable = executable, runfiles = ctx.runfiles(files = [report]))]
 
 _native_shell_test = rule(implementation = _native_shell_impl, test = True, attrs = {
+    "_setup": attr.label(default = "//:toolchain", providers = [KernelToolchainInfo]),
     "_native_recipe": attr.label(default = "//rules:native_recipe.py", allow_single_file = True),
     "_size_script": attr.label(default = "//:source/scripts/file-size.sh", allow_single_file = True),
 }, toolchains = [EXECUTION_TOOLS_TYPE])

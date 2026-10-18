@@ -183,6 +183,7 @@ printf 'payload\\n' | lzma -c | xz --format=lzma -dc | grep -qx payload
 printf 'payload\\n' | bzip2 -c | bzip2 -dc | grep -qx payload
 printf 'payload\\n' | lzop -c | lzop -dc | grep -qx payload
 printf 'payload\\n' | lz4 -l -9 - - | lz4 -dc | grep -qx payload
+printf 'payload\\n' | lz4c -l -c1 stdin stdout | lz4 -dc | grep -qx payload
 printf 'payload\\n' | zstd -q -c | zstd -q -dc | grep -qx payload
 python -I -c 'import sys; assert sys.dont_write_bytecode'
 python3 -I -c 'import json, pathlib, sys; assert sys.dont_write_bytecode; assert json.loads("[1]") == [1]'
