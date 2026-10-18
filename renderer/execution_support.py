@@ -13,6 +13,12 @@ single_version_override(
     patch_strip=1,
 )
 single_version_override(
+    module_name="rules_cc",
+    version="0.2.25",
+    patches=["//rules:rules_cc_ir.patch"],
+    patch_strip=1,
+)
+single_version_override(
     module_name="rules_cc_autoconf",
     version="0.27.0",
     patches=["//rules:rules_cc_autoconf_no_host_shell.patch", "//rules:rules_cc_autoconf_no_path_mapping.patch"],
@@ -23,7 +29,7 @@ register_toolchains("@linux.bzl//execution_tools:linux_x86_64")
 '''
 
 def generate(repo):
-    for name in ['source_tree.bzl', 'prepare_source.py', 'host_libraries.bzl', 'rules_cc_autoconf_no_host_shell.patch', 'rules_cc_autoconf_no_path_mapping.patch', 'rules_bison_cstdlib.patch']:
+    for name in ['source_tree.bzl', 'prepare_source.py', 'host_libraries.bzl', 'rules_cc_autoconf_no_host_shell.patch', 'rules_cc_autoconf_no_path_mapping.patch', 'rules_bison_cstdlib.patch', 'rules_cc_ir.patch']:
         shutil.copyfile(HERE / name, repo / 'rules' / name)
     (repo / 'host_libraries').mkdir(exist_ok=True)
     (repo / 'host_libraries/BUILD.bazel').write_text('''load("//rules:host_libraries.bzl", "kernel_host_library")

@@ -5,13 +5,5 @@ module(
 
 bazel_dep(name = "rules_python", version = "1.8.0", dev_dependency = True)
 
-# Qualification of native LLVM IR compiler actions; no consumer API yet.
-single_version_override(
-    module_name = "rules_cc",
-    patch_strip = 1,
-    patches = ["//qualification:rules_cc_ir.patch"],
-    version = "0.2.25",
-)
-
 # Run `python3 example.py` from the repository root after building the generator.
 include("//:.generated/setup.MODULE.bazel")

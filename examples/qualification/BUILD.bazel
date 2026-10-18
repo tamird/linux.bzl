@@ -7,7 +7,6 @@ load(":native_conf.bzl", "native_conf", "native_config_reference")
 
 exports_files([
     "native_reference.py",
-    "rules_cc_ir.patch",
 ])
 
 _CASES = {
