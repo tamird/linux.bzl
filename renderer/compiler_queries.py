@@ -1,4 +1,4 @@
-"""Preserve compiler resource queries as selected-toolchain analysis inputs."""
+"""Preserve compiler queries for the selected toolchain."""
 import json
 from text_transforms import compile_ere
 
@@ -26,4 +26,8 @@ def lower_compiler_queries(value):
                 [{'op': 'literal', 'value': 'y'}], [{'op': 'literal', 'value': 'n'}]]}
         if len(terms) == 2 and terms[0] == {'op': 'reference', 'name': [{'op': 'literal', 'value': 'CC'}]} and terms[1].get('op') == 'literal' and terms[1]['value'].strip() == '-print-file-name=include':
             return {'op': 'function', 'name': 'kbuild_compiler_include', 'arguments': []}
+        if len(terms) == 2 and terms[0] == {'op': 'reference', 'name': [{'op': 'literal', 'value': 'CC'}]} and terms[1].get('op') == 'literal' and terms[1]['value'].strip() == '--version 2>&1 | head -n 1 | grep clang':
+            # Older native setup guards CLANG_FLAGS with the selected
+            # compiler's actual banner. Preserve its command and stdout.
+            return dict(value, name='kbuild_host_shell')
     return value

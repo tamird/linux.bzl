@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from compiler_queries import lower_compiler_queries
 from export import native_events, parse_events
 from programs import lower_probes, slice_program
 from syntax import runtime_program
@@ -60,6 +61,19 @@ class SymbolicExportTest(unittest.TestCase):
             selected = slice_program(body, {'RESULT'})
             self.assertEqual([node.get('name') for node in selected], ['NATIVE_MODE', None])
             self.assertEqual([branch['body'][0]['value'] for branch in selected[1]['branches']], ['selected', 'absent'])
+
+    def test_native_compiler_banner_guard_remains_a_measured_command(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / 'Makefile'
+            fixture.write_text('ifneq ($(shell $(CC) --version 2>&1 | head -n 1 | grep clang),)\nCLANG_FLAGS += -fintegrated-as\nendif\nOTHER = $(shell printf recipe-output)\n')
+            body = parse_events(native_events([MAKE], [fixture], expressions=True))['files'][0]['body']
+            lowered = lower_compiler_queries(body)
+            original = body[0]['branches'][0]
+            measured = lowered[0]['branches'][0]
+            query = original['condition']['operands'][0][0]
+            self.assertEqual(measured['condition'], dict(original['condition'], operands=[[dict(query, name='kbuild_host_shell')], []]))
+            self.assertEqual(measured['body'], original['body'])
+            self.assertEqual(lowered[1], body[1], 'Unrelated shell expansion changed owners')
 
     def test_native_condition_preserves_both_config_dependent_branches(self):
         events = [dict(kind='file_begin', file='Kbuild'),

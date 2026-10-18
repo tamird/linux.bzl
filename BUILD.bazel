@@ -250,9 +250,11 @@ py_test(
 py_test(
     name = "generation_test",
     srcs = [
+        "renderer/compiler_queries.py",
         "renderer/export.py",
         "renderer/programs.py",
         "renderer/syntax.py",
+        "renderer/text_transforms.py",
         "test_generation.py",
     ],
     args = [
