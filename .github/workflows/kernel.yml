@@ -117,8 +117,15 @@ jobs:
           bazel test //native:exporter_archive //:repository_test \
             --platforms=@llvm//platforms:linux_x86_64_musl \
             --extra_execution_platforms=@llvm//platforms:linux_x86_64 --jobs=4 --test_output=errors --test_arg=--strace
-          exporter="$(bazel info bazel-bin --platforms=@llvm//platforms:linux_x86_64_musl)/native/exporter_archive"
-          echo "KBUILD_EXPORTER=$exporter" >> "$GITHUB_ENV"
+
+      - name: Select the declared exporter directory for consumers
+        if: ${{ !inputs.syntax_only }}
+        run: |
+          exporter="$(bazel cquery //native:exporter_archive \
+            --platforms=@llvm//platforms:linux_x86_64_musl \
+            --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
+            --output=starlark --starlark:expr='"\n".join([file.path for file in target.files.to_list() if file.is_directory])')"
+          echo "KBUILD_EXPORTER=$GITHUB_WORKSPACE/$exporter" >> "$GITHUB_ENV"
 
       - name: Test the native configuration and measured build owners
         if: ${{ !inputs.syntax_only }}

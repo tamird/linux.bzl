@@ -60,7 +60,10 @@ bazel test //native:config_tests //:action_built_config_test \
 bazel test //native:exporter_archive //:repository_test //:generation_test \
   --platforms=@llvm//platforms:linux_x86_64_musl \
   --extra_execution_platforms=@llvm//platforms:linux_x86_64
-exporter="$(bazel info bazel-bin --platforms=@llvm//platforms:linux_x86_64_musl)/native/exporter_archive"
+exporter="$PWD/$(bazel cquery //native:exporter_archive \
+  --platforms=@llvm//platforms:linux_x86_64_musl \
+  --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
+  --output=starlark --starlark:expr='"\n".join([file.path for file in target.files.to_list() if file.is_directory])')"
 bazel test //:kernel_acceptance_test \
   --override_repository=kbuild_exporter="$exporter" \
   --platforms=@llvm//platforms:linux_x86_64 \
