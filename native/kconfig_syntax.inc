@@ -1,4 +1,6 @@
 /* File-local syntax export. Source statements are entries, not file reads. */
+#include <string.h>
+
 static void syntax_ids(struct menu *menu)
 {
     for (; menu; menu = menu->next) {
@@ -50,8 +52,14 @@ static void syntax_walk(struct menu *menu, unsigned parent)
     }
 }
 
+void prototype_auto_conf_string(const char *value);
+
 int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "--auto-conf-string")) {
+        prototype_auto_conf_string(argv[2]);
+        return ferror(stdout) ? 1 : 0;
+    }
     if (argc != 2) return 2;
     conf_parse(argv[1]);
     syntax_ids(rootmenu.list);

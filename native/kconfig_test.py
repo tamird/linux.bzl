@@ -4,7 +4,7 @@ import argparse
 import os
 from pathlib import Path
 
-from kconfig_syntax import export_syntax
+from kconfig_syntax import auto_conf_quotes_strings, export_syntax
 
 
 def main() -> None:
@@ -15,6 +15,7 @@ def main() -> None:
     # Resolve the runfile executable, but keep the source's declared runfile
     # namespace: the tests intentionally contain only the Kconfig inputs.
     linux = args.linux.absolute().parent
+    print(f'Native auto.conf quotes strings: {auto_conf_quotes_strings(executable=args.tool.resolve())}')
     syntax = export_syntax(linux, Path(os.environ["TEST_TMPDIR"]), executable=args.tool.resolve())
     for path, symbol in (
         ("init/Kconfig", "CC_VERSION_TEXT"),

@@ -130,7 +130,7 @@ def _impl(ctx):
             else:
                 rendered = " ".join(["'" + flag.replace("'", "'\\''") + "'" for flag in flags])
             variables[name] = {"value": native + " " + rendered}
-    release = ".".join([evaluate([{"op": "reference", "name": [{"op": "literal", "value": name}]}], variables, sources) for name in ["VERSION", "PATCHLEVEL", "SUBLEVEL"]]) + evaluate([{"op": "reference", "name": [{"op": "literal", "value": "EXTRAVERSION"}]}], variables, sources) + config.make_values.get("CONFIG_LOCALVERSION", "")
+    release = ".".join([evaluate([{"op": "reference", "name": [{"op": "literal", "value": name}]}], variables, sources) for name in ["VERSION", "PATCHLEVEL", "SUBLEVEL"]]) + evaluate([{"op": "reference", "name": [{"op": "literal", "value": "EXTRAVERSION"}]}], variables, sources) + json.decode(config.values.get("LOCALVERSION", '""'))
     for name, val in {"KERNELRELEASE": release, "KBUILD_BUILD_VERSION": "1", "KBUILD_BUILD_TIMESTAMP": "Thu Jan 1 00:00:00 UTC 1970"}.items():
         variables[name] = {"value": val}
     variables = program(FLAG_PROGRAM["image_exports"], variables, sources, cells = True).variables

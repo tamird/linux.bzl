@@ -11,6 +11,21 @@ from compiler_capabilities import native_capabilities
 HERE = Path(__file__).resolve().parent
 
 
+def auto_conf_quotes_strings(*, executable: Path | None = None) -> bool:
+    """Read the string representation from the source's compiled serializer."""
+    executable = Path(sys.executable) if executable is None else executable
+    values = ['', 'clang (native) "quoted" \\ path']
+    outputs = [subprocess.run(
+        [executable, '_kconfig', '--auto-conf-string', value],
+        env={'LC_ALL': 'C', 'PATH': ''}, check=True, capture_output=True, text=True,
+    ).stdout for value in values]
+    if outputs == [f'CONFIG_VALUE={value}\n' for value in values]:
+        return False
+    if outputs == [f'CONFIG_VALUE={json.dumps(value)}\n' for value in values]:
+        return True
+    raise ValueError(f'Unsupported native auto.conf string serialization: {outputs!r}')
+
+
 def export_syntax(linux, output, *, executable: Path | None = None):
     output.mkdir(parents=True, exist_ok=True)
     executable = Path(sys.executable) if executable is None else executable

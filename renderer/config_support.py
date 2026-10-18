@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import shutil
 
+from kconfig_syntax import auto_conf_quotes_strings
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -38,6 +40,7 @@ constraint_value(name="usermode", constraint_setting=":mode")
     with (args.repo / 'BUILD.bazel').open('a') as stream:
         stream.write('load("//rules:architecture.bzl", "kernel_architecture")\nkernel_architecture(name="architecture", visibility=["//visibility:public"])\n')
     shutil.copyfile(here / 'solver.bzl', args.repo / 'rules/solver.bzl')
+    (args.repo / 'rules/config_format.bzl').write_text('AUTO_CONF_QUOTES_STRINGS = ' + repr(auto_conf_quotes_strings()) + '\n')
     shutil.copyfile(Path(__file__).resolve().parent / 'config.bzl', args.repo / 'rules/rules.bzl')
     shutil.copyfile(Path(__file__).resolve().parent / 'compiler_inputs.bzl', args.repo / 'rules/compiler_inputs.bzl')
 

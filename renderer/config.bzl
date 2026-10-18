@@ -5,6 +5,7 @@ load(":architecture.bzl", "KernelArchitectureInfo")
 load(":compiler_capabilities.bzl", "KernelCompilerCapabilitiesInfo")
 load(":compiler_inputs.bzl", "bind_compiler_inputs", "compiler_inputs")
 load(":compiler_metadata.bzl", "KernelCompilerMetadataInfo")
+load(":config_format.bzl", "AUTO_CONF_QUOTES_STRINGS")
 load(":kconfig_link.bzl", "link_sources")
 load(":pahole.bzl", "KernelPaholeInfo")
 load(":solver.bzl", "resolve_options")
@@ -187,12 +188,11 @@ def _kernel_config_impl(ctx):
     ctx.actions.write(header, result.header)
     types = {r["symbol"]: r["type"] for r in records if r["symbol"]}
 
-    # .config quotes strings; include/config/auto.conf exposes their decoded
-    # contents to Make. In particular, an empty string must not become a
-    # spurious empty compiler argument when a capability takes its fallback.
+    # The source's native auto.conf printer owns whether Make receives string
+    # quotes. This includes the distinction between an empty value and '""'.
     written = dict([line.split("=", 1) for line in result.config.splitlines() if line.startswith("CONFIG_")])
     make_values = {
-        name: json.decode(v) if types.get(name.removeprefix("CONFIG_")) == "string" else v
+        name: json.decode(v) if not AUTO_CONF_QUOTES_STRINGS and types.get(name.removeprefix("CONFIG_")) == "string" else v
         for name, v in written.items()
     }
     ctx.actions.write(report, json.encode({

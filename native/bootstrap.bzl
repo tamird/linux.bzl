@@ -96,7 +96,7 @@ make_parser = rule(
 
 def _kconfig_parser_impl(ctx):
     directory = ctx.label.name + ".sources/"
-    transformed = {name: ctx.actions.declare_file(directory + name) for name in ["parser.y", "lexer.l", "preprocess.c", "dump.c", "menu_translation.c", "parser-sources.json"]}
+    transformed = {name: ctx.actions.declare_file(directory + name) for name in ["parser.y", "lexer.l", "preprocess.c", "confdata.c", "dump.c", "menu_translation.c", "parser-sources.json"]}
     ctx.actions.run(
         executable = ctx.executable._prepare,
         arguments = ["--linux", ctx.file.anchor.dirname, "--out", transformed["parser.y"].dirname],
@@ -139,7 +139,7 @@ def _kconfig_parser_impl(ctx):
         name = ctx.label.name,
         cc_toolchain = toolchain,
         feature_configuration = _features(ctx, toolchain),
-        srcs = [original[name + ".c"] for name in ["confdata", "expr", "symbol", "util"]] + [parser, lexer, transformed["preprocess.c"], transformed["dump.c"], transformed["menu_translation.c"]],
+        srcs = [original[name + ".c"] for name in ["expr", "symbol", "util"]] + [parser, lexer, transformed["preprocess.c"], transformed["confdata.c"], transformed["dump.c"], transformed["menu_translation.c"]],
         public_hdrs = [file for file in ctx.files.sources if file.extension == "h"] + [header, original["menu.c"]],
         includes = [ctx.file.anchor.dirname + "/scripts/kconfig", ctx.file.anchor.dirname + "/scripts/include", header.dirname],
     )

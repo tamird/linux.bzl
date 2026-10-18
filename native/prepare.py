@@ -68,6 +68,28 @@ def prepare_sources(linux, output):
     after = after.replace('\tv = variable_lookup(name);', '\tres = prototype_probe_fallback(name, argc, argv);\n\tif (res) return res;\n\tv = variable_lookup(name);', 1)
     preprocess = (before + after).replace('\tcmd = argv[0];', '\treturn prototype_shell_fallback(argc, argv);\n\tcmd = argv[0];', 1)
     (output / 'preprocess.c').write_text(preprocess)
+    confdata = (src / 'confdata.c').read_text()
+    autoconf = source_block(confdata, 'int conf_write_autoconf(', '\n}\n', 'auto.conf writer')
+    modern = re.findall(r'__conf_write_autoconf\(\s*conf_get_autoconfig_name\(\),\s*print_symbol_for_autoconf,\s*&comment_style_pound\s*\)', autoconf)
+    legacy = re.findall(r'conf_write_symbol\(\s*out,\s*sym,\s*&kconfig_printer_cb,\s*\(void\s*\*\)\s*1\s*\)', autoconf)
+    match modern, legacy:
+        case [_], []:
+            printer = 'print_symbol_for_autoconf(stdout, &sym);'
+        case [], [_]:
+            printer = 'conf_write_symbol(stdout, &sym, &kconfig_printer_cb, (void *)1);'
+        case _:
+            raise ValueError('Unrecognized native auto.conf symbol printer')
+    # Keep escaping and quoting in the compiled native serializer. Its string
+    # printer reads curr.val without requiring configuration resolution.
+    confdata += '''
+void prototype_auto_conf_string(const char *value)
+{
+    struct symbol sym = { .name = "VALUE", .type = S_STRING,
+                          .curr = { .val = (void *)value } };
+    ''' + printer + '''
+}
+'''
+    (output / 'confdata.c').write_text(confdata)
     dump = (HERE / 'dump.c').read_text()
     menu = source_block((src / 'expr.h').read_text(), 'struct menu {', '\n};', 'menu structure declaration')
     if re.search(r'\bconst char \*filename;', menu):
