@@ -838,6 +838,7 @@ kernel_multi_platform_test(name="kernels_test", kernels=":kernels", size="large"
     shutil.copyfile(HERE / 'image_commands.bzl', out / 'rules/commands.bzl')
     shutil.copyfile(HERE / 'image_toolchain.bzl', out / 'rules/toolchain.bzl')
     shutil.copyfile(HERE / 'image_materialize.py', out / 'rules/materialize.py')
+    shutil.copyfile(HERE / 'native_recipe.py', out / 'rules/native_recipe.py')
     shutil.copyfile(HERE / 'image_expressions.bzl', out / 'rules/expressions.bzl')
     base = {n['symbol']: 'n' for body in syntax.values() for n in body if n['symbol'] and n['type'] in ('bool', 'boolean', 'tristate') and any(p['kind'] in ('prompt', 'menu') and p.get('text') for p in n['properties'])}
     requested = {'EXPERT': 'y', '64BIT': 'y', 'PRINTK': 'y', 'TTY': 'y', 'SERIAL_8250': 'y',

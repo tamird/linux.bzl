@@ -111,10 +111,13 @@ jobs:
         if: matrix.experiment == 'configuration-parity'
         working-directory: examples
         run: bazel test //qualification:parity --jobs=4 --keep_going --test_output=errors
-      - name: Check the reuse reporter
+      - name: Check qualification helpers
         if: matrix.experiment == 'source-edit-reuse' || matrix.experiment == 'compiler-ir' || matrix.experiment == 'compiler-family'
         working-directory: examples
-        run: bazel test //qualification:reuse_report_test --test_output=errors
+        run: >-
+          bazel test //qualification:reuse_report_test
+          @kernel//architecture_tests:native_shell_test
+          --platforms=@llvm//platforms:linux_x86_64 --test_output=errors
       - name: Fetch the compact execution log decoder
         if: matrix.experiment == 'source-edit-reuse' || matrix.experiment == 'compiler-ir' || matrix.experiment == 'compiler-family'
         run: |

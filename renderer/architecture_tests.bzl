@@ -1,9 +1,12 @@
 """Analysis tests for one symbolic export across configured platforms."""
 
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts", "unittest")
+load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
 load(":architecture.bzl", "KernelArchitectureInfo")
+load(":commands.bzl", "native_recipe", "shell_quote", "value")
 load(":compiler_capabilities.bzl", "KernelCompilerCapabilityObjectsInfo", "kernel_compiler_capabilities_check")
 load(":expressions.bzl", "evaluate", "program")
+load(":flag_program.bzl", "FLAG_PROGRAM")
 load(":image.bzl", "kbuild_resolved_build")
 load(":multi_platform.bzl", "KernelPlatformsInfo", "SUPPORTED_KERNEL_CPUS", "kernel_multi_platform")
 load(":rules.bzl", "KernelConfigInfo", "kernel_config")
@@ -99,9 +102,80 @@ def _recursive_flags_impl(ctx):
 
 _recursive_flags_test = unittest.make(_recursive_flags_impl)
 
+def _deferred_condition_impl(ctx):
+    capture = [{"op": "function", "name": "shell", "arguments": [[{"op": "literal", "value": "printf y"}]]}]
+    sources = {"__shell_commands__": []}
+    if ctx.attr.directive:
+        program([{"kind": "conditional", "branches": [{"directive": "ifeq", "condition": {"directive": "ifeq", "operands": [capture, [{"op": "literal", "value": "y"}]]}, "body": []}]}], {}, sources)
+    else:
+        evaluate([{"op": "function", "name": "if", "arguments": [capture, [{"op": "literal", "value": "yes"}], []]}], {}, sources)
+    return [DefaultInfo()]
+
+_deferred_condition = rule(implementation = _deferred_condition_impl, attrs = {"directive": attr.bool()})
+
+def _native_shell_impl(ctx):
+    execution = execution_tools(ctx)
+    payload = ctx.actions.declare_file(ctx.label.name + ".input")
+    trailer = ctx.actions.declare_file(ctx.label.name + ".size")
+    report = ctx.actions.declare_file(ctx.label.name + ".checked")
+    marker = ctx.actions.declare_file(ctx.label.name + ".marker")
+    quoted = ctx.actions.declare_file(ctx.label.name + ".quoted")
+    ctx.actions.write(payload, "x" * 257)
+    setup = struct(tools = {"CONFIG_SHELL": execution.shell.path})
+    variables = {name: {"value": text} for name, text in {
+        "real-prereqs": payload.path,
+        "@": trailer.path,
+        "CONFIG_SHELL": execution.shell.path,
+        "srctree": ctx.file._size_script.path.removesuffix("/scripts/file-size.sh"),
+    }.items()}
+    sources = {"__shell_commands__": []}
+    definitions = [node for node in FLAG_PROGRAM["image_command_helpers"] if node.get("name") in ["size_append", "cmd_file_size"]]
+    variables = program(definitions, variables, sources, cells = True).variables
+    if "size_append" not in variables:
+        fail("Native shell regression requires the source-owned size_append producer")
+    command = value("cmd_file_size", variables, sources) if "cmd_file_size" in variables else value("size_append", variables, sources) + " > " + shell_quote(trailer.path)
+    files = []
+    invocation = native_recipe(ctx, ctx.label.name, [{"command": command, "strict": True, "ignore_errors": False}], sources, setup, files)
+    deferred = {"__shell_commands__": []}
+    slots = [evaluate([{"op": "function", "name": "shell", "arguments": [[{"op": "literal", "value": text}]]}], {}, deferred) for text in [
+        "printf '%s' '\"quoted value\"'; printf '\\n\\n'; false",
+        "test -e " + shell_quote(marker.path) + " && printf yes || printf no",
+    ]]
+    lines = [
+        {"command": "touch " + shell_quote(marker.path), "strict": False, "ignore_errors": False},
+        {"command": "false", "strict": False, "ignore_errors": True},
+        {"command": "printf '%s|%s|%s' " + slots[0] + " " + slots[1] + " '$literal' > " + shell_quote(quoted.path), "strict": False, "ignore_errors": False},
+    ]
+    invocation += "\n" + native_recipe(ctx, ctx.label.name + ".lines", lines, deferred, setup, files)
+    check = "from pathlib import Path; import sys; data=Path(sys.argv[1]).read_bytes(); assert data == (257).to_bytes(4, 'little'), data; quoted=Path(sys.argv[3]).read_text(); assert quoted == 'quoted value|no|$literal', quoted; Path(sys.argv[2]).write_text('native file_size passed\\n')"
+    run_recipe(
+        ctx,
+        execution,
+        command = invocation + "\n" + " ".join([shell_quote(word) for word in [execution.python.path, "-c", check, trailer.path, report.path, quoted.path]]),
+        inputs = [payload, ctx.file._size_script] + files,
+        outputs = [trailer, report, marker, quoted],
+        mnemonic = "NativeShellCheck",
+    )
+    executable = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(executable, "#!/bin/sh\ntest -s " + shell_quote(report.short_path) + "\n", is_executable = True)
+    return [DefaultInfo(executable = executable, runfiles = ctx.runfiles(files = [report]))]
+
+_native_shell_test = rule(implementation = _native_shell_impl, test = True, attrs = {
+    "_native_recipe": attr.label(default = "//rules:native_recipe.py", allow_single_file = True),
+    "_size_script": attr.label(default = "//:source/scripts/file-size.sh", allow_single_file = True),
+}, toolchains = [EXECUTION_TOOLS_TYPE])
+
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
 def architecture_tests():
+    _native_shell_test(name = "native_shell_recipe_test")
+    checks = [":native_shell_recipe_test"]
+    for directive in [False, True]:
+        name = "native_shell_" + ("directive" if directive else "condition")
+        _deferred_condition(name = name, directive = directive, tags = ["manual"])
+        _expected_failure_test(name = name + "_test", target_under_test = ":" + name, message = "Deferred Make shell output requires execution")
+        checks.append(":" + name + "_test")
+    native.test_suite(name = "native_shell_test", tests = checks)
     _recursive_flags_test(name = "recursive_flags_test")
     kernel_compiler_capabilities_check(name = "compiler_capability_checks", tags = ["manual"])
     kernel_compiler_capabilities_test(name = "selected_compiler_capabilities_test", checks = ":compiler_capability_checks")

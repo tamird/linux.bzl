@@ -7,7 +7,15 @@ rejected rather than run during analysis.
 
 load(":text_transforms.bzl", "literal_echo", "sed_substitute")
 
+_SHELL_PREFIX = "__KBUILD_SHELL_RESULT_"
+
+def static_value(value, operation):
+    if _SHELL_PREFIX in value:
+        fail("Deferred Make shell output requires execution before %s" % operation)
+    return value
+
 def _words(value):
+    static_value(value, "word expansion")
     return [w for w in value.replace("\t", " ").replace("\n", " ").replace("\r", " ").split(" ") if w]
 
 def _match(pattern, word):
@@ -31,6 +39,13 @@ def _glob(pattern, word):
     return previous[-1]
 
 def _builtin(name, a, sources):
+    if name == "shell" and "__shell_commands__" in sources:
+        commands = sources["__shell_commands__"]
+        result = _SHELL_PREFIX + str(len(commands)) + "__"
+        commands.append(a[0])
+        return result
+    for argument in a:
+        static_value(argument, "Make function " + name)
     if name == "kbuild_execution_tool":
         tools = sources.get("__execution_tools__", {})
         if a[0] not in tools:
@@ -56,8 +71,6 @@ def _builtin(name, a, sources):
         # buildifier: disable=print
         print("WARNING: unresolved objtool host capability; using empty fallback: " + a[0])
         return ""
-    if name == "shell" and sources.get("__shell_commands__"):
-        return "$(" + a[0] + ")"
     if name == "kbuild_min_version":
         return "y" if int(a[0] or "0") >= int(a[1].strip()) else ""
     if name == "error":
@@ -156,7 +169,7 @@ def evaluate(terms, variables, sources = {}):
         elif op == "term":
             kind = data["op"]
             if kind == "literal":
-                values.append(data["value"])
+                values.append(static_value(data["value"], "literal expression"))
             elif kind == "config":
                 tasks.append(("lookup", data["name"], scope, chain))
             elif kind == "reference":
@@ -195,7 +208,7 @@ def evaluate(terms, variables, sources = {}):
                 fail("Unknown native expression node " + kind)
         elif op == "probe":
             probe, arguments = data
-            option = values.pop().strip()
+            option = static_value(values.pop(), "compiler probe").strip()
             key = probe + ":" + option
             supported = sources.get("__capabilities__", {}).get(key)
             if supported == None:
@@ -218,15 +231,17 @@ def evaluate(terms, variables, sources = {}):
             else:
                 tasks.append(("expr", arguments[2] if len(arguments) > 2 else [], scope, chain))
         elif op == "origin":
-            name = values.pop()
+            name = static_value(values.pop(), "variable origin")
             values.append("file" if name in scope else "undefined")
         elif op == "intcmp":
-            left, right = int(values.pop(-2).strip()), int(values.pop().strip())
+            left, right = int(static_value(values.pop(-2), "integer comparison").strip()), int(static_value(values.pop(), "integer comparison").strip())
             index = 2 if left < right else 3 if left == right else 4
             tasks.append(("expr", data[index] if index < len(data) else (data[3] if len(data) > 3 and left > right else []), scope, chain))
         elif op == "lookup_name":
-            tasks.append(("lookup", values.pop(), scope, chain))
+            tasks.append(("lookup", static_value(values.pop(), "variable name"), scope, chain))
         elif op == "lookup":
+            if data == ".SHELLSTATUS":
+                fail("Make .SHELLSTATUS requires execution-time expression evaluation")
             if ":" in data and "=" in data:
                 name, substitution = data.split(":", 1)
                 before, after = substitution.split("=", 1)
@@ -262,7 +277,7 @@ def evaluate(terms, variables, sources = {}):
                 tasks.append(("expr", data["expr"], data.get("scope", scope), [] if "scope" in data else chain))
         elif op == "append_result":
             new, old = values.pop(), values.pop()
-            values.append(old + (" " if old else "") + new)
+            values.append(old + (" " if static_value(old, "append spacing") else "") + new)
         elif op == "substitute":
             before, after = data
             values.append(_builtin("patsubst", [
@@ -271,17 +286,17 @@ def evaluate(terms, variables, sources = {}):
                 values.pop(),
             ], sources))
         elif op == "if":
-            condition = values.pop().strip()
+            condition = static_value(values.pop(), "Make conditional").strip()
             tasks.append(("expr", data[1] if condition else data[2] if len(data) > 2 else [], scope, chain))
         elif op == "logic":
             name, arguments, index = data
-            value = values.pop()
+            value = static_value(values.pop(), "Make boolean expression")
             if (name == "or" and value.strip()) or (name == "and" and not value.strip()) or index + 1 == len(arguments):
                 values.append(value)
             else:
                 tasks.extend([("logic", (name, arguments, index + 1), scope, chain), ("expr", arguments[index + 1], scope, chain)])
         elif op == "foreach":
-            words, name = _words(values.pop()), values.pop().strip()
+            words, name = _words(values.pop()), static_value(values.pop(), "foreach variable").strip()
             tasks.append(("join", len(words), scope, chain))
             for word in reversed(words):
                 local = dict(scope)
@@ -293,7 +308,7 @@ def evaluate(terms, variables, sources = {}):
             local = dict(scope)
             for i, value in enumerate(args):
                 local[str(i)] = {"value": value}
-            tasks.append(("lookup", args[0].strip(), local, chain))
+            tasks.append(("lookup", static_value(args[0], "called variable").strip(), local, chain))
     fail("Make expression exceeded 100000 evaluation steps")
 
 def source_index(paths):
@@ -313,15 +328,15 @@ def _condition(branch, variables, sources):
         if branch["directive"] == "else" and not branch["arguments"]:
             return True
         fail("Missing native conditional operands at %s:%s; regenerate the AST" % (branch.get("file"), branch["line"]))
-    args = [evaluate(a, variables, sources) for a in condition["operands"]]
+    args = [static_value(evaluate(a, variables, sources), "Make directive condition") for a in condition["operands"]]
     directive = condition["directive"]
     if directive in ("ifdef", "ifndef"):
         # Native ifdef tests the stored value, without recursively expanding it.
         cell = variables.get(args[0].strip(), {"value": variables.get("__config__", {}).get(args[0].strip(), "")})
         if "scope" in cell or "append" in cell or "parts" in cell:
-            defined = bool(evaluate([{"op": "reference", "name": [{"op": "literal", "value": args[0].strip()}]}], variables, sources))
+            defined = bool(static_value(evaluate([{"op": "reference", "name": [{"op": "literal", "value": args[0].strip()}]}], variables, sources), "Make defined condition"))
         else:
-            defined = bool(cell.get("value", cell.get("raw", "")))
+            defined = bool(static_value(cell.get("value", cell.get("raw", "")), "Make defined condition"))
         return defined == (directive == "ifdef")
     return (args[0] == args[1]) == (directive == "ifeq")
 

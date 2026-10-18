@@ -94,6 +94,7 @@ py_test(
     srcs = [
         "prototype_test.py",
         "renderer/export.py",
+        "renderer/native_recipe.py",
         "renderer/repository_main.py",
     ],
     args = [

@@ -1267,6 +1267,7 @@ _CORE_ATTRS = {
     "_objtool": attr.label(default = "//:objtool", providers = [KernelObjtoolInfo]),
     "_resolve_btfids": attr.label(default = "//:resolve_btfids", providers = [KernelResolveBtfidsInfo]),
     "_setup": attr.label(default = "//:toolchain", providers = [KernelToolchainInfo]),
+    "_native_recipe": attr.label(default = "//rules:native_recipe.py", allow_single_file = True, cfg = "exec"),
     "_materialize": attr.label(default = "//rules:materialize.py", allow_single_file = True, cfg = "exec"),
     "_prepared_source": attr.label(default = "//:prepared_source", providers = [KernelSourceTreeInfo], cfg = "exec"),
     "_anchor": attr.label(default = "//:source/Makefile", allow_single_file = True),

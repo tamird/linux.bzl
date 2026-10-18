@@ -3,7 +3,7 @@
 load("@linux.bzl//execution_tools:defs.bzl", "execution_tools", "run_recipe")
 load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
-load(":expressions.bzl", "evaluate", "make_words", "match", "program", "source_index")
+load(":expressions.bzl", "evaluate", "make_words", "match", "program", "source_index", "static_value")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 load(":text_transforms.bzl", _shell_words = "shell_words")
 
@@ -14,6 +14,22 @@ def value(name, variables, sources):
 
 def shell_quote(text):
     return "'" + text.replace("'", "'\\''") + "'"
+
+def native_recipe(ctx, target, recipes, sources, setup, files, replacements = []):
+    """Expand Make shell results before the declared shell parses any recipe."""
+    captures = sources["__shell_commands__"]
+    if not captures:
+        if len(recipes) != 1 or not recipes[0]["strict"] or recipes[0]["ignore_errors"]:
+            fail("Direct native recipe must be one strict command")
+        return recipes[0]["command"]
+    spec = ctx.actions.declare_file(ctx.label.name + ".shell/" + target + ".json")
+    texts = [recipe["command"] for recipe in recipes] + captures
+    for old, new in replacements:
+        texts = [text.replace(old, new) for text in texts]
+    commands = [dict(recipe, command = texts[i]) for i, recipe in enumerate(recipes)]
+    ctx.actions.write(spec, json.encode({"shell": setup.tools["CONFIG_SHELL"], "recipes": commands, "shell_commands": texts[len(recipes):]}))
+    files.extend([spec, ctx.file._native_recipe])
+    return " ".join([shell_quote(path) for path in [execution_tools(ctx).python.path, ctx.file._native_recipe.path, spec.path]])
 
 def _stage_links(files):
     # Preserve the namespaces of declared inputs, including when this ruleset
@@ -308,7 +324,7 @@ def _native_compiler_postprocess(ctx, target, raw, output, source_file, variable
     variables = dict(variables)
     variables["objtree"] = {"value": "."}
     sources = dict(setup.sources)
-    sources["__shell_commands__"] = True
+    sources["__shell_commands__"] = []
     expanded = []
     source_inputs = dict(source_prerequisites)
     source_inputs[source_file.path] = source_file
@@ -332,6 +348,8 @@ def _native_compiler_postprocess(ctx, target, raw, output, source_file, variable
         expanded.append(command)
     if not expanded:
         return False
+    recipe_files = []
+    command = native_recipe(ctx, target, [{"command": "\n".join(expanded), "strict": True, "ignore_errors": False}], sources, setup, recipe_files, [("__source__", source_tree.source_root), ("__object__", ".")])
     script = """set -eu
 exec_root="$PWD"
 work="$(mktemp -d)"
@@ -341,16 +359,16 @@ cd "$work"
 mkdir -p %s
 cp "$exec_root"/%s %s
 chmod u+w %s
-""" % (_stage_links([raw] + inputs.values() + source_inputs.values() + setup.files.to_list()), shell_quote(target.rpartition("/")[0] or "."), shell_quote(raw.path), shell_quote(target), shell_quote(target))
+""" % (_stage_links([raw] + inputs.values() + source_inputs.values() + setup.files.to_list() + recipe_files), shell_quote(target.rpartition("/")[0] or "."), shell_quote(raw.path), shell_quote(target), shell_quote(target))
     for path, file in inputs.items():
         script += "mkdir -p %s\nln -s \"$exec_root\"/%s %s\n" % (shell_quote(path.rpartition("/")[0] or "."), shell_quote(file.path), shell_quote(path))
     script += "\n".join(["export " + name + "=" + shell_quote(tool) for name, tool in setup.tools.items()]) + "\n"
-    script += "\n".join(expanded) + "\ncp %s \"$exec_root\"/%s\n" % (shell_quote(target), shell_quote(output.path))
+    script += command + "\ncp %s \"$exec_root\"/%s\n" % (shell_quote(target), shell_quote(output.path))
     run_recipe(
         ctx,
         execution_tools(ctx),
         command = script,
-        inputs = depset([raw] + inputs.values() + source_inputs.values(), transitive = [setup.files]),
+        inputs = depset([raw] + inputs.values() + source_inputs.values() + recipe_files, transitive = [setup.files]),
         outputs = [output],
         mnemonic = "KbuildPostprocess",
         progress_message = "Postprocess %s" % target,
@@ -644,7 +662,16 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
     # Native wildcard tests see the same generated input names staged below.
     for path, entry in source_index(dependencies.keys()).items():
         command_sources[path] = command_sources.get(path, []) + entry if type(entry) == "list" else entry
-    command_sources["__shell_commands__"] = True
+    command_sources["__shell_commands__"] = []
+    recipe_files = []
+    mapping = dict(dependencies)
+    mapping.update(outputs)
+    replacements = [("__object__/" + path, path) for path in sorted(mapping, key = len, reverse = True)] + [
+        ("__source__/", source + "/"),
+        ("__object__/", ""),
+        ("__object__", "."),
+        (source, source_tree.root.path),
+    ]
     link_script = ctx.file._link_script
     if native.get("final_link"):
         modpost = native.get("script_modpost")
@@ -656,19 +683,26 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
                 modpost_variables[key] = {"value": text}
             modpost_name = evaluate(modpost["arguments"][0], modpost_variables, setup.sources).strip()
             modpost_command = value("cmd_" + modpost_name, modpost_variables, command_sources).replace("__source__", source_tree.root.path).replace("__object__", ".")
+            static_value(modpost_command, "configured link script")
             link_script = ctx.actions.declare_file(ctx.label.name + ".scripts/" + target + "/link-vmlinux.sh")
             ctx.actions.expand_template(template = ctx.file._link_script, output = link_script, substitutions = {"__KBUILD_VMLINUX_MODPOST__": modpost_command})
         variables["<"] = {"value": link_script.path}
     if native.get("final_link") or native.get("postlink_lowered"):
         variables["ARCH_POSTLINK"] = {"value": ""}
     if native["function"] == "script":
-        lines = []
+        recipes = []
         for expression in native["scripts"]:
             text = evaluate(expression, variables, command_sources).strip()
             body = text.lstrip("@+-")
             modifiers = text[:len(text) - len(body)]
-            lines.append(shell_quote(setup.tools["CONFIG_SHELL"]) + " -c " + shell_quote(body) + (" || :" if "-" in modifiers else ""))
-        command = "\n".join(lines) + "\ntouch " + shell_quote(target)
+            recipes.append({"command": body, "strict": False, "ignore_errors": "-" in modifiers})
+        if command_sources["__shell_commands__"]:
+            # Make expands every line before starting the first recipe shell.
+            command = native_recipe(ctx, target + ".lines", recipes, command_sources, setup, recipe_files, replacements)
+        else:
+            command = "\n".join([shell_quote(setup.tools["CONFIG_SHELL"]) + " -c " + shell_quote(recipe["command"]) + (" || :" if recipe["ignore_errors"] else "") for recipe in recipes])
+        command_sources["__shell_commands__"] = []
+        command += "\ntouch " + shell_quote(target)
     else:
         command = value(("filechk_" if native["function"] == "filechk" else "cmd_") + name, variables, command_sources).strip()
     if native.get("final_link") and not FLAG_PROGRAM["image_script_link"]:
@@ -697,7 +731,9 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
         command = "{ " + command + "; } > " + shell_quote(target)
     source_path = first.removeprefix(source + "/")
     source_file = dependencies.get(source_path, source_tree.logical.get(source_path))
-    flags = _compiler_flags(command, setup.tools["CC"], first, target)
+    if command_sources["__shell_commands__"] and command.startswith(setup.tools["CC"] + " "):
+        fail("Native compiler flags require execution-time Make shell results: " + target)
+    flags = None if command_sources["__shell_commands__"] else _compiler_flags(command, setup.tools["CC"], first, target)
 
     # Native preprocessing and compiler-emitted assembly use the same Bazel
     # dependency discovery as ordinary objects. Recognize the command shape,
@@ -746,9 +782,12 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
         for name, expression in FLAG_PROGRAM["image_btf_shell"].items():
             native_command = evaluate(expression, variables, command_sources).replace("__source__", source).replace("__object__", ".")
 
+            static_value(native_command, "native helper prelude")
+
             # Keep assignment separate from export so a failed native helper
             # is not hidden by the export builtin's successful exit status.
             export_commands.extend([name + '="$(' + native_command + ')"', "export " + name])
+    command = native_recipe(ctx, target, [{"command": command, "strict": True, "ignore_errors": False}], command_sources, setup, recipe_files, replacements)
     command = "\n".join(export_commands) + "\n" + command
     command = command.replace(source, source_tree.root.path)
 
@@ -767,14 +806,14 @@ cd "$work"
 %s
 %s
 %s
-""" % (shell_quote(stage.path), _stage_links(source_tree.files.to_list() + setup.files.to_list() + [link_script] + (pahole.files.to_list() if pahole != None else [])), "mkdir -p " + " ".join([shell_quote(p.rpartition("/")[0] or ".") for p in outputs]), command)
+""" % (shell_quote(stage.path), _stage_links(source_tree.files.to_list() + setup.files.to_list() + [link_script] + recipe_files + (pahole.files.to_list() if pahole != None else [])), "mkdir -p " + " ".join([shell_quote(p.rpartition("/")[0] or ".") for p in outputs]), command)
     for path, output in outputs.items():
         script += "cp %s %s\n" % (shell_quote(path), shell_quote(output.path))
     run_recipe(
         ctx,
         execution_tools(ctx),
         command = script,
-        inputs = depset([stage, config.config, link_script] + dependencies.values(), transitive = [source_tree.files, setup.files] + ([pahole.files] if pahole != None else [])),
+        inputs = depset([stage, config.config, link_script] + dependencies.values() + recipe_files, transitive = [source_tree.files, setup.files] + ([pahole.files] if pahole != None else [])),
         tools = [pahole.files_to_run] if pahole != None else [],
         outputs = outputs.values(),
         mnemonic = "KbuildGenerate",
