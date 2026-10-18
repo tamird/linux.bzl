@@ -66,6 +66,7 @@ native_conf(
         srcs = ["parity_test.py"],
         args = ["$(rootpath :" + name + "_native)"],
         data = [":" + name + "_native"],
+        env = {"PYTHONDONTWRITEBYTECODE": "1"},
         main = "parity_test.py",
     )
     for name in _CASES
@@ -79,6 +80,7 @@ test_suite(
 py_binary(
     name = "reuse_report",
     srcs = ["reuse_report.py"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
 )
 
 py_test(
@@ -89,6 +91,7 @@ py_test(
         "reuse_report.py",
         "reuse_report_test.py",
     ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
 )
 
 kernel_build_qualification(
@@ -159,6 +162,7 @@ py_test(
         "lz4",
         "changed",
     ]],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
     main = "ir_compare.py",
     tags = ["manual"],
 )
@@ -169,6 +173,7 @@ py_binary(
         "ir_reuse_report.py",
         "reuse_report.py",
     ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
 )
 
 kbuild_resolved_build(
@@ -191,5 +196,6 @@ py_binary(
         "ir_reuse_report.py",
         "reuse_report.py",
     ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
     main = "ir_compare.py",
 )
