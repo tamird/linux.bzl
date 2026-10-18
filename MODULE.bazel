@@ -114,15 +114,19 @@ example_fixtures(
     path = "examples",
 )
 
-# The workflow checks out this source at the pinned kernel revision before building.
-example_fixtures(
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
     name = "bootstrap_linux",
     build_file = "//native:linux_source.BUILD.bazel",
     dev_dependency = True,
-    path = "_tmp/linux",
+    integrity = "sha256-jrekIMzzqD8KL0yXrfTcfw5KvJjRDqVF0f2JE+qtXAU=",
+    patch_strip = 1,
+    patches = ["//native:linux_piggy_dependency.patch"],
+    strip_prefix = "linux-0fcb05b72344f40806cbe810de8872f1698bf053",
+    type = "tar.gz",
+    urls = ["https://codeload.github.com/torvalds/linux/tar.gz/0fcb05b72344f40806cbe810de8872f1698bf053"],
 )
-
-http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
     name = "linux_5_10",
