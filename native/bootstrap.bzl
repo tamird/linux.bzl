@@ -369,4 +369,7 @@ def kernel_repository_bootstrap(source_repository):
         data = [":kernel_repository", anchor, sources] + fragments,
         main = "//:test_repository.py",
         tags = ["manual"],
+        # Generation alone has a 600-second repository-rule budget; this test
+        # also checks the complete export and failed-invocation guards.
+        timeout = "long",
     )
