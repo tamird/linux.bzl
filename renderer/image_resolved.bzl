@@ -115,6 +115,7 @@ def _context(directory, state):
         initial = program(FLAG_PROGRAM["image_build_init"], initial, state["sources"], cells = True).variables
         local_context = None
         graph_variables = {}
+        root_descent = None
 
         # Setup already evaluated the architecture include. Replaying it here
         # repeats += assignments (including platform load addresses).
@@ -125,6 +126,8 @@ def _context(directory, state):
                 sources["__includes__"] = FLAG_PROGRAM["image_graph_programs"]
             result = program(body, initial, sources, cells = True)
             initial = result.variables
+            if directory == "." and body == FLAG_PROGRAM["image_roots"] and FLAG_PROGRAM["image_root_descent"]:
+                root_descent = program(FLAG_PROGRAM["image_root_descent"], initial, sources, cells = True)
             if body == statements:
                 local_context = result
             if body == FLAG_PROGRAM["graph_helpers"]:
@@ -143,15 +146,38 @@ def _context(directory, state):
             initial = dtbs.variables
             dtb_rules = dtbs.rules
         implicit = program(FLAG_PROGRAM["image_implicit_rules"], initial, state["sources"], cells = True)
+        initial = implicit.variables
         state["contexts"][directory] = struct(variables = initial, graph_variables = graph_variables, rules = context.rules + dtb_rules + implicit.rules, target_assignments = context.target_assignments)
         builtins = make_words(_value("subdir-builtin", initial, state["sources"]))
         modorders = make_words(_value("subdir-modorder", initial, state["sources"]))
-        for child in make_words(_value("subdir-ym", initial, state["sources"])):
+        children = make_words(_value("subdir-ym", initial, state["sources"]))
+        modes = {child: (child + "/built-in.a" in builtins, child + "/modules.order" in modorders) for child in children}
+        if root_descent != None:
+            descend = [r for r in root_descent.rules if "descend" in r["targets"]]
+            if len(descend) != 1 or descend[0].get("recipes"):
+                fail("Unsupported native top-level descent: " + str(descend))
+            children = make_words(descend[0]["prerequisites"])
+            for child in children:
+                rules = [r for r in root_descent.rules if child in r["targets"] and r.get("recipes")]
+                if len(rules) != 1 or len(rules[0]["recipes"]) != 1:
+                    fail("Expected one native directory invocation for " + child)
+                variables = dict(root_descent.variables)
+                for name, text in {"@": child, "MAKE": "__make_dispatch__", "build": "__build_dispatch__", "Q": ""}.items():
+                    variables[name] = {"value": text}
+                words = shell_words(evaluate(rules[0]["recipes"][0], variables, state["sources"]).lstrip("@+"))
+                if words[:2] != ["__make_dispatch__", "__build_dispatch__=" + child] or any(["=" not in word for word in words[2:]]):
+                    fail("Unsupported native directory invocation: " + str(words))
+                assignments = dict([word.split("=", 1) for word in words[2:]])
+                if assignments != {"single-build": "", "need-builtin": "1", "need-modorder": "1"}:
+                    fail("Unsupported native full-image directory modes: " + str(assignments))
+                modes[child] = (bool(assignments["need-builtin"]), bool(assignments["need-modorder"]))
+        state["children"][directory] = children
+        for child in children:
             child = _normalize(child)
             if child in state["parents"] and state["parents"][child] != directory:
                 fail("Kbuild directory %s has conflicting parents %s and %s" % (child, state["parents"][child], directory))
             state["parents"][child] = directory
-            state["directory_modes"][child] = (child + "/built-in.a" in builtins, child + "/modules.order" in modorders)
+            state["directory_modes"][child] = modes[child]
     return state["contexts"][directory]
 
 def _valid_rule(rule, stem, context, state):
@@ -233,6 +259,15 @@ def _target_scope(path, directory, state):
                         descendants["__exports__"] = variables["__exports__"]
     return struct(variables = variables, inherited = inherited, descendants = descendants)
 
+def _prerequisites(rule, path, stem, variables, sources):
+    if "secondary_expression" not in rule:
+        return rule["prerequisites"]
+    scope = dict(variables)
+    for name, text in {"@": path, "@F": path.rsplit("/", 1)[-1], "@D": path.rpartition("/")[0] or ".", "*": stem}.items():
+        scope[name] = {"value": text}
+    scope.update(rule["secondary_inputs"])
+    return evaluate(rule["secondary_expression"], scope, sources)
+
 def _local_recipe(path, directory, state):
     context = _context(directory, state)
     scope = _target_scope(path, directory, state)
@@ -242,7 +277,7 @@ def _local_recipe(path, directory, state):
             stem = match(_normalize(pattern), path)
             if stem == None or not _valid_rule(rule, stem, context, state):
                 continue
-            tail = rule["prerequisites"].split(";", 1)[0]
+            tail = _prerequisites(rule, path, stem, scope.variables, state["sources"]).split(";", 1)[0]
             if ":" in tail:
                 target_pattern, tail = tail.split(":", 1)
                 stem = match(_normalize(target_pattern.strip()), path)
@@ -261,7 +296,7 @@ def _local_recipe(path, directory, state):
                         continue
                     function = evaluate(term["arguments"][0], context.variables, state["sources"]).strip()
                     if function in ("if_changed", "if_changed_dep", "if_changed_rule", "if_changed_except", "cmd", "filechk"):
-                        tail = rule["prerequisites"].split(";", 1)[0]
+                        tail = _prerequisites(rule, path, stem, scope.variables, state["sources"]).split(";", 1)[0]
                         if ":" in tail:
                             target_pattern, tail = tail.split(":", 1)
                             stem = match(_normalize(target_pattern.strip()), path)
@@ -382,6 +417,39 @@ def _postlink(path, state):
     return struct(commands = commands, outputs = outputs, prerequisites = prerequisites)
 
 def _link_descriptor(path, state):
+    if FLAG_PROGRAM["image_script_link"]:
+        final_link = path == state["final_link"]
+        directory = "@vmlinux" if final_link else "@modpost"
+        context = state["contexts"][directory]
+        symdump = _value("output-symdump", state["contexts"]["@modpost"].variables, state["sources"]).strip()
+        module_sources = [p[:-3] + ".mod.c" for p in state["modules"]]
+        if path in module_sources:
+            path = symdump
+        if not final_link and path not in (symdump, "Module.symvers"):
+            return None
+        native = _recipe(path, directory, state)
+        if native == None:
+            fail("No native link-stage producer for " + path)
+        dependencies = [p for p in native["prerequisites"] if p not in state["empty_archive_controls"]]
+        outputs = [path]
+        if final_link:
+            outputs.extend(["System.map"] + state["link_cooutputs"])
+            post = state["postlinks"][path]
+            outputs.extend(post.outputs)
+            dependencies.extend(post.prerequisites)
+            dependencies.append("scripts/mod/modpost")
+            scripts = _context("scripts", state)
+            dependencies.extend(["scripts/" + name for name in make_words(_value("hostprogs-always-y", scripts.variables, state["sources"]))])
+            native["script_modpost"] = _recipe("vmlinux.symvers", "@vmlinux_modpost", state)
+            native["postlink"] = post.commands
+            native["pahole"] = state["pahole"]
+            if state["pahole"] != None:
+                dependencies.extend(make_words(_value("RESOLVE_BTFIDS", context.variables, state["sources"])))
+        elif path == symdump:
+            outputs.extend(module_sources)
+            dependencies.append("scripts/mod/modpost")
+        native["final_link"] = final_link
+        return {"target": path, "directory": ".", "outs": outputs, "deps": dependencies, "kind": "generate", "driver": "link", "native": native}
     if path in ("built-in-fixup.a", "vmlinux.a"):
         native = _recipe(path, "@archive", state)
         if native == None:
@@ -454,7 +522,7 @@ def _link_descriptor(path, state):
 def _prepare_contexts(state, arch_context):
     """Resolve architecture preparation producers from the same native programs."""
     root = _context(".", state)
-    state["bootstrap"] = make_words(_value("targets", root.variables, state["sources"]))
+    state["bootstrap"] = [_normalize(p) for p in make_words(_value("targets", root.variables, state["sources"]))]
     state["preparation"] = []
     state["preparation_checks"] = {}
     state["early_preparation"] = []
@@ -581,17 +649,20 @@ def _prepare_contexts(state, arch_context):
 
 def _module_order_variables(state):
     variables = dict(state["setup"].variables)
+    variables["MAKECMDGOALS"] = {"value": " ".join(state["modules"])}
     variables["single-ko"] = {"value": " ".join(state["modules"])}
     variables["Q"] = {"value": ""}
     return variables
 
 def _describe(path, state, owner = None):
     path = state["postlink_outputs"].get(path, path)
+    if path in state["link_cooutputs"]:
+        path = state["final_link"]
     if path in state["preparation_checks"]:
         return state["preparation_checks"][path]
     if path == "System.map":
         return _link_descriptor(state["final_link"], state)
-    link = _link_descriptor(path, state) if path in ["built-in-fixup.a", "vmlinux.a", "vmlinux.o", "vmlinux.symvers", "Module.symvers", ".vmlinux.export.c", "vmlinux.unstripped", "vmlinux"] or path in [m[:-3] + ".mod.c" for m in state["modules"]] else None
+    link = _link_descriptor(path, state) if path in ["built-in-fixup.a", "vmlinux.a", "vmlinux.o", "vmlinux.symvers", "Module.symvers", "modules-only.symvers", ".vmlinux.export.c", "vmlinux.unstripped", "vmlinux"] or path in [m[:-3] + ".mod.c" for m in state["modules"]] else None
     if link:
         return link
     if state["modules"] and path == "modules.order":
@@ -600,7 +671,7 @@ def _describe(path, state, owner = None):
             "target": path,
             "directory": ".",
             "outs": [path],
-            "deps": [],
+            "deps": [p for terms in FLAG_PROGRAM["image_module_order_prerequisites"] for p in make_words(evaluate(terms, variables, state["sources"]))],
             "kind": "generate",
             "driver": "link",
             "native": {"function": "script", "scripts": FLAG_PROGRAM["image_modules_order"], "arguments": [], "variables": variables, "prerequisites": [], "stem": "", "assignments": []},
@@ -615,7 +686,7 @@ def _describe(path, state, owner = None):
         outputs = [path]
         if compiling:
             dependencies.extend(state["preparation"])
-            dependencies.extend(["include/generated/uapi/linux/version.h", "include/generated/utsrelease.h", "include/generated/compile.h", "include/generated/utsversion.h"])
+            dependencies.extend(state["version_headers"])
         else:
             post = state["postlinks"][path]
             native["postlink_lowered"] = True
@@ -632,7 +703,16 @@ def _describe(path, state, owner = None):
         return {"target": path, "directory": ".", "outs": outputs, "deps": dependencies, "kind": "compile" if compiling else "generate", "driver": "link", "native": native}
     if path == "include/generated/utsversion.h":
         return {"target": path, "directory": "init", "outs": [path], "deps": [], "kind": "generate", "driver": "build", "native": _recipe(path, "init", state)}
-    header_commands = {"include/generated/uapi/linux/version.h": "version.h", "include/generated/utsrelease.h": "utsrelease.h", "include/generated/compile.h": "compile.h"}
+    header_commands = {"include/generated/uapi/linux/" + name if name == "version.h" else "include/generated/" + name: name for name in FLAG_PROGRAM["image_header_commands"]}
+    if path == "include/generated/compile.h" and "compile.h" not in FLAG_PROGRAM["image_header_commands"]:
+        native = _recipe(path, "init", state)
+        if native == None:
+            context = _context("init", state)
+            rules = _rules_for_path(path, context, state)
+            if len(rules) != 1 or not rules[0].get("recipes"):
+                fail("Expected one native compile.h producer, got " + str(rules))
+            native = {"function": "script", "scripts": rules[0]["recipes"], "arguments": [], "variables": context.variables, "prerequisites": [], "stem": "", "assignments": []}
+        return {"target": path, "directory": "init", "outs": [path], "deps": native["prerequisites"], "kind": "generate", "driver": "build", "native": native}
     if path in header_commands:
         command = header_commands[path]
         return {
@@ -755,7 +835,7 @@ def _describe(path, state, owner = None):
             has_recipe = has_recipe or rule["recipe"]
             if rule["grouped"]:
                 outs = [_normalize(p.replace("%", stem, 1)) for p in rule["targets"]]
-            tail = rule["prerequisites"].split(";", 1)[0]
+            tail = _prerequisites(rule, path, stem, _target_scope(path, directory, state).variables, state["sources"]).split(";", 1)[0]
             if ":" in tail:
                 target_pattern, tail = tail.split(":", 1)
                 stem = match(_normalize(target_pattern.strip()), path)
@@ -775,6 +855,15 @@ def _describe(path, state, owner = None):
     if not has_recipe:
         fail("No native action producer for " + path)
     compiler_prerequisites = list(dependencies)
+    postprocess_dependencies = []
+    recordmcount = FLAG_PROGRAM["image_recordmcount"]
+    if kind == "compile" and native != None and native["function"] == "if_changed_rule" and recordmcount != None:
+        command = evaluate(native["arguments"][0], native["variables"], state["sources"]).strip()
+        if "record_mcount" in FLAG_PROGRAM["image_compile_postprocess"][command] and path != recordmcount["excluded"]:
+            recording = program(recordmcount["program"], native["variables"], state["sources"], cells = True)
+            if recording.variables.get("sub_cmd_record_mcount", {}).get("expr") == recordmcount["expression"]:
+                postprocess_dependencies.append(recordmcount["tool"])
+    dependencies.extend(postprocess_dependencies)
     if kind == "compile" or (native != None and native.get("compile")) or path.endswith(".lds"):
         # Root Kbuild already declares the ordering among bootstrap assembly
         # generators. Other objects consume the configured preparation outputs.
@@ -784,11 +873,8 @@ def _describe(path, state, owner = None):
             dependencies.extend([p for p in state["preparation"] if "/include/generated/" in p and p not in state["late_preparation"]])
             if path not in state["preparation_assembly"]:
                 dependencies.extend(state["early_preparation"])
-        dependencies.extend(header_commands)
-
-        # The final version header is also consumed by native boot wrappers.
-        dependencies.append("include/generated/utsversion.h")
-    return {"target": path, "directory": "." if directory == "@vmlinux" else directory, "outs": outs, "deps": dependencies, "compiler_prerequisites": compiler_prerequisites, "kind": kind, "driver": "build", "native": native if kind in ("generate", "compile") else None}
+        dependencies.extend(state["version_headers"])
+    return {"target": path, "directory": "." if directory == "@vmlinux" else directory, "outs": outs, "deps": dependencies, "compiler_prerequisites": compiler_prerequisites, "postprocess_dependencies": postprocess_dependencies, "kind": kind, "driver": "build", "native": native if kind in ("generate", "compile") else None}
 
 def _select_modules(state):
     """Follow the configured recursive Kbuild graph to each requested owner."""
@@ -810,7 +896,7 @@ def _select_modules(state):
                 state["module_owners"][module[:-3] + ".mod"] = directory
                 selected = True
                 break
-            work.extend([child for child in make_words(_value("subdir-ym", variables, state["sources"])) if object_path.startswith(child + "/")])
+            work.extend([child for child in state["children"][directory] if object_path.startswith(child + "/")])
         if not selected:
             fail("Module selection exceeded 10000 directories: " + module)
 
@@ -837,7 +923,7 @@ def _build(ctx, request):
 
     # This in-tree build declares vmlinux.o before modpost; native Make's
     # existence test must see the planned artifact, not the host filesystem.
-    index = source_index(["__source__/" + p for p in source_files] + ["vmlinux.o"])
+    index = source_index(["__source__/" + p for p in source_files] + ["vmlinux.o", "vmlinux.symvers"])
     index["__includes__"] = FLAG_PROGRAM["image_programs"]
     index["__capabilities__"] = setup.sources["__capabilities__"]
     index["__host_machine__"] = setup.sources["__host_machine__"]
@@ -850,6 +936,7 @@ def _build(ctx, request):
         "invocations": {},
         "target_scopes": {},
         "parents": {},
+        "children": {},
         "directory_modes": {},
         "modules": modules,
         "module_owners": {},
@@ -861,6 +948,7 @@ def _build(ctx, request):
         "sources": index,
         "setup": setup,
         "pahole": config.pahole if config.values.get("DEBUG_INFO_BTF") == "y" else None,
+        "version_headers": ["include/generated/uapi/linux/version.h", "include/generated/utsrelease.h", "include/generated/compile.h"] + (["include/generated/utsversion.h"] if FLAG_PROGRAM["image_timestamp_header"] else []),
     }
     external_tools = {}
     if config.values.get("DEBUG_INFO_BTF") == "y":
@@ -897,18 +985,30 @@ def _build(ctx, request):
         rules = [rule for rule in controls.rules if path in rule["targets"]]
         if not any([rule.get("recipes") or make_words(rule["prerequisites"]) for rule in rules]):
             state["empty_archive_controls"][path] = True
-    link_context = program(FLAG_PROGRAM["image_programs"]["scripts/Makefile.vmlinux"], _context(".", state).variables, state["sources"], cells = True)
+    link_context = program(FLAG_PROGRAM["image_link_context"], _context(".", state).variables, state["sources"], cells = True)
     state["contexts"]["@vmlinux"] = link_context
     state["link_owners"] = {p: True for p in make_words(_value("targets", link_context.variables, state["sources"]))}
     final_targets = {}
     for rule in link_context.rules:
         for terms in rule.get("recipes", []):
             for term in terms:
-                if term.get("op") == "function" and term.get("name") == "call" and len(term["arguments"]) > 1 and evaluate(term["arguments"][1], link_context.variables, state["sources"]).strip() == "link_vmlinux":
+                if term.get("op") == "function" and term.get("name") == "call" and len(term["arguments"]) > 1 and evaluate(term["arguments"][1], link_context.variables, state["sources"]).strip() == FLAG_PROGRAM["image_final_command"]:
                     final_targets.update({p: True for p in rule["targets"]})
     if len(final_targets) != 1:
         fail("Expected one native link_vmlinux target, got " + str(final_targets.keys()))
     state["final_link"] = final_targets.keys()[0]
+    state["link_cooutputs"] = []
+    module_roots = list(modules)
+    if FLAG_PROGRAM["image_script_link"]:
+        state["link_cooutputs"] = ["vmlinux.o", "vmlinux.symvers", "modules.builtin", "modules.builtin.modinfo"]
+        variables = dict(_context(".", state).variables)
+        if FLAG_PROGRAM["image_module_order_contents"] != None:
+            variables["__selected_module_order"] = {"value": evaluate(FLAG_PROGRAM["image_module_order_contents"], _module_order_variables(state), state["sources"])}
+        state["contexts"]["@modpost"] = program(FLAG_PROGRAM["image_link"]["modpost"], variables, state["sources"], cells = True)
+        if modules:
+            module_roots.extend([p for rule in state["contexts"]["@modpost"].rules if "__modpost" in rule["targets"] for p in make_words(rule["prerequisites"])])
+        variables["MODPOST_VMLINUX"] = {"value": "1"}
+        state["contexts"]["@vmlinux_modpost"] = program(FLAG_PROGRAM["image_link"]["modpost"], variables, state["sources"], cells = True)
     postlink = "arch/" + config.architecture.srcarch + "/Makefile.postlink"
     state["postlink_file"] = postlink
     if postlink in FLAG_PROGRAM["image_programs"]:
@@ -922,7 +1022,7 @@ def _build(ctx, request):
             state["postlink_outputs"][output] = path
     state["known_products"] = {p: True for p in ["built-in-fixup.a", "vmlinux.a", "vmlinux.o", "vmlinux.symvers", ".vmlinux.export.c", "vmlinux.unstripped", "vmlinux", "System.map", ".config", "include/config/auto.conf", "include/generated/autoconf.h"] + state["postlink_outputs"].keys() + state["module_final"].keys() + [m[:-3] + suffix for m in modules for suffix in [".o", ".mod", ".mod.c"]]}
     _architecture_invocations(request.architecture_roots.get(config.architecture.srcarch, []), state)
-    pending = [(path, None, {}) for path in reversed(list(request.roots) + request.architecture_roots.get(config.architecture.srcarch, []) + modules)]
+    pending = [(path, None, {}) for path in reversed(list(request.roots) + request.architecture_roots.get(config.architecture.srcarch, []) + module_roots)]
     descriptors, producers = {}, {}
     for _ in range(100000):
         if not pending:
@@ -969,10 +1069,10 @@ def _build(ctx, request):
             ctx.actions.write(marker, "")
             compiler_directories[directory] = marker
     common = {"include/generated/autoconf.h": config_files["include/generated/autoconf.h"]}
-    if config.values.get("OBJTOOL") == "y":
+    if config.values.get("OBJTOOL") == "y" or any(["tools/objtool/objtool" in d["deps"] for d in descriptors.values()]):
         objtool = ctx.attr._objtool[KernelObjtoolInfo]
         if objtool.executable == None:
-            fail("CONFIG_OBJTOOL requires a native objtool decoder for SRCARCH=" + config.architecture.srcarch)
+            fail("Selected Kbuild prerequisites require a native objtool decoder for SRCARCH=" + config.architecture.srcarch)
         common["tools/objtool/objtool"] = objtool.executable
     finished = {}
     members = []
@@ -1044,7 +1144,7 @@ def _build(ctx, request):
                 prepared,
                 config,
                 setup,
-                struct(root = generated_root, directory_marker = compiler_directories[d["directory"]], direct = direct, native_direct = native_direct, config = config_files, experiment = experiment),
+                struct(root = generated_root, directory_marker = compiler_directories[d["directory"]], direct = direct, native_direct = native_direct, postprocess = {p: artifacts[p] for p in d.get("postprocess_dependencies", [])}, config = config_files, experiment = experiment),
                 d.get("members", [p for p in d["deps"] if p.endswith(".o")] if d["kind"] == "host" and not target.endswith(".o") else []),
                 native = d.get("native"),
                 ancestry = ancestry,
@@ -1079,7 +1179,7 @@ def _build(ctx, request):
         "config_report": config.report.path,
         "setup": setup.file.path,
         "members": members,
-        "roots": list(request.roots) + request.architecture_roots.get(config.architecture.srcarch, []) + modules,
+        "roots": list(request.roots) + request.architecture_roots.get(config.architecture.srcarch, []) + module_roots,
         "artifacts": {p: f.path for p, f in artifacts.items()},
         "compilers": experiment.compilers,
         "compiler_diagnostics": [file.path for file in experiment.diagnostics],
@@ -1111,7 +1211,7 @@ def _build(ctx, request):
             architecture = config.architecture,
         ),
         DefaultInfo(files = depset([manifest, config.report, setup.file] + artifacts.values())),
-        OutputGroupInfo(boot = depset([artifacts[p] for p in request.architecture_roots.get(config.architecture.srcarch, [])]), kernel = depset([artifacts["vmlinux"]] if "vmlinux" in artifacts else []), modules = depset([artifacts[p] for p in modules]), manifest = depset([manifest]), ir_experiment = depset(experiment_files)),
+        OutputGroupInfo(boot = depset([artifacts[p] for p in request.architecture_roots.get(config.architecture.srcarch, [])]), kernel = depset([artifacts["vmlinux"]] if "vmlinux" in artifacts else []), modules = depset([artifacts[p] for p in module_roots]), manifest = depset([manifest]), ir_experiment = depset(experiment_files)),
     ]
 
 def _artifact_impl(ctx):

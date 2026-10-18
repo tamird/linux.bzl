@@ -5,7 +5,7 @@ External processes and generated-file reads require a declared action, and are
 rejected rather than run during analysis.
 """
 
-load(":text_transforms.bzl", "sed_substitute")
+load(":text_transforms.bzl", "literal_echo", "sed_substitute")
 
 def _words(value):
     return [w for w in value.replace("\t", " ").replace("\n", " ").replace("\r", " ").split(" ") if w]
@@ -42,6 +42,8 @@ def _builtin(name, a, sources):
         if not sources.get("__compiler_include__"):
             fail("Selected C++ toolchain does not expose a unique compiler builtin include directory")
         return sources["__compiler_include__"]
+    if name == "kbuild_echo":
+        return literal_echo(a[0])
     if name == "kbuild_sed":
         return sed_substitute(a[0], a[1])
     if name == "kbuild_libelf_api":
@@ -393,7 +395,7 @@ def program(statements, initial, sources, cells = False):
             paths = _words(evaluate(node["arguments_expression"], variables, sources))
             for path in reversed(paths):
                 path = path.removeprefix("__source__/").removeprefix(sources.get("__source_root__", "__source__") + "/").removeprefix("./")
-                if path in ("include/config/auto.conf", "include/config/auto.conf.cmd"):
+                if path.removeprefix("__object__/") in ("include/config/auto.conf", "include/config/auto.conf.cmd"):
                     continue
                 parts = []
                 for part in path.split("/"):
@@ -448,6 +450,9 @@ def program(statements, initial, sources, cells = False):
                 "recipe": False,
                 "implicit": node.get("implicit", False),
             }
+            if "secondary_expression" in node:
+                current["secondary_expression"] = node["secondary_expression"]
+                current["secondary_inputs"] = {name: {"value": evaluate(expression, variables, sources)} for name, expression in node["secondary_inputs"].items()}
             rules.append(current)
         elif kind == "recipe" and current != None:
             current["recipe"] = True

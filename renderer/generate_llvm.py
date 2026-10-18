@@ -35,6 +35,12 @@ def refs(value):
     if not isinstance(value, dict):
         return set()
     result = set()
+    if value.get('directive') in ('ifdef', 'ifndef') and 'operands' in value:
+        # The operand expands to a variable name, whose stored value controls
+        # this branch. A literal name is still a dependency of the slice.
+        name = const(value['operands'][0])
+        if name is not None:
+            result.add(name.strip())
     if value.get('op') == 'reference':
         name = const(value['name'])
         if name is not None:

@@ -90,6 +90,9 @@ kernel_btf_test(
 
 MODULE_OPTIONS = dict(
     EXAMPLE_CONFIGS["btf"],
+    DYNAMIC_FTRACE = "y",
+    FTRACE = "y",
+    FUNCTION_TRACER = "y",
     INET = "y",
     MODULES = "y",
     NET = "y",
@@ -100,6 +103,9 @@ MODULE_OPTIONS = dict(
 
 MODULE_REQUIRED_OPTIONS = {
     "DEBUG_INFO_BTF": "y",
+    "DYNAMIC_FTRACE": "y",
+    "FTRACE": "y",
+    "FUNCTION_TRACER": "y",
     "MODULES": "y",
     "NET_SCH_INGRESS": "m",
 }

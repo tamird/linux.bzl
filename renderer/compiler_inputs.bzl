@@ -65,6 +65,22 @@ def _bind(code, inputs):
             value, kind = inputs[token[1]]
             result.append(["lit", value, kind])
         else:
+            if token[0] == "lit" and "__KCONFIG_" in token[1]:
+                # Native Kconfig expands environment references inside quoted
+                # strings too, such as arch/$(SRCARCH)/configs/defconfig.
+                parts = token[1].split("__KCONFIG_")
+                value = parts[0]
+                for part in parts[1:]:
+                    end = len(part)
+                    for index in range(len(part)):
+                        if part[index] not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_":
+                            end = index
+                            break
+                    name = "__KCONFIG_" + part[:end]
+                    if name not in inputs:
+                        fail("Unresolved generated Kconfig input: " + name)
+                    value += inputs[name][0] + part[end:]
+                token = ["lit", value, token[2]]
             if token[0] in ("sym", "lit") and "__KCONFIG_" in token[1]:
                 fail("Unresolved generated Kconfig input: " + token[1])
             result.append(token)

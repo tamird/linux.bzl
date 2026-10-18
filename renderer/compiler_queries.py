@@ -8,6 +8,16 @@ def lower_compiler_queries(value):
     if not isinstance(value, dict):
         return value
     value = {k: lower_compiler_queries(v) for k, v in value.items()}
+    if value.get('directive') in ('ifeq', 'ifneq'):
+        match value.get('operands'):
+            case [[{'op': 'function', 'name': 'shell', 'arguments': [terms]}], []]:
+                if terms == [
+                    {'op': 'reference', 'name': [{'op': 'literal', 'value': 'CC'}]},
+                    {'op': 'literal', 'value': ' --version 2>&1 | head -n 1 | grep clang'},
+                ]:
+                    # This native condition tests compiler identity, not an
+                    # option capability or the contents of a version banner.
+                    return dict(value, operands=[[{'op': 'config', 'name': 'CONFIG_CC_IS_CLANG'}], []])
     if value.get('op') == 'function' and value.get('name') == 'shell':
         terms = value['arguments'][0]
         if terms == [{'op': 'literal', 'value': 'uname -m'}]:

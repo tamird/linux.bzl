@@ -1,4 +1,4 @@
-"""Evaluate exported text-only sed programs without executing a process."""
+"""Evaluate bounded literal arguments and text programs without a process."""
 
 def sed_substitute(text, encoded):
     spec = json.decode(encoded)
@@ -48,3 +48,49 @@ def sed_substitute(text, encoded):
         if pending:
             fail("Text transformation exceeded 100000 matching steps")
     return text
+
+def shell_words(text, allow_recipe = False):
+    # Split an already-expanded command argument list, retaining quoted C
+    # strings. This does not parse Make expressions or execute shell syntax.
+    words, current, quote, escaped, active = [], "", "", False, False
+    for c in text.elems():
+        if escaped:
+            current += c
+            escaped = False
+        elif c == "\\" and quote != "'":
+            escaped = True
+            active = True
+        elif quote:
+            if c == quote:
+                quote = ""
+            else:
+                current += c
+        elif c in ["'", '"']:
+            quote = c
+            active = True
+        elif c in [" ", "\t", "\n"]:
+            if active:
+                words.append(current)
+                current, active = "", False
+        elif c in [";", "|", "&", "<", ">", "`"]:
+            if allow_recipe:
+                return None
+            fail("Shell operation in literal arguments: " + text)
+        else:
+            current += c
+            active = True
+    if quote or escaped:
+        fail("Unclosed quote in literal arguments: " + text)
+    if active:
+        words.append(current)
+    return words
+
+def literal_echo(text):
+    # Echo options, escapes, expansions and globbing vary with the shell or
+    # consult external state. Only literal arguments have a text-only result.
+    if any([c in text for c in "$`\\*?[]{}~#;|&<>()\n\r".elems()]):
+        fail("Native echo requires literal arguments: " + text)
+    words = shell_words(text)
+    if words and words[0].startswith("-"):
+        fail("Native echo options are unsupported: " + text)
+    return " ".join(words)

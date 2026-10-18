@@ -5,6 +5,9 @@ load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load(":expressions.bzl", "evaluate", "make_words", "match", "program", "source_index")
 load(":flag_program.bzl", "FLAG_PROGRAM")
+load(":text_transforms.bzl", _shell_words = "shell_words")
+
+shell_words = _shell_words
 
 def value(name, variables, sources):
     return evaluate([{"op": "reference", "name": [{"op": "literal", "value": name}]}], variables, sources)
@@ -17,42 +20,6 @@ def _stage_links(files):
     # and its source tree live in an external repository.
     roots = {f.path.split("/")[0]: True for f in files}
     return "\n".join(['if [ ! -e %s ]; then ln -s "$exec_root"/%s %s; fi' % (shell_quote(root), shell_quote(root), shell_quote(root)) for root in sorted(roots)])
-
-def shell_words(text, allow_recipe = False):
-    # Split an already-expanded command argument list, retaining quoted C
-    # strings. This does not parse Make expressions or execute shell syntax.
-    words, current, quote, escaped, active = [], "", "", False, False
-    for c in text.elems():
-        if escaped:
-            current += c
-            escaped = False
-        elif c == "\\" and quote != "'":
-            escaped = True
-            active = True
-        elif quote:
-            if c == quote:
-                quote = ""
-            else:
-                current += c
-        elif c in ["'", '"']:
-            quote = c
-            active = True
-        elif c in [" ", "\t", "\n"]:
-            if active:
-                words.append(current)
-                current, active = "", False
-        elif c in [";", "|", "&", "<", ">", "`"]:
-            if allow_recipe:
-                return None
-            fail("Shell operation in compiler arguments: " + text)
-        else:
-            current += c
-            active = True
-    if quote or escaped:
-        fail("Unclosed quote in compiler arguments: " + text)
-    if active:
-        words.append(current)
-    return words
 
 def _target_assignments(variables, assignments, target, sources):
     for patterns_first in [True, False]:
@@ -326,6 +293,61 @@ def _compiler_flags(command, compiler, source, target):
         return None
     return flags
 
+def _native_compiler_postprocess(ctx, target, raw, output, source_file, variables, commands, inputs, source_prerequisites, source_tree, setup):
+    # Keep the native target name while running the selected rule's commands.
+    # In particular recordmcount excludes scripts/mod/empty.o by that name.
+    variables = dict(variables)
+    variables["objtree"] = {"value": "."}
+    sources = dict(setup.sources)
+    sources["__shell_commands__"] = True
+    expanded = []
+    source_inputs = dict(source_prerequisites)
+    source_inputs[source_file.path] = source_file
+    for name in commands:
+        command = value(name, variables, sources).strip().lstrip("; ")
+        if not command:
+            continue
+        if name in ["cmd_gen_ksymdeps", "cmd_modversions_c", "cmd_modversions_S", "cmd_gen_symversions_c", "cmd_gen_symversions_S"]:
+            fail("Native compiler stage requires exported symbol-version metadata: " + name)
+        command = command.replace("__source__", source_tree.source_root).replace("__object__", ".")
+        script = FLAG_PROGRAM["image_compile_scripts"].get(name)
+        if script != None:
+            script_file = source_tree.logical[script["path"]]
+            if not command.startswith(script_file.path + " "):
+                fail("Native compiler script namespace changed: " + command)
+            interpreter = execution_tools(ctx).commands.get(script["interpreter"])
+            if interpreter == None:
+                fail("Compiler postprocessor needs a declared interpreter: " + script["interpreter"])
+            command = " ".join([shell_quote(word) for word in [interpreter.path] + script["arguments"]]) + " " + command
+            source_inputs[script["path"]] = script_file
+        expanded.append(command)
+    if not expanded:
+        return False
+    script = """set -eu
+exec_root="$PWD"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+cd "$work"
+%s
+mkdir -p %s
+cp "$exec_root"/%s %s
+chmod u+w %s
+""" % (_stage_links([raw] + inputs.values() + source_inputs.values() + setup.files.to_list()), shell_quote(target.rpartition("/")[0] or "."), shell_quote(raw.path), shell_quote(target), shell_quote(target))
+    for path, file in inputs.items():
+        script += "mkdir -p %s\nln -s \"$exec_root\"/%s %s\n" % (shell_quote(path.rpartition("/")[0] or "."), shell_quote(file.path), shell_quote(path))
+    script += "\n".join(["export " + name + "=" + shell_quote(tool) for name, tool in setup.tools.items()]) + "\n"
+    script += "\n".join(expanded) + "\ncp %s \"$exec_root\"/%s\n" % (shell_quote(target), shell_quote(output.path))
+    run_recipe(
+        ctx,
+        execution_tools(ctx),
+        command = script,
+        inputs = depset([raw] + inputs.values() + source_inputs.values(), transitive = [setup.files]),
+        outputs = [output],
+        mnemonic = "KbuildPostprocess",
+        progress_message = "Postprocess %s" % target,
+    )
+    return True
+
 # Fixed package fixtures or action helpers, not target-naming macros.
 # buildifier: disable=unnamed-macro
 def register(ctx, target, directory, kind, driver, outputs, dependencies, source_tree, config, setup, compiler_inputs, object_members = [], native = None, ancestry = None, graph_variables = {}, source_prerequisites = {}, invocation_environment = None):
@@ -354,8 +376,8 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, source
 
     if kind in ["host", "compile"]:
         # Objtool consumes the finished object in a separate action.
-        compiler_dependencies = {p: f for p, f in dependencies.items() if p != "tools/objtool/objtool"}
-        direct_dependencies = {p: f for p, f in compiler_inputs.direct.items() if p != "tools/objtool/objtool"}
+        compiler_dependencies = {p: f for p, f in dependencies.items() if p != "tools/objtool/objtool" and p not in compiler_inputs.postprocess}
+        direct_dependencies = {p: f for p, f in compiler_inputs.direct.items() if p != "tools/objtool/objtool" and p not in compiler_inputs.postprocess}
         generated_root = compiler_inputs.root
         variables = _scope(setup, directory, target, generated_root, source, ancestry, graph_variables, native, invocation_environment)
         if kind == "host":
@@ -401,6 +423,11 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, source
         compile_variables["cmd_objtool"] = {"value": ""}
         compile_variables["cmd_ld_single"] = {"value": ""}
         name = evaluate(native["arguments"][0], variables, setup.sources).strip() if native else ("as_o_S" if path.endswith(".S") else "cc_s_c" if target.endswith(".s") else "cc_o_c")
+        rule_commands = None
+        if native != None and native["function"] == "if_changed_rule":
+            rule_commands = FLAG_PROGRAM["image_compile_tails"][name] + ["cmd_" + stage for stage in FLAG_PROGRAM["image_compile_postprocess"][name]]
+            for tail in FLAG_PROGRAM["image_compile_tails"][name]:
+                compile_variables[tail] = {"value": ""}
         command = value("cmd_" + name, compile_variables, setup.sources).strip()
         flags = _compiler_flags(command, setup.tools["CC"], source_file.path, target)
         if flags == None:
@@ -415,14 +442,24 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, source
         postprocess = ""
         postprocess_inputs = [raw]
         if target.endswith(".o"):
-            if config.make_values.get("CONFIG_OBJTOOL") == "y":
+            if "tools/objtool/objtool" in dependencies:
                 objtool = dependencies["tools/objtool/objtool"]
-                postprocess_variables["objtool"] = {"value": objtool.path}
+                for name in FLAG_PROGRAM["image_objtool_variables"]:
+                    if name in postprocess_variables:
+                        postprocess_variables[name] = {"value": objtool.path}
                 postprocess_inputs.append(objtool)
+
+            if rule_commands != None:
+                inputs = dict(compiler_inputs.postprocess)
+                if "tools/objtool/objtool" in dependencies:
+                    inputs["tools/objtool/objtool"] = dependencies["tools/objtool/objtool"]
+                if not _native_compiler_postprocess(ctx, target, raw, outputs[target], source_file, postprocess_variables, rule_commands, inputs, source_prerequisites, source_tree, setup):
+                    ctx.actions.symlink(output = outputs[target], target_file = raw)
+                return
 
             # Membership and target-specific arguments use the logical Kbuild
             # name. Freeze those decisions before substituting the action path.
-            for name in ["objtool-enabled", "objtool-args", "is-single-obj-m"]:
+            for name in ["basetarget", "part-of-module", "objtool-enabled", "objtool-args", "is-single-obj-m"]:
                 postprocess_variables[name] = {"value": value(name, postprocess_variables, setup.sources)}
             postprocess_variables["@"] = {"value": outputs[target].path}
             postprocess_variables["tmp-target"] = {"value": outputs[target].path + ".tmp"}
@@ -599,10 +636,20 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
     for path, entry in source_index(dependencies.keys()).items():
         command_sources[path] = command_sources.get(path, []) + entry if type(entry) == "list" else entry
     command_sources["__shell_commands__"] = True
+    link_script = ctx.file._link_script
     if native.get("final_link"):
-        # The adapted script has a declared timestamp prerequisite. Preserve
-        # its source-selected argument list; postlink is lowered separately.
-        variables["<"] = {"value": ctx.file._link_script.path}
+        modpost = native.get("script_modpost")
+        if modpost != None:
+            modpost_variables = dict(modpost["variables"])
+            for key, tool in setup.tools.items():
+                modpost_variables[key] = {"value": tool}
+            for key, text in {"@": "vmlinux.symvers", "<": modpost["first"], "^": " ".join(modpost["prerequisites"])}.items():
+                modpost_variables[key] = {"value": text}
+            modpost_name = evaluate(modpost["arguments"][0], modpost_variables, setup.sources).strip()
+            modpost_command = value("cmd_" + modpost_name, modpost_variables, command_sources).replace("__source__", source_tree.root.path).replace("__object__", ".")
+            link_script = ctx.actions.declare_file(ctx.label.name + ".scripts/" + target + "/link-vmlinux.sh")
+            ctx.actions.expand_template(template = ctx.file._link_script, output = link_script, substitutions = {"__KBUILD_VMLINUX_MODPOST__": modpost_command})
+        variables["<"] = {"value": link_script.path}
     if native.get("final_link") or native.get("postlink_lowered"):
         variables["ARCH_POSTLINK"] = {"value": ""}
     if native["function"] == "script":
@@ -615,7 +662,7 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
         command = "\n".join(lines) + "\ntouch " + shell_quote(target)
     else:
         command = value(("filechk_" if native["function"] == "filechk" else "cmd_") + name, variables, command_sources).strip()
-    if native.get("final_link"):
+    if native.get("final_link") and not FLAG_PROGRAM["image_script_link"]:
         command = shell_quote(setup.tools["CONFIG_SHELL"]) + " " + command
     for post in native.get("postlink", []):
         post_variables = dict(variables)
@@ -677,10 +724,11 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
     exports = dict(setup.tools)
     if pahole != None:
         exports["PAHOLE"] = pahole.executable.path
-    for name in ["KBUILD_VMLINUX_LIBS", "KBUILD_LDS", "KERNELRELEASE", "SRCARCH"] + (FLAG_PROGRAM["image_link_exports"] if native.get("final_link") else []):
+    fixed_exports = ["KBUILD_VMLINUX_LIBS", "KBUILD_LDS", "KERNELRELEASE", "SRCARCH", "KBUILD_BUILD_VERSION", "KBUILD_BUILD_TIMESTAMP"]
+    for name in fixed_exports + (FLAG_PROGRAM["image_link_exports"] if native.get("final_link") else []):
         if pahole != None and name in FLAG_PROGRAM["image_btf_shell"]:
             continue
-        if name not in ("KBUILD_VMLINUX_LIBS", "KBUILD_LDS", "KERNELRELEASE", "SRCARCH") and name not in variables.get("__exports__", {}):
+        if name not in fixed_exports and name not in variables.get("__exports__", {}):
             continue
         exports[name] = value(name, variables, setup.sources).replace("__source__", source).replace("__object__", ".")
     exports.update({"objtree": ".", "CONFIG_SHELL": setup.tools["CONFIG_SHELL"], "KBUILD_BUILD_USER": "bazel", "KBUILD_BUILD_HOST": "bazel"})
@@ -710,14 +758,14 @@ cd "$work"
 %s
 %s
 %s
-""" % (shell_quote(stage.path), _stage_links(source_tree.files.to_list() + setup.files.to_list() + [ctx.file._link_script] + (pahole.files.to_list() if pahole != None else [])), "mkdir -p " + " ".join([shell_quote(p.rpartition("/")[0] or ".") for p in outputs]), command)
+""" % (shell_quote(stage.path), _stage_links(source_tree.files.to_list() + setup.files.to_list() + [link_script] + (pahole.files.to_list() if pahole != None else [])), "mkdir -p " + " ".join([shell_quote(p.rpartition("/")[0] or ".") for p in outputs]), command)
     for path, output in outputs.items():
         script += "cp %s %s\n" % (shell_quote(path), shell_quote(output.path))
     run_recipe(
         ctx,
         execution_tools(ctx),
         command = script,
-        inputs = depset([stage, config.config, ctx.file._link_script] + dependencies.values(), transitive = [source_tree.files, setup.files] + ([pahole.files] if pahole != None else [])),
+        inputs = depset([stage, config.config, link_script] + dependencies.values(), transitive = [source_tree.files, setup.files] + ([pahole.files] if pahole != None else [])),
         tools = [pahole.files_to_run] if pahole != None else [],
         outputs = outputs.values(),
         mnemonic = "KbuildGenerate",

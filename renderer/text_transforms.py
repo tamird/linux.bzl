@@ -1,4 +1,4 @@
-"""Lower constant sed ERE programs, preserving symbolic Make input expressions."""
+"""Lower literal echo and sed programs, preserving symbolic Make inputs."""
 import json
 import re
 import shlex
@@ -78,7 +78,14 @@ def lower_text_transforms(value):
     lexer = shlex.shlex(text, posix=True, punctuation_chars='|;&<>')
     lexer.whitespace_split = True
     words = list(lexer)
-    if len(words) < 6 or words[0] != 'echo' or words[-4:-1] != ['|', 'sed', '-E']:
+    if not words or words[0] != 'echo':
+        return value
+    if not any(c in text for c in '$`\\*?[]{}~#;|&<>()\n\r'):
+        first, *rest = terms
+        if first['op'] == 'literal' and (prefix := re.match(r'\s*echo(?:\s+|$)', first['value'])):
+            return {'op': 'function', 'name': 'kbuild_echo', 'arguments': [
+                [{'op': 'literal', 'value': first['value'][prefix.end():]}, *rest]]}
+    if len(words) < 6 or words[-4:-1] != ['|', 'sed', '-E']:
         return value
     expression = words[-1]
     match = re.fullmatch(r's/([^/]+)/([^/]*)/', expression)

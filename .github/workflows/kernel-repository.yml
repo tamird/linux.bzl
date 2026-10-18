@@ -93,10 +93,12 @@ jobs:
           trace=()
           if [[ "$RUNNER_OS" == Linux ]]; then trace+=(--test_arg=--strace); fi
           bazel build \
+            //native/linux_5_10:consumer_support //native/linux_5_15:consumer_support \
             //native/linux_6_1:consumer_support //native/linux_6_6:consumer_support \
             //native/linux_6_12:consumer_support //native/linux_6_18:consumer_support \
             --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4
           bazel test \
+            //native/linux_5_10:repository_test //native/linux_5_15:repository_test \
             //native/linux_6_1:repository_test //native/linux_6_6:repository_test \
             //native/linux_6_12:repository_test //native/linux_6_18:repository_test \
             --platforms=@llvm//platforms:${{ matrix.platform }} --jobs=4 "${trace[@]}" --test_output=errors
@@ -106,6 +108,8 @@ jobs:
         with:
           name: kernel-repository-consumer-lts-${{ matrix.platform }}
           path: |
+            bazel-bin/native/linux_5_10/consumer-support.tar.gz
+            bazel-bin/native/linux_5_15/consumer-support.tar.gz
             bazel-bin/native/linux_6_1/consumer-support.tar.gz
             bazel-bin/native/linux_6_6/consumer-support.tar.gz
             bazel-bin/native/linux_6_12/consumer-support.tar.gz
@@ -130,6 +134,10 @@ jobs:
             bazel-testlogs/native/linux_6_6/repository_test/test.outputs/**
             bazel-testlogs/native/linux_6_1/repository_test/test.log
             bazel-testlogs/native/linux_6_1/repository_test/test.outputs/**
+            bazel-testlogs/native/linux_5_15/repository_test/test.log
+            bazel-testlogs/native/linux_5_15/repository_test/test.outputs/**
+            bazel-testlogs/native/linux_5_10/repository_test/test.log
+            bazel-testlogs/native/linux_5_10/repository_test/test.outputs/**
             bazel-testlogs/**/kconfig_test/test.log
           if-no-files-found: warn
           retention-days: 7
@@ -248,7 +256,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        source: [linux_6_1, linux_6_6, linux_6_12, linux_6_18]
+        source: [linux_5_10, linux_5_15, linux_6_1, linux_6_6, linux_6_12, linux_6_18]
     timeout-minutes: 90
     env:
       USE_BAZEL_VERSION: 9.1.0
