@@ -2,19 +2,32 @@
 
 import argparse
 import hashlib
+import itertools
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import TypedDict
 
-from qualification.reuse_report import action_outputs, records
+from qualification.reuse_report import ActionGraph, action_outputs, records
 
 PHASES = ("base", "unchanged", "lz4", "changed")
+FAMILY = ("base", "debug", "btf", "lz4")
+FAMILY_PHASES = ("base", "unchanged", "lz4", "debug", "btf", "changed")
 
 
 class ArtifactRecord(TypedDict):
     paths: dict[str, str]
     digests: dict[str, str]
+
+
+class CompilerRecord(TypedDict):
+    source: str
+    frontend: str
+    bitcode: str
+    integrated: str
+    object: str
+    flags: list[str]
 
 
 class ActionDigest(TypedDict):
@@ -64,8 +77,10 @@ def mapped(path: str) -> str:
     return "bazel-out/mapped/" + parts[2] if len(parts) == 3 and parts[0] == "bazel-out" else path
 
 
-def snapshot(directory: Path, name: str, workspace: Path) -> None:
-    actions = list(action_outputs(directory / f"{name}.aquery.json"))
+def snapshot(directory: Path, name: str, workspace: Path, family: bool = False) -> None:
+    query_path = directory / f"{name}.aquery.json"
+    graph = ActionGraph.read(query_path) if family else None
+    actions = list(graph.outputs() if graph is not None else action_outputs(query_path))
     artifacts = {
         output
         for _, outputs in actions
@@ -76,8 +91,12 @@ def snapshot(directory: Path, name: str, workspace: Path) -> None:
             pass
         case reports:
             raise ValueError(f"Expected one native compiler report, got {reports}")
-    report = json.loads((workspace / report_path).read_text())
+    report: dict[str, CompilerRecord] = json.loads((workspace / report_path).read_text())
     assert report, "No compiler IR artifacts were requested"
+    if graph is not None:
+        authenticate(directory, name, workspace, report_path, report, graph)
+        (directory / f"{name}.compiler.json").write_text(json.dumps(report, indent=2) + "\n")
+    del graph
     result = {}
     for target, record in report.items():
         match record:
@@ -87,11 +106,83 @@ def snapshot(directory: Path, name: str, workspace: Path) -> None:
                 assert not missing, (target, missing)
             case _:
                 raise ValueError(f"Invalid compiler artifact record: {record}")
-        result[target] = {
-            "paths": paths,
-            "digests": {role: hashlib.sha256((workspace / path).read_bytes()).hexdigest() for role, path in paths.items()},
-        }
+        digests = {role: hashlib.sha256((workspace / path).read_bytes()).hexdigest() for role, path in paths.items()}
+        result[target] = {"paths": paths, "digests": digests}
+        if family and digests["integrated"] != digests["object"]:
+            for role, path in paths.items():
+                destination = directory / "mismatches" / name / (target + "." + role)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(workspace / path, destination)
     (directory / f"{name}.ir.json").write_text(json.dumps(result, indent=2) + "\n")
+
+
+def authenticate(directory: Path, name: str, workspace: Path, report_path: str, report: dict[str, CompilerRecord], graph: ActionGraph) -> None:
+    manifest_path = report_path.removesuffix(".ir.json") + ".json"
+    assert graph.producer(manifest_path)["mnemonic"] == "FileWrite", manifest_path
+    manifest = json.loads((workspace / manifest_path).read_text())
+    match manifest:
+        case {"roots": list(roots), "artifacts": artifacts, "compilers": dict(compilers), "config": str(config)} if roots and all(isinstance(root, str) for root in roots):
+            artifacts = string_map(artifacts)
+        case _:
+            raise ValueError(f"Invalid native product manifest: {manifest_path}")
+    products = {root: artifacts[root] for root in roots}
+    reached = graph.ancestry(list(products.values()))
+    inventory: dict[str, dict[str, str]] = {}
+    for target, compiler in compilers.items():
+        match compiler:
+            case {"source": str(source), "object": str(obj), "kind": str(kind)} if kind in ("c", "host", "assembly", "codegen"):
+                pass
+            case _:
+                raise ValueError(f"Invalid native compiler record: {compiler}")
+        if obj in reached:
+            assert graph.producer(obj)["mnemonic"] in ("CppCompile", "Assemble"), (target, obj)
+            inventory[target] = {"source": source, "object": obj, "kind": kind}
+    selected_c = {target for target, compiler in inventory.items() if compiler["kind"] == "c"}
+    assert selected_c and selected_c == report.keys(), {"missing": sorted(selected_c - report.keys()), "unreachable": sorted(report.keys() - selected_c)}
+    for target, record in report.items():
+        match record:
+            case {"source": str(source), "frontend": str(frontend), "bitcode": str(bitcode), "integrated": str(integrated), "object": str(obj)}:
+                pass
+            case _:
+                raise ValueError(f"Invalid native C compiler record: {record}")
+        assert source.endswith(".c") and inventory[target]["source"] == source, (target, source)
+        assert artifacts[target] in reached and obj in reached, (target, obj)
+        assert artifacts[target] == obj or graph.consumes(artifacts[target], obj), (target, obj)
+        assert all(graph.producer(path)["mnemonic"] == "CppCompile" for path in (frontend, integrated, obj)), target
+        assert graph.producer(bitcode)["mnemonic"] == "Symlink", target
+        assert graph.consumes(obj, bitcode) and graph.consumes(bitcode, frontend) and graph.consumes(frontend, source), target
+    match manifest["compiler_diagnostics"]:
+        case list(diagnostics) if all(isinstance(path, str) for path in diagnostics):
+            pass
+        case other:
+            raise ValueError(f"Invalid diagnostic artifact inventory: {other}")
+    match [path for path in diagnostics if path.endswith(".ir-diagnostics.json")]:
+        case [diagnostic_report]:
+            pass
+        case other:
+            raise ValueError(f"Expected one compiler diagnostic report: {other}")
+    destination = directory / "diagnostics" / name
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(workspace / diagnostic_report, destination / "report.json")
+    cases = json.loads((workspace / diagnostic_report).read_text())
+    assert isinstance(cases, list), cases
+    for case in cases:
+        match case:
+            case {"name": str(case_name), "bitcode": str(bitcode)} if case_name in ("attribute", "assembly"):
+                assert bitcode in diagnostics, (bitcode, diagnostics)
+                source = workspace / bitcode
+                assert source.stat().st_size > 0, bitcode
+                shutil.copyfile(source, destination / (case_name + ".bc"))
+            case _:
+                raise ValueError(f"Invalid diagnostic artifact: {case}")
+    result = {
+        "products": {root: {"path": path, "sha256": hashlib.sha256((workspace / path).read_bytes()).hexdigest()} for root, path in products.items()},
+        "compilers": inventory,
+        "compiler_counts": {kind: sum(item["kind"] == kind for item in inventory.values()) for kind in ("c", "host", "assembly", "codegen")},
+        "config": (workspace / config).read_text(),
+        "reached_artifacts": len(reached),
+    }
+    (directory / f"{name}.products.json").write_text(json.dumps(result, indent=2) + "\n")
 
 
 def execution(path: Path, targets: dict[str, ArtifactRecord]) -> Execution:
@@ -155,18 +246,26 @@ def execution(path: Path, targets: dict[str, ArtifactRecord]) -> Execution:
     return {"invocation": invocation, "hash_function": hash_function, "outcomes": outcomes, "frontend": frontend}
 
 
-def summarize(directory: Path) -> None:
-    snapshots = {name: read_snapshot(directory / f"{name}.ir.json") for name in PHASES}
+def summarize(directory: Path, family: bool = False) -> None:
+    names = FAMILY_PHASES if family else PHASES
+    snapshots = {name: read_snapshot(directory / f"{name}.ir.json") for name in names}
     expected = snapshots["base"].keys()
-    assert expected and all(values.keys() == expected for values in snapshots.values()), "IR inventories differ"
-    phases = {name: execution(directory / f"{name}.execution.jsonl", snapshots[name]) for name in PHASES}
-    assert len({value["invocation"] for value in phases.values()}) == len(PHASES), "Repeated invocation IDs"
+    assert expected and all(snapshots.values()), "Empty native compiler inventory"
+    if not family:
+        assert all(values.keys() == expected for values in snapshots.values()), "IR inventories differ"
+    assert snapshots["unchanged"].keys() == expected, "Unchanged compiler inventory differs"
+    phases = {name: execution(directory / f"{name}.execution.jsonl", snapshots[name]) for name in names}
+    assert len({value["invocation"] for value in phases.values()}) == len(names), "Repeated invocation IDs"
     assert len({value["hash_function"] for value in phases.values()}) == 1, "Different action-cache digest algorithms"
     parity = {
         name: [target for target, record in values.items() if record["digests"]["integrated"] != record["digests"]["object"]]
         for name, values in snapshots.items()
     }
-    equal = [target for target in expected if snapshots["base"][target]["digests"]["bitcode"] == snapshots["lz4"][target]["digests"]["bitcode"]]
+    products = {name: json.loads((directory / f"{name}.products.json").read_text()) for name in names} if family else {}
+    common = expected & snapshots["lz4"].keys()
+    if family:
+        common = {target for target in common if mapped(products["base"]["compilers"][target]["source"]) == mapped(products["lz4"]["compilers"][target]["source"])}
+    equal = [target for target in sorted(common) if snapshots["base"][target]["digests"]["bitcode"] == snapshots["lz4"][target]["digests"]["bitcode"]]
     paired = []
     hits = []
     for target in equal:
@@ -191,10 +290,43 @@ def summarize(directory: Path) -> None:
         "paired_backend_actions": paired, "panic_action_changed": control_action_changed,
         "panic_backend_outcome": control_outcome,
         "unchanged_executions": unchanged_executions, "unchanged_digests": unchanged_digests,
+        "counts": {name: len(values) for name, values in snapshots.items()},
+        "base_lz4": {"common_c_compilers": len(common), "equal_ir": len(equal), "equal_backend_actions": len(paired), "actual_backend_cache_hits": len(hits), "hit_fraction_of_lz4_c": len(hits) / len(snapshots["lz4"])},
     }
+    if family:
+        memberships = {}
+        for size in range(2, len(FAMILY) + 1):
+            for members in itertools.combinations(FAMILY, size):
+                shared = set.intersection(*(set(snapshots[member]) for member in members))
+                identities = []
+                for target in sorted(shared):
+                    outcomes = [phases[member]["outcomes"].get("object:" + target) for member in members]
+                    if all(outcome is not None for outcome in outcomes):
+                        digests = [outcome["action_digest"] for outcome in outcomes if outcome is not None]
+                    else:
+                        continue
+                    if all(digest == digests[0] for digest in digests) and len({mapped(products[member]["compilers"][target]["source"]) for member in members}) == 1:
+                        assert len({snapshots[member][target]["digests"]["bitcode"] for member in members}) == 1, (members, target)
+                        identities.append(target)
+                memberships["/".join(members)] = {"common_c_compilers": len(shared), "equal_native_backend_actions": identities}
+        result["memberships"] = memberships
+        result["products"] = products
+        result["family_checks"] = {
+            "all_vmlinux": all("vmlinux" in products[name]["products"] for name in FAMILY),
+            "both_boot_images": all("arch/x86/boot/bzImage" in products[name]["products"] for name in ("base", "lz4")),
+            "per_variant_c_floor": all(len(snapshots[name]) >= 4 for name in FAMILY),
+            "debug_config": all(line in products["debug"]["config"].splitlines() for line in ('CONFIG_DEBUG_KERNEL=y', 'CONFIG_LOCALVERSION="-debug"')),
+            "btf_config": "CONFIG_DEBUG_INFO_BTF=y" in products["btf"]["config"].splitlines(),
+            "lz4_config": "CONFIG_KERNEL_LZ4=y" in products["lz4"]["config"].splitlines(),
+            "base_panic": "CONFIG_PANIC_TIMEOUT=0" in products["base"]["config"].splitlines(),
+            "changed_panic": "CONFIG_PANIC_TIMEOUT=37" in products["changed"]["config"].splitlines(),
+        }
     (directory / "ir-reuse.json").write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps(result, indent=2))
-    assert all(not mismatches for mismatches in parity.values()), parity
+    print(json.dumps({key: value for key, value in result.items() if key not in ("phases", "products")}, indent=2))
+    if family:
+        assert all(result["family_checks"].values()), result["family_checks"]
+    else:
+        assert all(not mismatches for mismatches in parity.values()), parity
     assert len(hits) >= 4, hits
     assert unchanged_digests and not unchanged_executions, result
     # A previous invocation may have cached the changed configuration too.
@@ -205,14 +337,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("snapshot", "report"))
     parser.add_argument("directory", type=Path)
-    parser.add_argument("phase", choices=PHASES, nargs="?")
+    parser.add_argument("phase", choices=FAMILY_PHASES, nargs="?")
+    parser.add_argument("--family", action="store_true")
     args = parser.parse_args()
     if args.command == "snapshot":
         if args.phase is None:
             parser.error("snapshot requires a phase")
-        snapshot(args.directory, args.phase, Path(os.environ["BUILD_WORKSPACE_DIRECTORY"]))
+        snapshot(args.directory, args.phase, Path(os.environ["BUILD_WORKSPACE_DIRECTORY"]), args.family)
     else:
-        summarize(args.directory)
+        summarize(args.directory, args.family)
 
 
 if __name__ == "__main__":

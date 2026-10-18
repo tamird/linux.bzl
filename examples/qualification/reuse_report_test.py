@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from qualification import ir_reuse_report, reuse_report
+from qualification import ir_compare, ir_reuse_report, reuse_report
 
 
 _OUTPUTS = [f"bazel-out/bin/_objs/kernel.compile/{target}/source/{target}" for target in (
@@ -127,6 +127,128 @@ class ReuseReportTest(unittest.TestCase):
             output.write(json.dumps(entries[1 + len(roles)]) + "\n")
         with self.assertRaisesRegex(ValueError, "Duplicate selected compiler frontend:lib/ctype.o"):
             ir_reuse_report.execution(path, artifacts)
+
+    def test_native_product_ancestry_excludes_reference_and_unrelated_compiles(self) -> None:
+        paths = ["vmlinux", "logical.o", "backend.o", "unit.bc", "frontend.o", "reference.o", "source.c", "unrelated.o"]
+        graph = query(paths)
+        edges = {1: [2], 2: [3], 3: [4], 4: [5], 5: [7], 6: [7], 8: [7]}
+        graph["depSetOfFiles"] = [{"id": identity, "directArtifactIds": inputs} for identity, inputs in edges.items()]
+        graph["actions"] = [dict(action, inputDepSetIds=[index]) for index, action in enumerate(graph["actions"], 1) if index != 7]
+        path = self.directory / "graph.json"
+        path.write_text(json.dumps(graph))
+        native = reuse_report.ActionGraph.read(path)
+        self.assertEqual(native.ancestry(["vmlinux"]), set(paths) - {"reference.o", "unrelated.o"})
+        self.assertTrue(native.consumes("backend.o", "unit.bc"))
+        self.assertFalse(native.consumes("backend.o", "source.c"))
+        with self.assertRaisesRegex(ValueError, "lack native producers"):
+            native.ancestry(["source.c"])
+        graph["depSetOfFiles"][4]["directArtifactIds"] = [1]
+        path.write_text(json.dumps(graph))
+        with self.assertRaisesRegex(ValueError, "Cyclic native action graph"):
+            reuse_report.ActionGraph.read(path).ancestry(["vmlinux"])
+        graph["actions"].append(graph["actions"][0])
+        path.write_text(json.dumps(graph))
+        with self.assertRaisesRegex(ValueError, "conflicting aquery producer"):
+            reuse_report.ActionGraph.read(path)
+
+    def test_family_authentication_requires_the_real_compiler_chain(self) -> None:
+        paths = ["vmlinux", "logical.o", "backend.o", "unit.bc", "frontend.o", "reference.o", "source.c", "unrelated.o", "kernel.json", "config", "diagnostics.json", "bazel-out/cfg/bin/attribute.bc", "bazel-out/cfg/bin/assembly.bc"]
+        graph = query(paths)
+        edges = {1: [2], 2: [3], 3: [4], 4: [5], 5: [7], 6: [7], 8: [7]}
+        graph["depSetOfFiles"] = [{"id": identity, "directArtifactIds": inputs} for identity, inputs in edges.items()]
+        for identity, action in enumerate(graph["actions"], 1):
+            action["inputDepSetIds"] = [identity] if identity in edges else []
+        graph["actions"][3]["mnemonic"] = "Symlink"
+        graph["actions"][8]["mnemonic"] = "FileWrite"
+        query_path = self.directory / "base.aquery.json"
+        query_path.write_text(json.dumps(graph))
+        for path in paths:
+            artifact = self.directory / path
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text(path)
+        report = {"kernel/panic.o": {
+            "source": "source.c", "frontend": "frontend.o", "bitcode": "unit.bc", "integrated": "reference.o", "object": "backend.o", "flags": [],
+        }}
+        manifest = {
+            "roots": ["vmlinux"], "artifacts": {"vmlinux": "vmlinux", "kernel/panic.o": "logical.o"},
+            "compilers": {"kernel/panic.o": {"source": "source.c", "object": "backend.o", "kind": "c"}},
+            "config": "config", "compiler_diagnostics": [
+                "native.ir-diagnostics.json", "bazel-out/cfg/bin/attribute.bc", "bazel-out/cfg/bin/assembly.bc",
+            ],
+        }
+        (self.directory / "native.ir-diagnostics.json").write_text(json.dumps([
+            {"name": name, "bitcode": "bazel-out/cfg/bin/" + name + ".bc"} for name in ("attribute", "assembly")
+        ]))
+        (self.directory / "kernel.json").write_text(json.dumps(manifest))
+        ir_reuse_report.authenticate(self.directory, "base", self.directory, "kernel.ir.json", report, reuse_report.ActionGraph.read(query_path))
+        authenticated = json.loads((self.directory / "base.products.json").read_text())
+        self.assertEqual(authenticated["compiler_counts"]["c"], 1)
+        # A reference compile is a real action, but is not a product ancestor.
+        manifest["compilers"]["kernel/panic.o"]["object"] = "reference.o"
+        (self.directory / "kernel.json").write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(AssertionError, "unreachable"):
+            ir_reuse_report.authenticate(self.directory, "base", self.directory, "kernel.ir.json", report, reuse_report.ActionGraph.read(query_path))
+        manifest["compilers"]["kernel/panic.o"]["object"] = "backend.o"
+        (self.directory / "kernel.json").write_text(json.dumps(manifest))
+        # Membership alone cannot authenticate a backend with another input.
+        graph["depSetOfFiles"][2]["directArtifactIds"] = [7]
+        query_path.write_text(json.dumps(graph))
+        with self.assertRaises(AssertionError):
+            ir_reuse_report.authenticate(self.directory, "base", self.directory, "kernel.ir.json", report, reuse_report.ActionGraph.read(query_path))
+
+    def family_trial(self, mismatched_action: bool = False) -> dict[str, object]:
+        targets = ["kernel/panic.o", "lib/ctype.o", "lib/a.o", "lib/b.o"]
+        for phase in ir_reuse_report.FAMILY_PHASES:
+            selected = targets + (["debug/only.o"] if phase == "debug" else [])
+            if phase == "changed":
+                selected = targets[:2]
+            snapshot, compilers = {}, {}
+            entries = [{"invocation": phase, "hashFunctionName": "SHA-256"}]
+            for index, target in enumerate(selected):
+                changed = phase == "changed" and target == "kernel/panic.o"
+                content = target + ("-changed" if changed else "")
+                paths = {role: f"bazel-out/{phase}/bin/{role}/{target}" for role in ("frontend", "bitcode", "integrated", "object")}
+                snapshot[target] = {"paths": paths, "digests": {role: content for role in paths}}
+                compilers[target] = {"source": "source/" + target.removesuffix(".o") + ".c", "object": paths["object"], "kind": "c"}
+                if phase == "unchanged":
+                    continue
+                entries.append({"id": index + 1, "path": paths["object"]})
+                outcome = spawn(index, cache_hit=phase == "lz4")
+                outcome["spawn"]["digest"] = {"hash": content + ("-different" if mismatched_action and phase == "lz4" and index == 0 else ""), "sizeBytes": 146}
+                entries.append(outcome)
+            (self.directory / f"{phase}.ir.json").write_text(json.dumps(snapshot))
+            (self.directory / f"{phase}.execution.jsonl").write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+            (self.directory / f"{phase}.products.json").write_text(json.dumps({
+                "compilers": compilers,
+                "products": {"vmlinux": {}, "arch/x86/boot/bzImage": {}},
+                "config": '\n'.join(['CONFIG_DEBUG_KERNEL=y', 'CONFIG_LOCALVERSION="-debug"', 'CONFIG_DEBUG_INFO_BTF=y', 'CONFIG_KERNEL_LZ4=y', 'CONFIG_PANIC_TIMEOUT=' + ('37' if phase == "changed" else '0')]),
+            }))
+        ir_reuse_report.summarize(self.directory, family=True)
+        return json.loads((self.directory / "ir-reuse.json").read_text())
+
+    def test_family_allows_distinct_inventories_but_requires_real_paired_hits(self) -> None:
+        result = self.family_trial()
+        self.assertEqual(result["counts"]["debug"], 5)
+        self.assertEqual(result["counts"]["changed"], 2)
+        self.assertEqual(result["base_lz4"]["actual_backend_cache_hits"], 4)
+        self.assertFalse(result["panic_backend_outcome"]["cache_hit"])
+        with self.assertRaises(AssertionError):
+            self.family_trial(mismatched_action=True)
+        failed = json.loads((self.directory / "ir-reuse.json").read_text())
+        self.assertEqual(failed["base_lz4"]["actual_backend_cache_hits"], 3)
+
+    def test_family_comparison_preserves_all_diagnostic_failures(self) -> None:
+        self.family_trial()
+        for phase in ir_reuse_report.FAMILY_PHASES:
+            directory = self.directory / "diagnostics" / phase
+            directory.mkdir(parents=True)
+            (directory / "report.json").write_text("[]")
+        with self.assertRaises(AssertionError):
+            ir_compare.compare_family(self.directory)
+        result = json.loads((self.directory / "ir-comparison.json").read_text())
+        self.assertEqual(set(result["diagnostic_errors"]), set(ir_reuse_report.FAMILY_PHASES))
+        self.assertEqual(result["objects"]["debug"], 5)
+        self.assertEqual(result["object_mismatches"]["base"], [])
 
     def test_invocation_only_log_is_valid(self) -> None:
         path = self.directory / "unchanged.execution.jsonl"

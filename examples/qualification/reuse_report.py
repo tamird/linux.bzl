@@ -14,9 +14,42 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import TypeAlias
+from typing import NotRequired, TypeAlias, TypedDict
 
 Outputs: TypeAlias = tuple[str, ...]
+QueryId: TypeAlias = str | int
+
+
+class PathFragment(TypedDict):
+    id: QueryId
+    label: str
+    parentId: NotRequired[QueryId]
+
+
+class Artifact(TypedDict):
+    id: QueryId
+    pathFragmentId: QueryId
+
+
+class Action(TypedDict):
+    mnemonic: str
+    outputIds: list[QueryId]
+    inputDepSetIds: NotRequired[list[QueryId]]
+
+
+class InputSet(TypedDict):
+    id: QueryId
+    directArtifactIds: NotRequired[list[QueryId]]
+    transitiveDepSetIds: NotRequired[list[QueryId]]
+
+
+class ActionQuery(TypedDict):
+    pathFragments: list[PathFragment]
+    artifacts: list[Artifact]
+    actions: list[Action]
+    depSetOfFiles: NotRequired[list[InputSet]]
+
+
 PHASES = ("baseline", "unchanged", "edited", "header", "incbin", "gzip")
 PIGGY_OBJECT = "arch/x86/boot/compressed/piggy.o"
 PIGGY_SOURCE = "arch/x86/boot/compressed/piggy.S"
@@ -59,8 +92,7 @@ def records(path: Path) -> Iterator[dict[str, object]]:
             yield record
 
 
-def action_outputs(path: Path) -> Iterator[tuple[str, Outputs]]:
-    query = json.loads(path.read_text())
+def artifact_paths(query: ActionQuery) -> dict[str, str]:
     fragments = {str(item["id"]): item for item in query["pathFragments"]}
 
     def filename(fragment_id: str) -> str:
@@ -75,10 +107,95 @@ def action_outputs(path: Path) -> Iterator[tuple[str, Outputs]]:
             fragment_id = str(fragment.get("parentId", 0))
         return "/".join(reversed(parts))
 
-    artifacts = {
+    return {
         str(item["id"]): filename(str(item["pathFragmentId"]))
         for item in query["artifacts"]
     }
+
+
+@dataclass
+class ActionGraph:
+    artifacts: dict[str, str]
+    identities: dict[str, str]
+    actions: list[Action]
+    producers: dict[str, int]
+    dep_sets: dict[str, InputSet]
+
+    @classmethod
+    def read(cls, path: Path) -> "ActionGraph":
+        query: ActionQuery = json.loads(path.read_text())
+        artifacts = artifact_paths(query)
+        identities = {name: identity for identity, name in artifacts.items()}
+        if len(identities) != len(artifacts):
+            raise ValueError("Aquery has duplicate artifact paths")
+        producers = {}
+        for index, action in enumerate(query["actions"]):
+            for output in action["outputIds"]:
+                identity = str(output)
+                if identity not in artifacts or identity in producers:
+                    raise ValueError(f"Invalid or conflicting aquery producer: {identity}")
+                producers[identity] = index
+        return cls(artifacts, identities, query["actions"], producers, {str(item["id"]): item for item in query.get("depSetOfFiles", [])})
+
+    def outputs(self) -> Iterator[tuple[str, Outputs]]:
+        for action in self.actions:
+            yield action["mnemonic"], tuple(sorted(self.artifacts[str(output)] for output in action["outputIds"]))
+
+    def ancestry(self, roots: list[str]) -> set[str]:
+        """Follow actual artifact/action/depset edges without flattening header sets."""
+        identities = self.identities
+        missing = [path for path in roots if path not in identities or identities[path] not in self.producers]
+        if missing:
+            raise ValueError(f"Requested outputs lack native producers: {missing}")
+        stack = [("artifact", identities[path], False) for path in roots]
+        active, visited, reached = set(), set(), set()
+        while stack:
+            kind, identity, leaving = stack.pop()
+            node = kind, identity
+            if leaving:
+                active.remove(node)
+                visited.add(node)
+                continue
+            if node in active:
+                raise ValueError(f"Cyclic native action graph at {node}")
+            if node in visited:
+                continue
+            active.add(node)
+            stack.append((kind, identity, True))
+            if kind == "artifact":
+                reached.add(self.artifacts[identity])
+                if identity in self.producers:
+                    stack.append(("action", str(self.producers[identity]), False))
+            elif kind == "action":
+                stack.extend(("depset", str(item), False) for item in self.actions[int(identity)].get("inputDepSetIds", []))
+            else:
+                inputs = self.dep_sets[identity]
+                stack.extend(("artifact", str(item), False) for item in inputs.get("directArtifactIds", []))
+                stack.extend(("depset", str(item), False) for item in inputs.get("transitiveDepSetIds", []))
+        return reached
+
+    def producer(self, path: str) -> Action:
+        return self.actions[self.producers[self.identities[path]]]
+
+    def consumes(self, output: str, required: str) -> bool:
+        wanted = self.identities[required]
+        pending = list(self.producer(output).get("inputDepSetIds", []))
+        visited = set()
+        while pending:
+            identity = str(pending.pop())
+            if identity in visited:
+                continue
+            visited.add(identity)
+            inputs = self.dep_sets[identity]
+            if wanted in {str(item) for item in inputs.get("directArtifactIds", [])}:
+                return True
+            pending.extend(inputs.get("transitiveDepSetIds", []))
+        return False
+
+
+def action_outputs(path: Path) -> Iterator[tuple[str, Outputs]]:
+    query = json.loads(path.read_text())
+    artifacts = artifact_paths(query)
     for action in query["actions"]:
         yield action["mnemonic"], tuple(sorted(artifacts[str(output)] for output in action["outputIds"]))
 

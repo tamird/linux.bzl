@@ -1,4 +1,4 @@
-"""Compare the actual native objects and compiler-owned IR of three kernels."""
+"""Compare native object bytes and deferred compiler diagnostics."""
 
 import hashlib
 import json
@@ -8,6 +8,8 @@ import re
 import shutil
 import sys
 from typing import TypedDict
+
+from qualification.ir_reuse_report import FAMILY, FAMILY_PHASES, read_snapshot
 
 
 class CompilerRecord(TypedDict):
@@ -86,6 +88,7 @@ def read_case(path: Path, runfiles: Path, output: Path) -> tuple[dict[str, Compi
             raise ValueError(f"Expected one diagnostic report in {path}: {other}")
     cases = json.loads((root / diagnostics).read_text())
     assert isinstance(cases, list), cases
+    (output / path.stem).mkdir(parents=True, exist_ok=True)
     shutil.copyfile(root / diagnostics, output / path.stem / "diagnostics.json")
     for case in cases:
         match case:
@@ -97,14 +100,54 @@ def read_case(path: Path, runfiles: Path, output: Path) -> tuple[dict[str, Compi
     return result, cases
 
 
+def compare_family(directory: Path) -> None:
+    snapshots = {name: read_snapshot(directory / f"{name}.ir.json") for name in FAMILY_PHASES}
+    parity = {
+        name: [target for target, record in values.items() if record["digests"]["integrated"] != record["digests"]["object"]]
+        for name, values in snapshots.items()
+    }
+    diagnostics, errors = {}, {}
+    for name in FAMILY_PHASES:
+        cases = json.loads((directory / "diagnostics" / name / "report.json").read_text())
+        try:
+            diagnostics[name] = check_diagnostics(cases)
+        except (AssertionError, ValueError) as error:
+            errors[name] = str(error)
+    base, changed = snapshots["base"], snapshots["changed"]
+    control = "kernel/panic.o"
+    result = {
+        "objects": {name: len(records) for name, records in snapshots.items()},
+        "object_mismatches": parity,
+        "diagnostics": diagnostics,
+        "diagnostic_errors": errors,
+        "panic_ir_changed": base[control]["digests"]["bitcode"] != changed[control]["digests"]["bitcode"],
+        "panic_object_changed": base[control]["digests"]["object"] != changed[control]["digests"]["object"],
+    }
+    (directory / "ir-comparison.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(result, indent=2))
+    assert all(result["objects"][name] >= 4 for name in FAMILY), result["objects"]
+    assert all(not mismatches for mismatches in parity.values()), parity
+    assert not errors, errors
+    assert result["panic_ir_changed"] and result["panic_object_changed"], result
+    native = json.loads((directory / "base.compiler.json").read_text())
+    flags = native["arch/x86/boot/string.o"]["flags"]
+    assert "-g" in flags and "-m16" in flags, flags
+
+
 def main() -> None:
+    if sys.argv[1] == "--family-results":
+        compare_family(Path(sys.argv[2]))
+        return
     runfiles = Path(os.environ["TEST_SRCDIR"]) / os.environ["TEST_WORKSPACE"]
     output = Path(os.environ["TEST_UNDECLARED_OUTPUTS_DIR"])
-    (base, base_diagnostics), (lz4, lz4_diagnostics), (changed, changed_diagnostics) = [read_case(runfiles / arg, runfiles, output / "native") for arg in sys.argv[1:]]
+    names = ("base", "lz4", "changed")
+    assert len(sys.argv[1:]) == len(names), sys.argv
+    cases = {name: read_case(runfiles / arg, runfiles, output / "native") for name, arg in zip(names, sys.argv[1:], strict=True)}
+    base, lz4, changed = (cases[name][0] for name in names)
     assert base.keys() == lz4.keys() == changed.keys(), "Compiler inventories differ"
     parity = {
         case: [target for target, record in records.items() if record["integrated"] != record["object"]]
-        for case, records in {"base": base, "lz4": lz4, "changed": changed}.items()
+        for case, (records, _) in cases.items()
     }
     equal_ir = [target for target in base if base[target]["bitcode"] == lz4[target]["bitcode"]]
     control = "kernel/panic.o"
@@ -116,16 +159,23 @@ def main() -> None:
         "panic_ir_changed": base[control]["bitcode"] != changed[control]["bitcode"],
         "panic_object_changed": base[control]["object"] != changed[control]["object"],
         "realmode_ir_unchanged": base[realmode]["bitcode"] == changed[realmode]["bitcode"],
-        "diagnostics": {name: check_diagnostics(cases) for name, cases in {"base": base_diagnostics, "lz4": lz4_diagnostics, "changed": changed_diagnostics}.items()},
-        "records": {"base": base, "lz4": lz4, "changed": changed},
+        "records": {name: records for name, (records, _) in cases.items()},
     }
+    diagnostics, diagnostic_errors = {}, {}
+    for name, (_, checks) in cases.items():
+        try:
+            diagnostics[name] = check_diagnostics(checks)
+        except (AssertionError, ValueError) as error:
+            diagnostic_errors[name] = str(error)
+    result.update(diagnostics=diagnostics, diagnostic_errors=diagnostic_errors)
     (output / "ir-comparison.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({key: value for key, value in result.items() if key != "records"}, indent=2))
     assert "-g" in base[realmode]["flags"] and "-m16" in base[realmode]["flags"], base[realmode]["flags"]
     assert all(not mismatches for mismatches in parity.values()), parity
+    assert not diagnostic_errors, diagnostic_errors
     assert len(equal_ir) >= 4, equal_ir
-    assert result["panic_ir_changed"] and result["panic_object_changed"], result
     assert result["realmode_ir_unchanged"], result
+    assert result["panic_ir_changed"] and result["panic_object_changed"], result
 
 
 if __name__ == "__main__":

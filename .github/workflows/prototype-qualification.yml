@@ -7,7 +7,7 @@ on:
         description: Experiment to run
         type: choice
         default: all
-        options: [all, configuration-parity, source-edit-reuse, compiler-ir, examples]
+        options: [all, configuration-parity, source-edit-reuse, compiler-ir, compiler-family, examples]
 
 permissions:
   contents: read
@@ -43,6 +43,19 @@ jobs:
         run: |
           bazel test //:prototype_test //:repository_test --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4 --test_output=errors
           bazel build //:consumer_support --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4
+      # Qualify a source-specific release asset for external consumers. The
+      # maintained family below retains the default source/generator pair.
+      - name: Qualify the Linux 6.18 consumer generator
+        if: inputs.experiment == 'compiler-family'
+        run: |
+          bazel test //native/linux_6_18:repository_test --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4 --test_output=errors
+          bazel build //native/linux_6_18:consumer_support --platforms=@llvm//platforms:linux_x86_64_musl --jobs=4
+      - uses: actions/upload-artifact@v7
+        if: inputs.experiment == 'compiler-family'
+        with:
+          name: qualification-generator-linux_6_18
+          path: bazel-bin/native/linux_6_18/consumer-support.tar.gz
+          retention-days: 14
       - uses: actions/upload-artifact@v7
         with:
           name: qualification-generator
@@ -99,11 +112,11 @@ jobs:
         working-directory: examples
         run: bazel test //qualification:parity --jobs=4 --keep_going --test_output=errors
       - name: Check the reuse reporter
-        if: matrix.experiment == 'source-edit-reuse'
+        if: matrix.experiment == 'source-edit-reuse' || matrix.experiment == 'compiler-ir' || matrix.experiment == 'compiler-family'
         working-directory: examples
         run: bazel test //qualification:reuse_report_test --test_output=errors
       - name: Fetch the compact execution log decoder
-        if: matrix.experiment == 'source-edit-reuse' || matrix.experiment == 'compiler-ir'
+        if: matrix.experiment == 'source-edit-reuse' || matrix.experiment == 'compiler-ir' || matrix.experiment == 'compiler-family'
         run: |
           decoder="$RUNNER_TEMP/linux-prototype-qualification/bb"
           curl --fail --location --output "$decoder" https://github.com/buildbuddy-io/bazel/releases/download/5.0.492/bazel-5.0.492-linux-x86_64
@@ -163,16 +176,36 @@ jobs:
           done
           bazel run //qualification:reuse_report -- report "$results"
       - name: Qualify native compiler IR and configuration reuse
-        if: matrix.experiment == 'compiler-ir'
+        if: matrix.experiment == 'compiler-ir' || matrix.experiment == 'compiler-family'
         working-directory: examples
         run: |
           set -euo pipefail
           results="$RUNNER_TEMP/linux-prototype-qualification"
           mapping=(--experimental_output_paths=strip --modify_execution_info=CppCompile=+supports-path-mapping)
-          for phase in base unchanged lz4 changed; do
+          phases=(base unchanged lz4 changed)
+          report_flags=()
+          build_flags=(--output_groups=ir_experiment)
+          if [[ '${{ matrix.experiment }}' == compiler-family ]]; then
+            phases=(base unchanged lz4 debug btf changed)
+            report_flags=(--family)
+            mapping+=(--platforms=@llvm//platforms:linux_x86_64)
+            build_flags=(--output_groups=+kernel,+boot,+modules,+manifest,+ir_experiment
+              --sandbox_block_path=/bin --sandbox_block_path=/usr/bin --sandbox_block_path=/usr/local/bin)
+          fi
+          for phase in "${phases[@]}"; do
             variant="$phase"
             if [[ "$variant" == unchanged ]]; then variant=base; fi
-            bazel build "//qualification:ir_$variant" --output_groups=ir_experiment --jobs=4 \
+            target="//qualification:ir_$variant"
+            if [[ '${{ matrix.experiment }}' == compiler-family ]]; then
+              case "$variant" in
+                base) target=//:x86_64_kernel_qualification ;;
+                lz4) target=//:x86_64_lz4_kernel_qualification ;;
+                debug) target=//:x86_64_debug_kernel_qualification ;;
+                btf) target=//:x86_64_btf_declared_qualification ;;
+                changed) target=//qualification:family_changed_qualification ;;
+              esac
+            fi
+            bazel build "$target" "${build_flags[@]}" --jobs=4 \
               "${mapping[@]}" --execution_log_compact_file="$results/$phase.execution.pb.zst"
             "$results/bb" print --compact_execution_log="$results/$phase.execution.pb.zst" --raw=true --sort=false |
               jq -c '
@@ -187,11 +220,21 @@ jobs:
                 })}
                 else empty end
               ' > "$results/$phase.execution.jsonl"
-            bazel aquery "deps(//qualification:ir_$variant)" "${mapping[@]}" --output=jsonproto > "$results/$phase.aquery.json"
-            bazel run //qualification:ir_reuse_report -- snapshot "$results" "$phase"
+            # Preserve actual compiler-discovered inputs, excluding candidates
+            # removed by native header discovery after the preceding build.
+            bazel aquery "deps($target)" "${mapping[@]}" --noinclude_pruned_inputs --output=jsonproto > "$results/$phase.aquery.json"
+            bazel run //qualification:ir_reuse_report "${mapping[@]}" -- snapshot "$results" "$phase" "${report_flags[@]}"
           done
-          bazel test //qualification:ir_compare_test "${mapping[@]}" --jobs=4 --test_output=errors
-          bazel run //qualification:ir_reuse_report -- report "$results"
+          comparison=0
+          reuse=0
+          if [[ '${{ matrix.experiment }}' == compiler-family ]]; then
+            bazel run //qualification:family_compare "${mapping[@]}" -- --family-results "$results" || comparison=$?
+          else
+            bazel test //qualification:ir_compare_test "${mapping[@]}" --jobs=4 --test_output=errors || comparison=$?
+          fi
+          # Emit both independent reports even when one qualification fails.
+          bazel run //qualification:ir_reuse_report "${mapping[@]}" -- report "$results" "${report_flags[@]}" || reuse=$?
+          test "$comparison" -eq 0 && test "$reuse" -eq 0
       - name: Upload qualification evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -201,6 +244,8 @@ jobs:
             ${{ runner.temp }}/linux-prototype-qualification/*.json
             ${{ runner.temp }}/linux-prototype-qualification/*.jsonl
             ${{ runner.temp }}/linux-prototype-qualification/*.pb.zst
+            ${{ runner.temp }}/linux-prototype-qualification/diagnostics/**
+            ${{ runner.temp }}/linux-prototype-qualification/mismatches/**
             examples/bazel-testlogs/qualification/**/test.log
             examples/bazel-testlogs/qualification/**/test.outputs/**
           retention-days: 14
