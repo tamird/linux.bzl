@@ -186,12 +186,16 @@ def configure(spec: dict[str, object], output: Path, measured: dict[str, object]
                 declarations.append(f"config {name}\n\t{kind}\n\tdefault {default}\n")
             additions.write_text("\n".join(declarations))
             entry = work / "Kconfig"
-            paths = [source / "Kconfig", additions]
+            paths = [additions]
             if extension := spec["extension"]:
                 if not isinstance(extension, str):
                     raise ValueError(f"Invalid Kconfig extension: {extension!r}")
                 paths.append(execution_root / extension)
-            entry.write_text("".join("source " + json.dumps(str(path)) + "\n" for path in paths))
+            # Native grammar permits mainmenu only at the start of its root
+            # input. Preserve that input before appending optional sources;
+            # sourcing the root from a wrapper makes its mainmenu invalid.
+            entry.write_bytes((source / "Kconfig").read_bytes() + b"\n" +
+                              "".join("source " + json.dumps(str(path)) + "\n" for path in paths).encode())
         conf = str(execution_root / text_field(spec, "conf"))
         for option in ["--" + mode, "--syncconfig"]:
             begin = time.monotonic()

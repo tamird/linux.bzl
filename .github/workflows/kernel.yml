@@ -46,7 +46,7 @@ jobs:
             --platforms=@llvm//platforms:linux_x86_64 \
             --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
             --extra_toolchains=//:driver_toolchain --jobs=4 \
-            --profile="$RUNNER_TEMP/native-config.profile.gz" --test_output=errors
+            --profile="$RUNNER_TEMP/native-config.profile.gz" --test_output=errors --keep_going
       - name: Retain native configuration evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
