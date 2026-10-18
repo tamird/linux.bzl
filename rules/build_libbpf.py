@@ -131,7 +131,16 @@ def build(spec: dict[str, object], archive: Path, headers: Path) -> None:
                    "srctree=" + str(source), "OUTPUT=" + str(objects) + "/", "DESTDIR=" + str(installed), "prefix=", "V=1"]
         # Old libbpf's exact archive target does not order fixdep itself.
         for goals in [["fixdep"], [str(objects / "libbpf.a"), "install_headers"]]:
-            subprocess.run([*command, *goals], cwd=source / "tools/lib/bpf", env=environment, check=True)
+            try:
+                subprocess.run([*command, *goals], cwd=source / "tools/lib/bpf", env=environment, check=True)
+            except subprocess.CalledProcessError:
+                # Native feature checks hide compiler diagnostics in these
+                # files. Preserve them before the private build tree is removed.
+                for diagnostic in sorted((objects / "feature").glob("*.make.output")):
+                    print(f"Native feature diagnostics: {diagnostic.name}", file=sys.stderr, flush=True)
+                    sys.stderr.buffer.write(diagnostic.read_bytes())
+                    sys.stderr.flush()
+                raise
             configure.check_infrastructure(work)
         for path in [objects / "libbpf.a", *[installed / "include/bpf" / name for name in ("bpf.h", "libbpf.h", "btf.h")]]:
             if not path.is_file():
