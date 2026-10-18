@@ -70,14 +70,14 @@ def _impl(ctx):
         fail("Native configuration requires a declared Python interpreter")
     files.append(runtime.interpreter)
     transitive.append(runtime.files)
-    alias = ctx.actions.declare_file(ctx.label.name + "/bin/python3")
-    ctx.actions.symlink(output = alias, target_file = runtime.interpreter, is_executable = True)
-    commands["python3"] = alias
-    runtime_commands["python3"] = alias
-    files.append(alias)
+
+    # Keep Python's runtime-relative standard library reachable through the
+    # declared interpreter path, including nested native Make invocations.
+    commands["python3"] = runtime.interpreter
+    runtime_commands["python3"] = runtime.interpreter
     path_environment.update(M4 = commands["m4"].path, M4_SYSCMD_SHELL = commands["sh"].path)
     closure = depset(files, transitive = transitive)
-    python_files = depset([runtime.interpreter, alias], transitive = [runtime.files])
+    python_files = depset([runtime.interpreter], transitive = [runtime.files])
     runtime_closure = depset(runtime_files, transitive = runtime_transitive + [python_files])
     bootstrap_commands, bootstrap_tools = dict(commands), list(tools)
     for target, names in ctx.attr.build_commands.items():
@@ -169,17 +169,19 @@ def _check_impl(ctx):
             "-c",
             '''export KBUILD_EXEC_ROOT="$PWD"
 export PATH="$PWD/%s"
+(cd "$PATH"; "$KBUILD_EXEC_ROOT/$5" -B -c 'import encodings, json, pathlib, subprocess')
 cat "$1" | lz4 -l -9 - - | lz4 -dc > "$2"
 cmp "$1" "$2"
 cat "$1" | lz4c -l -c1 stdin stdout | lz4 -dc > "$3"
 cmp "$1" "$3"
-printf 'PASS: declared lz4 and lz4c native command forms\\n' > "$4"
+printf 'PASS: declared Python runtime and native lz4/lz4c command forms\\n' > "$4"
 ''' % execution.bin_dir,
             "execution-tools-check",
             payload.path,
             modern.path,
             legacy.path,
             report.path,
+            execution.commands["python3"].path,
         ],
         inputs = depset([payload], transitive = [execution.build_files]),
         tools = execution.build_tools,
