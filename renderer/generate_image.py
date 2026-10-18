@@ -340,10 +340,20 @@ def main(argv=None):
                 return {'op': 'function', 'name': 'kbuild_host_fallback', 'arguments': [[{'op': 'literal', 'value': make_text(value['arguments'][0])}]]}
             return {k: host_fallback(v) for k, v in value.items()}
         return value
-    data['image_host_objtool'] = host_fallback(backend.slice_program(bodies['tools/objtool/Makefile'], {'OBJTOOL_CFLAGS', 'BUILD_ORC', 'BUILD_KLP'}))
+    objtool = bodies['tools/objtool/Makefile']
+    subcmd_calls = [n['value_expression'] for n, _ in walk(target_rules(objtool, {'$(LIBSUBCMD)'}))
+                    if n['kind'] == 'recipe']
+    match subcmd_calls:
+        case [call]:
+            data['image_host_subcmd_call'] = call
+        case _:
+            raise ValueError(f'Expected one native objtool subcmd invocation, got {subcmd_calls}')
+    data['image_host_objtool'] = host_fallback(backend.slice_program(objtool, {'OBJTOOL_CFLAGS', 'BUILD_ORC', 'BUILD_KLP', 'LIBSUBCMD'} | backend.refs(call)))
     data['image_host_build'] = backend.slice_program(bodies['tools/objtool/Build'], {'objtool-y'}) + [n for n in bodies['tools/objtool/Build'] if n['kind'] == 'rule']
     data['image_host_arch'] = bodies
-    data['image_host_subcmd'] = host_fallback(backend.slice_program(bodies['tools/scripts/Makefile.include'] + bodies['tools/lib/subcmd/Makefile'] + bodies['tools/lib/subcmd/Build'], {'libsubcmd-y', 'CFLAGS', 'INSTALL_HDRS'}))
+    subcmd = bodies['tools/scripts/Makefile.include'] + bodies['tools/lib/subcmd/Makefile'] + bodies['tools/lib/subcmd/Build']
+    data['image_host_subcmd'] = host_fallback(backend.slice_program(subcmd, {'libsubcmd-y', 'CFLAGS'}))
+    data['image_host_subcmd_headers'] = backend.slice_program(subcmd, {'INSTALL_HDRS'})
     data['image_host_btfids'] = host_fallback(backend.slice_program(bodies['tools/bpf/resolve_btfids/Makefile'], {'HOSTCFLAGS_resolve_btfids', 'HOST_OVERRIDES'}))
     data['image_host_btfids_build'] = bodies['tools/bpf/resolve_btfids/Build']
     data['image_host_cflags'] = backend.slice_program(bodies['tools/build/Build.include'], {'c_flags', 'host_c_flags'})

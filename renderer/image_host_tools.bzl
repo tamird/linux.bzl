@@ -99,26 +99,42 @@ def _impl(ctx):
         if tail and tail[0].startswith("../"):
             for target in rule["targets"]:
                 aliases[_normal("tools/objtool/" + target.removeprefix(prefix))] = _normal("tools/objtool/" + tail[0])
+    invocation = dict(variables)
+    library = value("LIBSUBCMD", variables, index)
+    for name, text in {"MAKE": "__subcmd__", "Q": "", "@": library}.items():
+        invocation[name] = {"value": text}
+    words = shell_words(evaluate(FLAG_PROGRAM["image_host_subcmd_call"], invocation, index).lstrip("@+"))
+    if len(words) < 3 or words[:2] != ["__subcmd__", "-C"] or words[2].rstrip("/") != source + "/tools/lib/subcmd":
+        fail("Unsupported native objtool subcmd invocation: " + str(words))
     library_variables = dict(variables)
-    library_variables.update({
-        "DESTDIR": {"value": value("LIBSUBCMD_OUTPUT", variables, index)},
-        "prefix": {"value": ""},
-        "EXTRA_CFLAGS": {"value": value("OBJTOOL_CFLAGS", variables, index)},
-    })
+    goals = []
+    for word in words[3:]:
+        if "=" in word:
+            name, text = word.split("=", 1)
+            library_variables[name] = {"value": text}
+        elif word in (library, "install_headers"):
+            goals.append(word)
+        else:
+            fail("Unsupported native subcmd goal: " + word)
     subcmd = program(FLAG_PROGRAM["image_host_subcmd"], library_variables, index, cells = True).variables
 
-    # Objtool consumes subcmd's installed public headers. Declare the native
-    # install inventory individually so compiler dependency discovery can prune
-    # headers without depending on an entire generated directory.
+    # Declare public header installation only when the native caller requests
+    # it. Individual files let compiler dependency discovery prune headers
+    # without depending on an entire generated directory.
     installed_headers = []
-    install_prefix = value("INSTALL_HDRS_PFX", subcmd, index) + "/"
-    for target in make_words(value("INSTALL_HDRS", subcmd, index)):
-        if not target.startswith(prefix) or not target.startswith(install_prefix):
-            fail("Native subcmd header install escapes the declared objtool output: " + target)
-        source_header = "tools/lib/subcmd/" + target.removeprefix(install_prefix)
-        header = ctx.actions.declare_file(ctx.label.name + ".generated/" + target.removeprefix(prefix))
-        ctx.actions.symlink(output = header, target_file = prepared.logical[source_header])
-        installed_headers.append(header)
+    if "install_headers" in goals:
+        headers = program(FLAG_PROGRAM["image_host_subcmd_headers"], library_variables, index, cells = True).variables
+        install_prefix = value("INSTALL_HDRS_PFX", headers, index) + "/"
+        targets = make_words(value("INSTALL_HDRS", headers, index))
+        if not targets:
+            fail("Native subcmd install_headers has no exported header inventory")
+        for target in targets:
+            if not target.startswith(prefix) or not target.startswith(install_prefix):
+                fail("Native subcmd header install escapes the declared objtool output: " + target)
+            source_header = "tools/lib/subcmd/" + target.removeprefix(install_prefix)
+            header = ctx.actions.declare_file(ctx.label.name + ".generated/" + target.removeprefix(prefix))
+            ctx.actions.symlink(output = header, target_file = prepared.logical[source_header])
+            installed_headers.append(header)
     header_context = cc_common.create_compilation_context(headers = depset(installed_headers))
     objects.extend([("tools/lib/subcmd/" + p, "subcmd") for p in make_words(value("libsubcmd-y", subcmd, index))])
     outputs = []
