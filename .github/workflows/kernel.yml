@@ -5,6 +5,16 @@ on:
   push:
     branches: [prototype/static-kernel-repository]
   workflow_dispatch:
+    inputs:
+      native_config_only:
+        description: Run the focused native configuration prerequisite
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      native_config_only:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,7 +24,55 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-config:
+    if: ${{ inputs.native_config_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      USE_BAZEL_VERSION: 9.3.0
+    steps:
+      - uses: actions/checkout@v5
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: autoconf-kernel
+          repository-cache: |
+            - MODULE.bazel
+            - MODULE.bazel.lock
+      - name: Test source-selected native configuration
+        timeout-minutes: 50
+        run: |
+          bazel test //native:config_tests //:action_built_config_test \
+            --platforms=@llvm//platforms:linux_x86_64 \
+            --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
+            --extra_toolchains=//:driver_toolchain --jobs=4 \
+            --profile="$RUNNER_TEMP/native-config.profile.gz" --test_output=errors
+      - name: Retain native configuration evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-config
+          path: |
+            ${{ runner.temp }}/native-config.profile.gz
+            bazel-testlogs/**/test.log
+            bazel-out/**/bin/native/**/config-report.json
+            bazel-out/**/bin/native/**/probes.jsonl
+            bazel-out/**/bin/native/**/requested.config
+            bazel-out/**/bin/native/**/.config
+            bazel-out/**/bin/native/**/include/config/auto.conf
+            bazel-out/**/bin/native/**/include/generated/autoconf.h
+            bazel-out/**/bin/native/**/values/report.json
+            bazel-out/**/bin/action_built_config/config-report.json
+            bazel-out/**/bin/action_built_config/probes.jsonl
+            bazel-out/**/bin/action_built_config/.config
+            bazel-out/**/bin/action_built_config/include/config/auto.conf
+            bazel-out/**/bin/action_built_config/include/generated/autoconf.h
+            bazel-out/**/bin/action_built_config/values/report.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
   kernel:
+    if: ${{ !inputs.native_config_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:

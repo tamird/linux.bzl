@@ -1,0 +1,17 @@
+name: Native configuration prerequisite
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-config-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-config:
+    uses: ./.github/workflows/kernel.yml
+    with:
+      native_config_only: true
