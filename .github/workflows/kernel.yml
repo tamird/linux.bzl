@@ -152,7 +152,7 @@ jobs:
             --override_repository=kbuild_exporter="$KBUILD_EXPORTER" \
             --platforms=@llvm//platforms:linux_x86_64 \
             --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
-            --experimental_output_paths=strip --output_groups=+qualification_manifest --jobs=4 \
+            --experimental_output_paths=strip --output_groups=+qualification_manifest --jobs=4 --keep_going \
             --execution_log_compact_file="$RUNNER_TEMP/native-tools.execution.pb.zst" \
             --profile="$RUNNER_TEMP/native-tools.profile.gz"
 
