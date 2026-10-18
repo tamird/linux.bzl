@@ -3,7 +3,7 @@
 load("@linux.bzl//execution_tools:defs.bzl", "execution_tools", "run_recipe")
 load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
-load(":expressions.bzl", "evaluate", "make_words", "match", "program")
+load(":expressions.bzl", "evaluate", "make_words", "match", "program", "source_index")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 
 def value(name, variables, sources):
@@ -594,6 +594,10 @@ def native_codegen(ctx, target, outputs, dependencies, source_tree, config, setu
     for i, argument in enumerate(arguments):
         variables[str(i + 1)] = {"value": argument}
     command_sources = dict(setup.sources)
+
+    # Native wildcard tests see the same generated input names staged below.
+    for path, entry in source_index(dependencies.keys()).items():
+        command_sources[path] = command_sources.get(path, []) + entry if type(entry) == "list" else entry
     command_sources["__shell_commands__"] = True
     if native.get("final_link"):
         # The adapted script has a declared timestamp prerequisite. Preserve
