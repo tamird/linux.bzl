@@ -174,7 +174,24 @@ cat "$1" | lz4 -l -9 - - | lz4 -dc > "$2"
 cmp "$1" "$2"
 cat "$1" | lz4c -l -c1 stdin stdout | lz4 -dc > "$3"
 cmp "$1" "$3"
-printf 'PASS: declared Python runtime and native lz4/lz4c command forms\\n' > "$4"
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+(
+    cd "$scratch"
+    mkdir -p tree/nested
+    printf 'nested file\\n' > tree/nested/file
+    chmod 750 tree
+    chmod 700 tree/nested
+    chmod 640 tree/nested/file
+    owner=$(stat -c '%%u %%g' tree)
+    printf 'tree 750 %%s\\ntree/nested 700 %%s\\ntree/nested/file 640 %%s\\n' "$owner" "$owner" "$owner" > expected
+    find tree -printf '%%p %%m %%U %%G\\n' | LC_ALL=C sort > actual
+    cmp expected actual
+    touch -d @1 tree tree/nested tree/nested/file
+    mtime=$(find tree -printf '%%T@\\n' | sort -r | head -n 1)
+    test "${mtime%%%%.*}" = 1
+)
+printf 'PASS: declared Python runtime and native find/lz4/lz4c command forms\\n' > "$4"
 ''' % execution.bin_dir,
             "execution-tools-check",
             payload.path,
