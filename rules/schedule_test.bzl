@@ -4,7 +4,7 @@ load("//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE")
 load(":commands.bzl", "native_argument")
 load(":compiler.bzl", "KernelCompilerInfo")
 load(":runtime.bzl", "context")
-load(":schedule.bzl", "schedule", "write_payload")
+load(":schedule.bzl", "schedule", "write_schedule")
 
 # Fixed map_directory callback signature.
 # buildifier: disable=unused-variable
@@ -56,7 +56,7 @@ def _plan(tctx, input_directories, output_directories, tools, additional_inputs,
         artifacts[source + ".product"] = product.path
     manifest = ctx.actions.declare_file("kernel.json")
     ctx.actions.write(manifest, json.encode(dict(config = originals["main.c"].path, config_owner = tools["source_root"].path, setup = header.path, compilers = compilers, compiler_inventory = inventory, artifacts = artifacts, members = [])))
-    write_payload(tctx, tools["python"], tools["emit"], output_directories["schedule"], jobs, tools["python_files"])
+    write_schedule(tctx, tools["python"], tools["emit"], output_directories["schedule"], jobs, tools["python_files"])
 
 def _impl(ctx):
     compiler = ctx.attr.compiler[KernelCompilerInfo]

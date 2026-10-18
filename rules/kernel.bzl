@@ -9,7 +9,7 @@ load(":host_tools.bzl", "build_objtool", "build_resolve_btfids")
 load(":image.bzl", "build_image")
 load(":libbpf.bzl", "build_libbpf")
 load(":runtime.bzl", "context", "read_payload", "writer")
-load(":schedule.bzl", "schedule", "write_payload")
+load(":schedule.bzl", "schedule", "write_schedule")
 load(":syntax.bzl", "KernelSyntaxInfo", "syntax_for_source")
 load(":toolchain.bzl", "make_setup")
 
@@ -85,7 +85,7 @@ def expand_kernel(tctx, input_directories, output_directories, tools, additional
     if not planning and requests:
         fail("Kbuild probing did not converge: " + str(requests.keys()))
     if recorded != None:
-        write_payload(tctx, tools["python"], tools["emit"], output_directories["schedule"], recorded, tools["python_files"])
+        write_schedule(tctx, tools["python"], tools["emit"], output_directories["schedule"], recorded, tools["python_files"])
     if planning:
         write = writer(tctx, tools["python"], tools["emit"], output_directories["scratch"], tools["python_files"])
         manifest = tctx.declare_file("requests.json", directory = output_directories["kernel"])

@@ -2,7 +2,7 @@
 
 load("@bazel_skylib//lib:unittest.bzl", "asserts", "unittest")
 load("//rules:runtime.bzl", "read_payload")
-load("//rules:schedule.bzl", "write_payload")
+load("//rules:schedule.bzl", "decode_schedule", "encode_schedule", "write_payload", "write_schedule")
 
 def _payload_test(ctx):
     env = unittest.begin(ctx)
@@ -41,6 +41,23 @@ def _payload_test(ctx):
     asserts.equals(env, ["emit", "payload/report.json", json.encode(value)], runs[0]["arguments"])
     asserts.equals(env, chunks, runs[1]["outputs"])
     asserts.equals(env, value, read_payload(struct(children = files[::-1])))
+
+    # Unequal input lists share strings without losing order or duplicates.
+    jobs = [
+        dict(inputs = ["source.c", "generated.h", "source.c"], outputs = ["object.o"], scan = {"generated": {"header.h": "generated.h"}}, compiler = {"phase": "single"}),
+        dict(inputs = ["generated.h", "object.o"], outputs = ["archive.a"], scan = None, compiler = {}),
+        dict(inputs = [], outputs = ["constant"], scan = None, compiler = {}),
+    ]
+    compact = encode_schedule(jobs)
+    asserts.equals(env, ["source.c", "generated.h", "object.o"], compact["paths"])
+    asserts.equals(env, [[0, 1, 0], [1, 2], []], [job["inputs"] for job in compact["jobs"]])
+    asserts.equals(env, jobs, decode_schedule(compact))
+    files.clear()
+    runs.clear()
+    write_schedule(struct(declare_file = declare_file, run = run), "python", struct(path = "emit"), struct(path = "payload"), jobs, depset())
+    asserts.equals(env, ["emit", "payload/report.json", json.encode(jobs)], runs[0]["arguments"])
+    asserts.equals(env, compact, read_payload(struct(children = files[::-1])))
+    asserts.equals(env, jobs, decode_schedule(read_payload(struct(children = files))))
     return unittest.end(env)
 
 payload_test = unittest.make(_payload_test)

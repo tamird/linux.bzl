@@ -7,12 +7,12 @@ _ASCII = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abc
 _HEX = "0123456789abcdef"
 _CODES = {c: _HEX[(i + 32) // 16] + _HEX[(i + 32) % 16] for i, c in enumerate(_ASCII.elems())}
 
-def write_payload(tctx, python, emit, root, value, python_files):
+def write_payload(tctx, python, emit, root, value, python_files, report_value = None):
     text = json.encode(value)
     if (len(text) + 89) // 90 > 100000000:
         fail("Payload exceeds the eight-digit chunk range")
     report = tctx.declare_file("report.json", directory = root)
-    writer(tctx, python, emit, root, python_files)(report, text)
+    writer(tctx, python, emit, root, python_files)(report, text if report_value == None else json.encode(report_value))
     outputs = []
     for start in range(0, len(text), 90):
         # The transport encodes printable ASCII JSON bytes as pairs of hex
@@ -24,6 +24,35 @@ def write_payload(tctx, python, emit, root, value, python_files):
     for start in range(0, len(outputs), 500):
         batch = outputs[start:start + 500]
         tctx.run(executable = python, inputs = depset([emit], transitive = [python_files]), outputs = batch, arguments = [emit.path, "--touch"] + [f.path for f in batch], progress_message = "Write kernel schedule metadata")
+
+def encode_schedule(jobs):
+    """Share repeated input strings while preserving each complete ordered list."""
+    paths, records = {}, []
+    for job in jobs:
+        inputs = []
+        for path in job["inputs"]:
+            if path not in paths:
+                paths[path] = len(paths)
+            inputs.append(paths[path])
+        records.append(dict(job, inputs = inputs))
+    return dict(paths = paths.keys(), jobs = records)
+
+def decode_schedule(value):
+    """Restore the ordinary records before any readiness or dependency checks."""
+    paths = value["paths"]
+    jobs = []
+    for job in value["jobs"]:
+        if any([type(index) != "int" or index < 0 or index >= len(paths) for index in job["inputs"]]):
+            fail("Kernel schedule input index is outside its path table")
+        jobs.append(dict(job, inputs = [paths[index] for index in job["inputs"]]))
+    return jobs
+
+def write_schedule(tctx, python, emit, root, jobs, python_files):
+    """Keep the full report while compacting only the callback transport."""
+    write_payload(tctx, python, emit, root, encode_schedule(jobs), python_files, report_value = jobs)
+
+def _read_schedule(expanded):
+    return decode_schedule(read_payload(expanded))
 
 def _available(input_directories, tools, additional_inputs, params):
     available = {f.path: f for f in input_directories["literals"].children}
@@ -108,7 +137,7 @@ def _compiler_inputs(job, dependencies, available, source_files, originals, sour
 # buildifier: disable=unused-variable
 def _stage(tctx, input_directories, output_directories, tools, additional_inputs, additional_params):
     params = additional_params
-    jobs = read_payload(input_directories["schedule"])
+    jobs = _read_schedule(input_directories["schedule"])
     available = _available(input_directories, tools, additional_inputs, params)
     source_files = {f.path.removeprefix(params["source_prefix"] + "/"): f for f in input_directories["sources"].children}
     originals = {f.path.removeprefix(params["original_prefix"] + "/"): f for f in additional_inputs["originals"].to_list()}
@@ -179,7 +208,7 @@ def _backend(tctx, input_directories, output_directories, tools, additional_inpu
     available = _available(input_directories, tools, additional_inputs, params)
     environment = json.decode(params["backend_environment"])
     prefix = params["plan_prefix"] + "/"
-    for job in read_payload(input_directories["schedule"]):
+    for job in _read_schedule(input_directories["schedule"]):
         if not _is_backend(job):
             continue
         if job["scan"] != None or len(job["outputs"]) != 1:
@@ -218,7 +247,7 @@ def _backend(tctx, input_directories, output_directories, tools, additional_inpu
 # buildifier: disable=unused-variable
 def _export(tctx, input_directories, output_directories, tools, additional_inputs, additional_params):
     available = _available(input_directories, tools, additional_inputs, additional_params)
-    jobs = read_payload(input_directories["schedule"])
+    jobs = _read_schedule(input_directories["schedule"])
     missing = [path for job in jobs for path in job["outputs"] if path not in available]
     if missing:
         fail("Kernel dependency scheduling did not converge; missing outputs: " + str(missing[:20]))
