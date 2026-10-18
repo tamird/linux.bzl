@@ -277,10 +277,10 @@ jobs:
       - name: Build x86 and ARM64 BTF kernels, boot images and ingress modules
         working-directory: examples
         run: |
-          bazel build //:aarch64_modules //:x86_64_modules --output_groups=kernel,boot,modules --jobs=4 \
+          bazel --host_jvm_args=-Xmx8g build //:aarch64_modules //:x86_64_modules --output_groups=kernel,boot,modules --jobs=4 \
             --sandbox_block_path=/bin --sandbox_block_path=/usr/bin \
             --sandbox_block_path=/usr/local/bin
-          bazel test //:aarch64_modules_btf_test //:x86_64_modules_btf_test //:x86_64_config_test --jobs=4 --test_output=errors
+          bazel --host_jvm_args=-Xmx8g test //:aarch64_modules_btf_test //:x86_64_modules_btf_test //:x86_64_config_test --jobs=4 --test_output=errors
 
       - name: Upload LTS test logs
         if: ${{ !cancelled() }}
