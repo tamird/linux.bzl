@@ -128,14 +128,53 @@ class ActionGraph:
         identities = {name: identity for identity, name in artifacts.items()}
         if len(identities) != len(artifacts):
             raise ValueError("Aquery has duplicate artifact paths")
+        dep_sets = {str(item["id"]): item for item in query.get("depSetOfFiles", [])}
+
+        def input_ids(action: Action) -> set[str]:
+            pending = [(str(item), False) for item in action.get("inputDepSetIds", [])]
+            active, visited, result = set(), set(), set()
+            while pending:
+                identity, leaving = pending.pop()
+                if leaving:
+                    active.remove(identity)
+                    visited.add(identity)
+                    continue
+                if identity in active:
+                    raise ValueError(f"Cyclic aquery input set: {identity}")
+                if identity in visited:
+                    continue
+                active.add(identity)
+                pending.append((identity, True))
+                inputs = dep_sets[identity]
+                result.update(map(str, inputs.get("directArtifactIds", [])))
+                pending.extend((str(item), False) for item in inputs.get("transitiveDepSetIds", []))
+            return result
+
         producers = {}
-        for index, action in enumerate(query["actions"]):
+        actions = []
+        for action in query["actions"]:
+            outputs = [str(output) for output in action["outputIds"]]
+            previous = producers.get(outputs[0]) if outputs else None
+            # Aquery can serialize one shared native action more than once,
+            # using distinct nested-set IDs for the same input artifacts.
+            # Compare every other field before expanding this duplicate's
+            # inputs; ordinary actions never need per-action input closures.
+            if previous is not None:
+                original = actions[previous]
+                if original == action or (
+                    {k: v for k, v in original.items() if k != "inputDepSetIds"}
+                    == {k: v for k, v in action.items() if k != "inputDepSetIds"}
+                    and input_ids(original) == input_ids(action)
+                ):
+                    continue
+            index = len(actions)
             for output in action["outputIds"]:
                 identity = str(output)
                 if identity not in artifacts or identity in producers:
                     raise ValueError(f"Invalid or conflicting aquery producer: {identity}")
                 producers[identity] = index
-        return cls(artifacts, identities, query["actions"], producers, {str(item["id"]): item for item in query.get("depSetOfFiles", [])})
+            actions.append(action)
+        return cls(artifacts, identities, actions, producers, dep_sets)
 
     def outputs(self) -> Iterator[tuple[str, Outputs]]:
         for action in self.actions:

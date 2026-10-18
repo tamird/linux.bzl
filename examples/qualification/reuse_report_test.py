@@ -142,14 +142,29 @@ class ReuseReportTest(unittest.TestCase):
         self.assertFalse(native.consumes("backend.o", "source.c"))
         with self.assertRaisesRegex(ValueError, "lack native producers"):
             native.ancestry(["source.c"])
+        graph["actions"].append(dict(graph["actions"][0]))
+        path.write_text(json.dumps(graph))
+        repeated = reuse_report.ActionGraph.read(path)
+        self.assertEqual(repeated.actions, native.actions)
+        self.assertEqual(repeated.ancestry(["vmlinux"]), native.ancestry(["vmlinux"]))
+        graph["depSetOfFiles"].append({"id": 9, "transitiveDepSetIds": [1]})
+        graph["actions"][-1]["inputDepSetIds"] = [9]
+        path.write_text(json.dumps(graph))
+        self.assertEqual(reuse_report.ActionGraph.read(path).actions, native.actions)
+        graph["depSetOfFiles"][-1]["transitiveDepSetIds"] = [1, 9]
+        path.write_text(json.dumps(graph))
+        with self.assertRaisesRegex(ValueError, "Cyclic aquery input set"):
+            reuse_report.ActionGraph.read(path)
+        graph["depSetOfFiles"][-1]["transitiveDepSetIds"] = [1]
+        graph["actions"][-1]["inputDepSetIds"] = [6]
+        path.write_text(json.dumps(graph))
+        with self.assertRaisesRegex(ValueError, "conflicting aquery producer"):
+            reuse_report.ActionGraph.read(path)
+        graph["actions"].pop()
         graph["depSetOfFiles"][4]["directArtifactIds"] = [1]
         path.write_text(json.dumps(graph))
         with self.assertRaisesRegex(ValueError, "Cyclic native action graph"):
             reuse_report.ActionGraph.read(path).ancestry(["vmlinux"])
-        graph["actions"].append(graph["actions"][0])
-        path.write_text(json.dumps(graph))
-        with self.assertRaisesRegex(ValueError, "conflicting aquery producer"):
-            reuse_report.ActionGraph.read(path)
 
     def test_family_authentication_requires_the_real_compiler_chain(self) -> None:
         paths = ["vmlinux", "logical.o", "backend.o", "unit.bc", "frontend.o", "reference.o", "source.c", "unrelated.o", "kernel.json", "config", "diagnostics.json", "bazel-out/cfg/bin/attribute.bc", "bazel-out/cfg/bin/assembly.bc"]
