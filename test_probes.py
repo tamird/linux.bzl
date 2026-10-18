@@ -14,7 +14,7 @@ tools, remaining = parser.parse_known_args()
 COMPILER, SHELL = str(tools.compiler.absolute()), str(tools.shell.absolute())
 sys.argv[1:] = remaining
 
-from probe_runtime import absolute_arguments, logical_probe_output, probe_command, probes, stage_output_directories
+from probe_runtime import absolute_arguments, logical_probe_output, probe_command, probes, publish_answers, stage_output_directories
 
 
 class ProbeTest(unittest.TestCase):
@@ -70,19 +70,35 @@ class ProbeTest(unittest.TestCase):
             self.assertTrue(json.loads((output / 'report.json').read_text())['capabilities'][key])
 
     def test_host_shell_preserves_output_despite_failed_status(self):
+        def planner_answers(directory):
+            chunks = sorted(directory.rglob('*=*'), key=lambda path: path.name)
+            encoded = ''.join(path.name.split('=', 1)[1] for path in chunks)
+            return json.loads(bytes.fromhex(encoded))
+
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             previous = root / 'previous'
-            previous.mkdir()
-            (previous / 'report.json').write_text(json.dumps(dict(capabilities={}, history=[])))
+            seed = dict(capabilities={}, history=[])
+            publish_answers(previous, seed)
+            self.assertEqual(planner_answers(previous), dict(capabilities={}))
+            self.assertEqual((previous / 'report.json').read_text(), json.dumps(seed, indent=2))
             request = self.request(kind='host-shell')
-            request['command'] = "printf 'first\\nsecond\\n\\n'; exit 1"
+            request['command'] = "printf 'first\\nsecond\\n\\n'; printf 'warning\\n' >&2; exit 1"
             key = json.dumps(request)
             output = root / 'answers'
             probes(dict(previous=str(previous), requests={key: request}), output)
-            report = json.loads((output / 'report.json').read_text())
-            self.assertEqual(report['capabilities'][key], 'first second')
-            self.assertEqual(report['history'][0][0]['status'], 1)
+            report = dict(capabilities={key: 'first second'}, history=[[dict(
+                key=key, argv=[SHELL, '-c', request['command']], status=1,
+                stdout='first\nsecond\n\n', stderr='warning\n',
+            )]])
+            self.assertEqual(planner_answers(output), dict(capabilities=report['capabilities']))
+            self.assertEqual((output / 'report.json').read_text(), json.dumps(report, indent=2))
+
+            converged = root / 'converged'
+            probes(dict(previous=str(output), requests={}), converged)
+            report['converged'] = True
+            self.assertEqual(planner_answers(converged), dict(capabilities=report['capabilities'], converged=True))
+            self.assertEqual((converged / 'report.json').read_text(), json.dumps(report, indent=2))
 
     def test_host_shell_rejects_infrastructure_failure(self):
         with tempfile.TemporaryDirectory() as temporary:

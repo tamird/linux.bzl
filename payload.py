@@ -16,7 +16,8 @@ def chunk_path(index: int, encoded: str) -> Path:
     return Path(number[:2], number[2:4], number[4:6], number + '=' + encoded)
 
 
-def publish(output: Path | str, value: JsonValue) -> None:
+def publish(output: Path | str, value: JsonValue, *, report: JsonValue = None) -> None:
+    """Encode the consumer payload and optionally retain a separate full report."""
     encoded = json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode().hex()
     count = (len(encoded) + 179) // 180
     if count > 100_000_000:
@@ -29,4 +30,4 @@ def publish(output: Path | str, value: JsonValue) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open('xb'):
             pass
-    (output / 'report.json').write_text(json.dumps(value, indent=2))
+    (output / 'report.json').write_text(json.dumps(value if report is None else report, indent=2))

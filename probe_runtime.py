@@ -7,7 +7,15 @@ import subprocess
 import sys
 import tempfile
 
-from payload import publish
+from payload import JsonValue, publish
+
+
+def publish_answers(output: Path | str, report: dict[str, JsonValue]) -> None:
+    """Send planner state through filenames and retain the complete probe audit."""
+    answers = {'capabilities': report['capabilities']}
+    if 'converged' in report:
+        answers['converged'] = report['converged']
+    publish(output, answers, report=report)
 
 
 def absolute_arguments(arguments, execution_root):
@@ -124,7 +132,7 @@ def probes(spec, output):
     previous = json.loads((Path(spec['previous']) / 'report.json').read_text())
     if not spec['requests']:
         previous['converged'] = True
-        publish(output, previous)
+        publish_answers(output, previous)
         return
     answers, records = dict(previous['capabilities']), []
     execution_root = Path.cwd()
@@ -164,13 +172,13 @@ def probes(spec, output):
             records.append(dict(key=key, argv=[arg.replace(str(work), '__probe_tmp__') for arg in command], status=result.returncode, stdout=result.stdout.replace(str(work), '__probe_tmp__'), stderr=result.stderr.replace(str(work), '__probe_tmp__')))
     previous['capabilities'] = answers
     previous['history'].append(records)
-    publish(output, previous)
+    publish_answers(output, previous)
 
 
 if __name__ == '__main__':
     inputs = json.loads(Path(sys.argv[2]).read_text())
     if sys.argv[1] == 'seed':
-        publish(sys.argv[3], dict(capabilities={}, history=[]))
+        publish_answers(sys.argv[3], dict(capabilities={}, history=[]))
     elif sys.argv[1] == 'kbuild':
         probes(inputs, sys.argv[3])
     else:
