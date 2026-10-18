@@ -86,7 +86,10 @@ def _impl(ctx):
     if value("obj", build_variables, index) != "objtool" or value("dir", build_variables, index) != ".":
         fail("Unsupported native objtool object namespace: " + str(words))
     build = program(FLAG_PROGRAM["image_host_build"], build_variables, index, cells = True)
-    objects = [("tools/objtool/" + p, "objtool", build.variables) for p in make_words(value("objtool-y", build.variables, index)) if not p.endswith("/")]
+
+    # The native aggregate link consumes $^: duplicate prerequisites occur
+    # only once, in their first position. Keep each directory's object identity.
+    objects = {"tools/objtool/" + p: ("objtool", build.variables) for p in make_words(value("objtool-y", build.variables, index)) if not p.endswith("/")}
     arch_variables = _recursive_variables(build.variables, index)
     arch_variables["dir"] = {"value": "./arch/" + architecture.srcarch, "command_line": True}
     generated = []
@@ -116,7 +119,7 @@ def _impl(ctx):
             generated.append(output)
 
     # Each architecture Build has its own object namespace.
-    objects.extend([("tools/objtool/arch/" + architecture.srcarch + "/" + p, "objtool", architecture_program.variables) for p in make_words(value("objtool-y", architecture_program.variables, index))])
+    objects.update({"tools/objtool/arch/" + architecture.srcarch + "/" + p: ("objtool", architecture_program.variables) for p in make_words(value("objtool-y", architecture_program.variables, index))})
     aliases = {}
     for rule in build.rules:
         tail = make_words(rule["prerequisites"])
@@ -160,9 +163,9 @@ def _impl(ctx):
             ctx.actions.symlink(output = header, target_file = prepared.logical[source_header])
             installed_headers.append(header)
     header_context = cc_common.create_compilation_context(headers = depset(installed_headers))
-    objects.extend([("tools/lib/subcmd/" + p, "libsubcmd", subcmd) for p in make_words(value("libsubcmd-y", subcmd, index))])
+    objects.update({"tools/lib/subcmd/" + p: ("libsubcmd", subcmd) for p in make_words(value("libsubcmd-y", subcmd, index))})
     outputs = []
-    for obj, owner, scope in objects:
+    for obj, (owner, scope) in objects.items():
         src = aliases.get(obj, obj[:-2] + ".c")
         local = dict(scope)
         local.update({"@": {"value": obj}, "obj": {"value": owner}})
