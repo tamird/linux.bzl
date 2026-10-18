@@ -79,6 +79,7 @@ py_binary(
         "kconfig_fallback.inc",
         "kconfig_syntax.inc",
     ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
     deps = ["//:compiler_capability_support"],
 )
 

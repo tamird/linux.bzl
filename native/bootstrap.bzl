@@ -32,6 +32,7 @@ def _namespace(ctx, compilation_outputs, identity = None):
     ctx.actions.run(
         executable = ctx.executable._builder,
         arguments = ["namespace", specification.path],
+        env = ctx.attr._builder[RunEnvironmentInfo].environment,
         inputs = [specification, ctx.file._nm, ctx.file._objcopy] + inputs,
         tools = [ctx.attr._builder[DefaultInfo].files_to_run],
         outputs = outputs.values(),
@@ -100,6 +101,7 @@ def _kconfig_parser_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._prepare,
         arguments = ["--linux", ctx.file.anchor.dirname, "--out", transformed["parser.y"].dirname],
+        env = ctx.attr._prepare[RunEnvironmentInfo].environment,
         inputs = ctx.files.sources,
         tools = [ctx.attr._prepare[DefaultInfo].files_to_run],
         outputs = transformed.values(),
@@ -181,6 +183,7 @@ def _kernel_repository_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._builder,
         arguments = ["payload", specification.path],
+        env = ctx.attr._builder[RunEnvironmentInfo].environment,
         inputs = [specification, ctx.file.python_metadata, ctx.file.make_module, identity] + ctx.files.stdlib + ctx.files.renderer + ctx.files.license_files,
         tools = [ctx.attr._builder[DefaultInfo].files_to_run],
         outputs = [payload],
@@ -227,6 +230,7 @@ def _kernel_repository_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._builder,
         arguments = ["bundle", specification.path],
+        env = ctx.attr._builder[RunEnvironmentInfo].environment,
         inputs = [specification, linked.executable, payload],
         tools = [ctx.attr._builder[DefaultInfo].files_to_run],
         outputs = [output],
@@ -266,6 +270,7 @@ def _consumer_support_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._builder,
         arguments = ["support", specification.path],
+        env = ctx.attr._builder[RunEnvironmentInfo].environment,
         inputs = depset([specification, ctx.file.anchor] + ctx.files.fragments, transitive = [ctx.attr.sources[DefaultInfo].files]),
         tools = [ctx.attr._builder[DefaultInfo].files_to_run, ctx.attr.generator[DefaultInfo].files_to_run],
         outputs = [output],
@@ -351,6 +356,7 @@ def kernel_repository_bootstrap(source_repository):
             "$(rootpath " + anchor + ")",
         ],
         data = [":kernel_repository", anchor, source_repository + "//:configuration"],
+        env = {"PYTHONDONTWRITEBYTECODE": "1"},
         main = "//native:kconfig_test.py",
         tags = ["manual"],
         deps = ["//:kconfig_syntax_support"],
@@ -367,6 +373,7 @@ def kernel_repository_bootstrap(source_repository):
             "$(rootpath @example_fixtures//configs:x86_64.config)",
         ],
         data = [":kernel_repository", anchor, sources] + fragments,
+        env = {"PYTHONDONTWRITEBYTECODE": "1"},
         main = "//:test_repository.py",
         tags = ["manual"],
         # Generation alone has a 600-second repository-rule budget; this test
