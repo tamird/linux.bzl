@@ -134,7 +134,10 @@ http_archive(
     dev_dependency = True,
     integrity = "sha256-3nPVKLBL6R9uuGZgqmek1TuWu/ILtaMm54+ALXRN6+c=",
     patch_strip = 1,
-    patches = ["//native:linux_piggy_dependency.patch"],
+    patches = [
+        "//native:linux_piggy_dependency.patch",
+        "//native:linux_5_10_resolve_btfids.patch",
+    ],
     strip_prefix = "linux-5.10.270",
     urls = ["https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.10.270.tar.xz"],
 )
@@ -145,7 +148,10 @@ http_archive(
     dev_dependency = True,
     integrity = "sha256-wHiC4eUo7+IGVnom3jCxktuNxDaZdNTvTOcIaR+hFIw=",
     patch_strip = 1,
-    patches = ["//native:linux_piggy_dependency.patch"],
+    patches = [
+        "//native:linux_piggy_dependency.patch",
+        "//native:linux_5_15_resolve_btfids.patch",
+    ],
     strip_prefix = "linux-5.15.221",
     urls = ["https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.221.tar.xz"],
 )

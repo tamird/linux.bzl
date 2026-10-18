@@ -213,7 +213,15 @@ def _resolve_btfids_impl(ctx):
     index["__execution_tools__"] = {n: f.path for n, f in execution_tools(ctx).commands.items()}
     index["__host_capabilities__"] = _host_capabilities(host, [ctx.attr.libelf])
     directory = "tools/bpf/resolve_btfids"
+
+    # The declared library owns its installed public header namespace. Bind it
+    # before native simple CFLAGS assignments capture their variable scope.
+    libbpf = ctx.attr.libbpf[CcInfo]
+    headers = [f for f in libbpf.compilation_context.headers.to_list() if f.path.endswith("/bpf/btf.h")]
+    if len(headers) != 1:
+        fail("Declared libbpf must expose exactly one public bpf/btf.h, got %s" % headers)
     initial = dict(setup.variables)
+    initial["LIBBPF_INCLUDE"] = {"value": headers[0].dirname.rpartition("/")[0], "command_line": True}
     for name, text in {
         "srctree": source,
         "CURDIR": source + "/" + directory,
@@ -223,20 +231,19 @@ def _resolve_btfids_impl(ctx):
         initial[name] = {"value": text}
     variables = program(FLAG_PROGRAM["image_host_btfids"], initial, index, cells = True).variables
 
-    # The declared libbpf exports its installed public header namespace.
-    # Recover that root from its actual virtual header, not a repository path.
-    libbpf = ctx.attr.libbpf[CcInfo]
-    headers = [f for f in libbpf.compilation_context.headers.to_list() if f.path.endswith("/bpf/btf.h")]
-    if len(headers) != 1:
-        fail("Declared libbpf must expose exactly one public bpf/btf.h, got %s" % headers)
-    variables["LIBBPF_INCLUDE"] = {"value": headers[0].dirname.rpartition("/")[0]}
     variables["SUBCMD_INCLUDE"] = {"value": source + "/tools/lib"}
     variables["srctree"] = {"value": source}
     build = program(FLAG_PROGRAM["image_host_btfids_build"], variables, index, cells = True)
     variables = build.variables
+    variables["obj"] = {"value": "resolve_btfids"}
+    variables["host"] = {"value": ""}
+    variables = program(FLAG_PROGRAM["image_host_compile_mode"], variables, index, cells = True).variables
+    compiler_mode = value("host", variables, index)
+    if compiler_mode not in ("", "host_"):
+        fail("Unsupported native resolve_btfids compiler mode: " + compiler_mode)
 
-    # The library's recursive Make invocation forwards HOSTCFLAGS as
-    # EXTRA_CFLAGS; resolve_btfids-specific flags belong to its own objects.
+    # Apply native library overrides when present. Resolver-specific flags
+    # remain in the resolver object's own compiler scope.
     library_variables = dict(variables)
     for assignment in shell_words(value("HOST_OVERRIDES", variables, index)):
         name, separator, text = assignment.partition("=")
@@ -244,7 +251,7 @@ def _resolve_btfids_impl(ctx):
             fail("Native resolver library override is not an assignment: " + assignment)
         library_variables[name] = {"value": text}
     subcmd = program(FLAG_PROGRAM["image_host_subcmd"], library_variables, index, cells = True).variables
-    objects = [(directory + "/" + obj, "resolve_btfids", variables, "host_c_flags") for obj in make_words(value("resolve_btfids-y", variables, index))]
+    objects = [(directory + "/" + obj, "resolve_btfids", variables, compiler_mode + "c_flags") for obj in make_words(value("resolve_btfids-y", variables, index))]
     objects.extend([("tools/lib/subcmd/" + obj, "libsubcmd", subcmd, "c_flags") for obj in make_words(value("libsubcmd-y", subcmd, index))])
     libraries = [ctx.attr.libelf[CcInfo], libbpf]
     compilations = []
