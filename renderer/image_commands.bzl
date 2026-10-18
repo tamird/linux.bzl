@@ -188,6 +188,26 @@ def _ir_diagnostics(ctx, flags, features, inputs, context, setup, experiment):
     )
     experiment.diagnostics.extend([report] + bitcodes)
 
+def compiler_context(setup, flags, host = False):
+    """Apply native include policy without changing hosted compiler contexts."""
+    if host:
+        return struct(features = setup.host_features, flags = flags)
+    non_object = "-S" in flags or "-E" in flags
+    features = setup.non_object_features if non_object else setup.features
+    if setup.compiler == "clang" and "-nostdinc" in flags:
+        features = setup.freestanding_non_object_features if non_object else setup.freestanding_features
+        if not cc_common.is_enabled(feature_configuration = features, feature_name = "no_linux_system_includes"):
+            fail("Native -nostdinc requires the LLVM no_linux_system_includes feature; apply the distributed llvm_system_includes.patch in the root module")
+
+        # Explicit toolchain -isystem paths survive -nostdinc. The feature
+        # removes hosted headers; Kbuild still supplies the compiler builtins.
+        # Split -nostdinc to keep the toolchain's -nostdlibinc claimed by Clang.
+        normalized = []
+        for flag in flags:
+            normalized.extend(["-nostdlibinc", "-nobuiltininc"] if flag == "-nostdinc" else [flag])
+        flags = normalized
+    return struct(features = features, flags = flags)
+
 def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies, directory_marker, source_tree, source_prerequisites, setup, host, compiler_inputs):
     # Let Bazel's C++ action discover includes from the compiler's depfile.
     # Candidate source files belong in the prunable header context, including
@@ -199,21 +219,12 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
         fail("No declared compiler source for " + target)
     if not host and any([flag in flags for flag in ["-march=native", "-mcpu=native", "-mtune=native"]]):
         fail("Native CPU code generation requires a declared execution-host CPU/features contract; choose an explicit target CPU")
-    features = setup.host_features if host else setup.features
-    if not host:
-        if setup.compiler == "clang" and "-nostdinc" in flags:
-            # Clang leaves the toolchain's -nostdlibinc unclaimed when Kbuild
-            # passes -nostdinc. Split the equivalent policy without suppressing
-            # unused-argument diagnostics or permitting any default includes.
-            normalized = []
-            for flag in flags:
-                normalized.extend(["-nostdlibinc", "-nobuiltininc"] if flag == "-nostdinc" else [flag])
-            flags = normalized
-        if "-S" in flags or "-E" in flags:
-            # compiler_input_flags supplies both -c and the source. Native
-            # -S/-E own the mode, so restore only the source argument.
-            features = setup.non_object_features
-            flags = flags + [source_file.path]
+    context = compiler_context(setup, flags, host = host)
+    features, flags = context.features, context.flags
+    if not host and ("-S" in flags or "-E" in flags):
+        # compiler_input_flags supplies both -c and the source. Native
+        # -S/-E own the mode, so restore only the source argument.
+        flags = flags + [source_file.path]
 
     # Generated ancestors stay available for textual includes, including
     # co-produced files, but only direct Kbuild prerequisites are mandatory.

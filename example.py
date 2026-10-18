@@ -21,7 +21,7 @@ def create(linux, tool, generated, out):
     support.mkdir(parents=True, exist_ok=True)
     module = (generated / 'MODULE.bazel').read_text().split('\n', 1)[1]
     module = module.replace('"//', '"@kernel//')
-    for name in ('rules_bison_cstdlib.patch', 'rules_cc_autoconf_no_host_shell.patch', 'rules_cc_autoconf_no_path_mapping.patch', 'rules_cc_ir.patch'):
+    for name in ('rules_bison_cstdlib.patch', 'rules_cc_autoconf_no_host_shell.patch', 'rules_cc_autoconf_no_path_mapping.patch', 'rules_cc_ir.patch', 'llvm_system_includes.patch'):
         shutil.copyfile(generated / 'rules' / name, support / name)
         module = module.replace('@kernel//rules:' + name, '//:.generated/' + name)
     (support / 'dependencies.MODULE.bazel').write_text(module)

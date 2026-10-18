@@ -203,6 +203,11 @@ jobs:
             @kernel//architecture_tests:config_flags_test @kernel//architecture_tests:choice_visibility_test \
             --platforms=@llvm//platforms:linux_x86_64 \
             --extra_execution_platforms=@llvm//platforms:linux_x86_64 --jobs=4 --test_output=errors
+          # Musl's stdarg header exposes hosted endian aliases; native kernel
+          # commands must select compiler builtins, including -S/-E generators.
+          bazel --host_jvm_args=-Xmx8g build @kernel//architecture_tests:header_context_checks \
+            --platforms=@llvm//platforms:linux_aarch64_musl \
+            --extra_execution_platforms=@llvm//platforms:linux_x86_64 --jobs=4
           verification_status=0
           for cpu in x86_64 aarch64; do
             flags=(--platforms=@llvm//platforms:linux_$cpu --extra_execution_platforms=@llvm//platforms:linux_x86_64)

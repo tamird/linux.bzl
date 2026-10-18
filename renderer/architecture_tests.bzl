@@ -2,8 +2,10 @@
 
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts", "unittest")
 load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
+load("@rules_cc//cc:find_cc_toolchain.bzl", "use_cc_toolchain")
+load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load(":architecture.bzl", "KernelArchitectureInfo")
-load(":commands.bzl", "native_recipe", "shell_quote", "shell_words", "value")
+load(":commands.bzl", "compiler_context", "native_recipe", "shell_quote", "shell_words", "value")
 load(":compiler_capabilities.bzl", "KernelCompilerCapabilityVerificationInfo")
 load(":expressions.bzl", "evaluate", "program")
 load(":flag_program.bzl", "FLAG_PROGRAM")
@@ -54,6 +56,53 @@ def _check_impl(ctx):
         if symbol != ctx.attr.symbol:
             asserts.equals(env, "n", info.values.get(symbol, "n"))
     return analysistest.end(env)
+
+def _header_context_checks_impl(ctx):
+    setup = ctx.attr._setup[KernelToolchainInfo]
+    kernel = ctx.actions.declare_file(ctx.label.name + ".kernel.c")
+    hosted = ctx.actions.declare_file(ctx.label.name + ".hosted.c")
+    ctx.actions.write(kernel, """#include <stdarg.h>
+#if defined(__BIG_ENDIAN) || defined(__LITTLE_ENDIAN)
+#error libc stdarg.h leaked into native kernel compilation
+#endif
+int kernel_arg(int count, ...) { va_list ap; va_start(ap, count); int value = va_arg(ap, int); va_end(ap); return value; }
+""")
+    ctx.actions.write(hosted, "#include <stdio.h>\n#include <stdarg.h>\nFILE *hosted_stream(void) { return stdin; }\n")
+    outputs = []
+
+    # Both source compilation and native -S/-E generators must retain the
+    # selected builtin stdarg, while hosted target/host actions retain libc.
+    for mode in ["object", "assembly", "preprocess", "hosted", "host"]:
+        host = mode == "host"
+        source = hosted if mode in ["hosted", "host"] else kernel
+
+        # UML may carry -nostdlibinc from the hosted toolchain itself; that
+        # flag alone must not opt out of its explicit libc include paths.
+        flags = [] if source == hosted else ["-nostdinc", "-isystem", setup.sources["__compiler_include__"]]
+        if mode == "hosted":
+            flags.append("-nostdlibinc")
+        flags += {"assembly": ["-S"], "preprocess": ["-E"]}.get(mode, [])
+        context = compiler_context(setup, flags, host = host)
+        flags = context.flags + ([source.path] if mode in ["assembly", "preprocess"] else [])
+        _, compiled = cc_common.compile(
+            actions = ctx.actions,
+            name = ctx.label.name + "." + mode,
+            cc_toolchain = setup.host_cc if host else setup.cc,
+            feature_configuration = context.features,
+            srcs = [source],
+            user_compile_flags = flags,
+            additional_inputs = (setup.host_compile_files if host else setup.compile_files).to_list(),
+            disallow_pic_outputs = True,
+        )
+        outputs.extend(compiled.objects)
+    return [DefaultInfo(files = depset(outputs))]
+
+_header_context_checks = rule(
+    implementation = _header_context_checks_impl,
+    fragments = ["cpp"],
+    toolchains = use_cc_toolchain() + [EXECUTION_TOOLS_TYPE],
+    attrs = {"_setup": attr.label(default = "//:toolchain", providers = [KernelToolchainInfo])},
+)
 
 def _realmode_flags_impl(ctx):
     env = analysistest.begin(ctx)
@@ -239,6 +288,7 @@ def architecture_tests(native_cpu = False):
         kernel_config(name = "native_cpu_config", options = "//options:options", allnoconfig = True, requested = {"X86_NATIVE_CPU": "y"}, tags = ["manual"])
         kbuild_resolved_build(name = "native_cpu", config = ":native_cpu_config", catalog = "//:catalog", roots = ["init/main.o"], required_options = {"X86_NATIVE_CPU": "y"}, tags = ["manual"])
         _expected_failure_test(name = "native_cpu_test", target_under_test = ":native_cpu", message = "Native CPU code generation requires a declared execution-host CPU/features contract")
+    _header_context_checks(name = "header_context_checks", tags = ["manual"])
     _compiler_controls_test(name = "compiler_controls_test")
     _config_flags_test(name = "config_flags_test")
     _choice_visibility_test(name = "choice_visibility_test")

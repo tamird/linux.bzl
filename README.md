@@ -120,6 +120,13 @@ source or matching support archive into their own source tree, then use that
 local label in the `rules_cc` override for the pinned version. `example.py`
 performs this relocation.
 
+The matching `llvm_system_includes.patch` adds an opt-in LLVM feature for
+Linux system-header injection. Apply it to the pinned LLVM version through a
+root-local patch label too. Native target commands that request `-nostdinc`
+select this feature and retain Kbuild's explicit compiler builtin headers;
+host tools, hosted UML commands and native capability probes retain their
+ordinary toolchain context. Generated compiler commands use the same selection.
+
 Cross-configuration action reuse requires a Bazel disk or remote cache and these
 build options (also use them for queries of those actions):
 

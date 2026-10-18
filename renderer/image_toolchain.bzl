@@ -12,7 +12,7 @@ load(":host_toolchain.bzl", "KernelHostToolchainInfo")
 load(":rules.bzl", "KernelConfigInfo")
 load(":source_tree.bzl", "KernelSourceTreeInfo")
 
-_TOOLCHAIN_FIELDS = ["file", "files", "compile_files", "host_compile_files", "identity", "tools", "variables", "sources", "cc", "compiler", "features", "non_object_features", "host_cc", "host_features", "architecture", "host_architecture", "driver_tools"]
+_TOOLCHAIN_FIELDS = ["file", "files", "compile_files", "host_compile_files", "identity", "tools", "variables", "sources", "cc", "compiler", "features", "non_object_features", "freestanding_features", "freestanding_non_object_features", "host_cc", "host_features", "architecture", "host_architecture", "driver_tools"]
 
 KernelToolchainInfo = provider(doc = "Kernel Toolchain Info.", fields = _TOOLCHAIN_FIELDS)
 
@@ -40,6 +40,18 @@ def _impl(ctx):
         ctx = ctx,
         cc_toolchain = cc,
         requested_features = ctx.features,
+        unsupported_features = ctx.disabled_features + ["compiler_input_flags"],
+    )
+    freestanding_features = cc_common.configure_features(
+        ctx = ctx,
+        cc_toolchain = cc,
+        requested_features = ctx.features + ["no_linux_system_includes"],
+        unsupported_features = ctx.disabled_features,
+    )
+    freestanding_non_object_features = cc_common.configure_features(
+        ctx = ctx,
+        cc_toolchain = cc,
+        requested_features = ctx.features + ["no_linux_system_includes"],
         unsupported_features = ctx.disabled_features + ["compiler_input_flags"],
     )
     host_features = host_info.features
@@ -169,6 +181,8 @@ def _impl(ctx):
         compiler = metadata.compiler,
         features = features,
         non_object_features = non_object_features,
+        freestanding_features = freestanding_features,
+        freestanding_non_object_features = freestanding_non_object_features,
         host_cc = host,
         host_features = host_features,
         architecture = config.architecture,

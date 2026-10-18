@@ -1,0 +1,110 @@
+Allow Linux freestanding actions to exclude injected system headers.
+
+The opt-in feature preserves compiler resource headers and does not alter
+default hosted compilation or runtime-stage selection.
+
+diff --git a/toolchain/features/BUILD.bazel b/toolchain/features/BUILD.bazel
+--- a/toolchain/features/BUILD.bazel
++++ b/toolchain/features/BUILD.bazel
+@@ -1,6 +1,7 @@
+ load("@bazel_skylib//lib:selects.bzl", "selects")
+ load("@rules_cc//cc/toolchains:args.bzl", "cc_args")
+ load("@rules_cc//cc/toolchains:feature.bzl", "cc_feature")
++load("@rules_cc//cc/toolchains:feature_constraint.bzl", "cc_feature_constraint")
+ load("@rules_cc//cc/toolchains:feature_set.bzl", "cc_feature_set")
+ load("@rules_cc//cc/toolchains/impl:documented_api.bzl", "cc_args_list")
+ 
+@@ -43,6 +44,18 @@
+ # [] dynamic_linking_mode
+ # [x] per_object_debug_info
+ # [x] static_link_cpp_runtimes
++
++# Freestanding Linux clients supply their own system headers. Compiler
++# resource headers remain controlled by the driver's native include flags.
++cc_feature(
++    name = "no_linux_system_includes",
++    feature_name = "no_linux_system_includes",
++)
++
++cc_feature_constraint(
++    name = "linux_system_includes",
++    none_of = [":no_linux_system_includes"],
++)
+ 
+ cc_feature(
+     name = "static_link_cpp_runtimes",
+diff --git a/toolchain/args/linux/BUILD.bazel b/toolchain/args/linux/BUILD.bazel
+--- a/toolchain/args/linux/BUILD.bazel
++++ b/toolchain/args/linux/BUILD.bazel
+@@ -47,6 +47,7 @@
+     format = {
+         "kernel_headers_include_search_path": "@kernel_headers//:kernel_headers_directory",
+     },
++    requires_any_of = ["//toolchain/features:linux_system_includes"],
+     target_compatible_with = ["@platforms//os:linux"],
+ )
+ 
+@@ -69,6 +70,7 @@
+     format = {
+         "libc_headers_include_search_path": "//runtimes/glibc:glibc_headers_include_search_directory",
+     },
++    requires_any_of = ["//toolchain/features:linux_system_includes"],
+     target_compatible_with = ["@platforms//os:linux"],
+ )
+ 
+@@ -94,6 +96,7 @@
+     format = {
+         "sanitizer_headers_include_search_paths": "//sanitizers:sanitizers_headers_include_search_directory",
+     },
++    requires_any_of = ["//toolchain/features:linux_system_includes"],
+ )
+ 
+ cc_args(
+@@ -140,6 +143,7 @@
+     format = {
+         "libc_headers_include_search_path": "//runtimes/musl:musl_headers_include_search_directory",
+     },
++    requires_any_of = ["//toolchain/features:linux_system_includes"],
+ )
+ 
+ #TODO: Factorize this and gnu
+diff --git a/toolchain/args/BUILD.bazel b/toolchain/args/BUILD.bazel
+--- a/toolchain/args/BUILD.bazel
++++ b/toolchain/args/BUILD.bazel
+@@ -180,6 +180,7 @@
+         "cxxstdlib_headers_include_search_path": "//runtimes/cxxstdlib:headers_include_search_directory",
+         "cxxstdlib_abi_headers_include_search_path": "//runtimes/cxxstdlib:abi_headers_include_search_directory",
+     },
++    requires_any_of = ["//toolchain/features:linux_system_includes"],
+ )
+ 
+ cc_args(
+diff --git a/toolchain/cc_toolchain.bzl b/toolchain/cc_toolchain.bzl
+--- a/toolchain/cc_toolchain.bzl
++++ b/toolchain/cc_toolchain.bzl
+@@ -95,6 +95,7 @@
+     cc_feature_set(
+         name = name + "_generic_known_features",
+         all_of = [
++            "@llvm//toolchain/features:no_linux_system_includes",
+             "@rules_cc//cc/toolchains/args/layering_check:layering_check",
+             "@rules_cc//cc/toolchains/args/layering_check:use_module_maps",
+             "@llvm//toolchain/features:static_link_cpp_runtimes",
+@@ -197,14 +198,17 @@
+             "@llvm//toolchain:runtimes_none": [
+                 "@llvm//toolchain/features:external_include_paths",
+                 "@llvm//toolchain/features:fdo_optimize",
++                "@llvm//toolchain/features:no_linux_system_includes",
+             ],
+             "@llvm//toolchain:runtimes_stage1": [
+                 "@llvm//toolchain/features:external_include_paths",
+                 "@llvm//toolchain/features:fdo_optimize",
++                "@llvm//toolchain/features:no_linux_system_includes",
+             ],
+             "@llvm//toolchain:runtimes_stage1_hosted": [
+                 "@llvm//toolchain/features:external_include_paths",
+                 "@llvm//toolchain/features:fdo_optimize",
++                "@llvm//toolchain/features:no_linux_system_includes",
+             ],
+             "//conditions:default": [name + "_generic_known_features"],
+         }),

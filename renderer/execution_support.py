@@ -7,6 +7,12 @@ HERE = Path(__file__).resolve().parent
 MODULE = '''
 bazel_dep(name="linux.bzl", version="0.0.0")
 single_version_override(
+    module_name="llvm",
+    version="0.8.24",
+    patches=["//rules:llvm_system_includes.patch"],
+    patch_strip=1,
+)
+single_version_override(
     module_name="rules_bison",
     version="0.4.bcr.1",
     patches=["//rules:rules_bison_cstdlib.patch"],
@@ -29,7 +35,7 @@ register_toolchains("@linux.bzl//execution_tools:linux_x86_64")
 '''
 
 def generate(repo):
-    for name in ['source_tree.bzl', 'prepare_source.py', 'host_libraries.bzl', 'rules_cc_autoconf_no_host_shell.patch', 'rules_cc_autoconf_no_path_mapping.patch', 'rules_bison_cstdlib.patch', 'rules_cc_ir.patch']:
+    for name in ['source_tree.bzl', 'prepare_source.py', 'host_libraries.bzl', 'rules_cc_autoconf_no_host_shell.patch', 'rules_cc_autoconf_no_path_mapping.patch', 'rules_bison_cstdlib.patch', 'rules_cc_ir.patch', 'llvm_system_includes.patch']:
         shutil.copyfile(HERE / name, repo / 'rules' / name)
     (repo / 'host_libraries').mkdir(exist_ok=True)
     (repo / 'host_libraries/BUILD.bazel').write_text('''load("//rules:host_libraries.bzl", "kernel_host_library")
