@@ -12,7 +12,7 @@ load(":host_toolchain.bzl", "KernelHostToolchainInfo")
 load(":rules.bzl", "KernelConfigInfo")
 load(":source_tree.bzl", "KernelSourceTreeInfo")
 
-_TOOLCHAIN_FIELDS = ["file", "files", "identity", "tools", "variables", "sources", "cc", "compiler", "features", "non_object_features", "host_cc", "host_features", "architecture", "host_architecture", "driver_tools"]
+_TOOLCHAIN_FIELDS = ["file", "files", "compile_files", "host_compile_files", "identity", "tools", "variables", "sources", "cc", "compiler", "features", "non_object_features", "host_cc", "host_features", "architecture", "host_architecture", "driver_tools"]
 
 KernelToolchainInfo = provider(doc = "Kernel Toolchain Info.", fields = _TOOLCHAIN_FIELDS)
 
@@ -157,6 +157,8 @@ def _impl(ctx):
     return [KernelToolchainInfo(
         file = out,
         files = depset(driver_tools, transitive = [cc.all_files, host.all_files, execution.files, metadata.files]),
+        compile_files = metadata.compile_files,
+        host_compile_files = host_info.compile_files,
         identity = config.identity,
         tools = tools,
         variables = variables,
