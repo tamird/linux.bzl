@@ -1,0 +1,211 @@
+load("@autoconf.bzl//:autoconf.bzl", "autoconf", "compile_test")
+load("@bazel_skylib//rules/directory:subdirectory.bzl", "subdirectory")
+load("@rules_python//python:defs.bzl", "py_test")
+load("//rules:compiler.bzl", "kernel_compiler")
+load("//rules:config.bzl", "kernel_config")
+load("//rules:source.bzl", "kernel_source")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(glob([
+    "*.c",
+    "*.py",
+    "*.patch",
+    "*.bazel",
+]))
+
+filegroup(
+    name = "generator_sources",
+    srcs = glob(
+        ["*"],
+        exclude = ["BUILD.bazel"],
+    ),
+)
+
+subdirectory(
+    name = "llvm_builtin_headers",
+    parent = "@llvm//:builtin_resource_dir",
+    path = "include",
+)
+
+kernel_compiler(
+    name = "compiler",
+    assembler_flags = ["-fintegrated-as"],
+    builtin_headers = ":llvm_builtin_headers",
+    tools = {
+        "@llvm//tools:clang": "CC",
+        "@llvm//tools:clang++": "CXX",
+        "@llvm//tools:ld.lld": "LD",
+        "@llvm//tools:llvm-ar": "AR",
+        "@llvm//tools:llvm-nm": "NM",
+        "@llvm//tools:llvm-objcopy": "OBJCOPY",
+        "@llvm//tools:llvm-objdump": "OBJDUMP",
+        "@llvm//tools:llvm-readelf": "READELF",
+        "@llvm//tools:llvm-strip": "STRIP",
+    },
+)
+
+[
+    kernel_source(
+        name = name,
+        anchor = "@" + repository + "//:Makefile",
+        sources = "@" + repository + "//:sources",
+    )
+    for name, repository in [
+        ("source", "linux_source"),
+        ("source_5_10", "linux_5_10"),
+    ]
+]
+
+[
+    kernel_config(
+        name = name,
+        fragments = ["//examples/configs:x86_64.config"] + (["//examples/configs:lz4.config"] if lz4 else []),
+        pahole = "@pahole//:pahole",
+        source = source,
+    )
+    for name, source, lz4 in [
+        ("config", ":source", False),
+        ("lz4_config", ":source", True),
+        ("old_config", ":source_5_10", False),
+    ]
+]
+
+autoconf(
+    name = "custom_probes",
+    tests = {"HAVE_CUSTOM_INT128": compile_test(
+        "int f(void) { __int128 x = 0; return (int)x; }",
+        flags = ["-Werror"],
+    )},
+)
+
+kernel_config(
+    name = "custom_config",
+    kconfig_extension = "custom.Kconfig",
+    pahole = "@pahole//:pahole",
+    probes = ":custom_probes",
+    source = ":source",
+)
+
+kernel_config(
+    name = "old_override_config",
+    pahole = "@pahole//:pahole",
+    requested = {"EMBEDDED": "n"},
+    source = ":source_5_10",
+)
+
+[
+    kernel_config(
+        name = name,
+        kconfig_extension = "choice.Kconfig",
+        mode = mode,
+        pahole = "@pahole//:pahole",
+        requested = requested,
+        source = ":source",
+    )
+    for name, mode, requested in [
+        (
+            "hidden_choice_config",
+            "allnoconfig",
+            {"NATIVE_CHOICE_FORCE": "y"},
+        ),
+        (
+            "visible_choice_config",
+            "olddefconfig",
+            {"NATIVE_COMMAND_LINE": '"console=ttyS0"'},
+        ),
+    ]
+]
+
+[
+    py_test(
+        name = name + "_test",
+        srcs = ["//:test_config_values.py"],
+        args = [
+            "$(rootpath :" + name + ")",
+            json.encode(expected),
+        ] + extra,
+        data = [":" + name],
+        main = "//:test_config_values.py",
+    )
+    for name, expected, extra in [
+        (
+            "config",
+            {
+                "X86": "y",
+                "64BIT": "y",
+                "KERNEL_GZIP": "y",
+            },
+            ["--make-string=CC_VERSION_TEXT=raw"],
+        ),
+        (
+            "lz4_config",
+            {
+                "KERNEL_LZ4": "y",
+                "KERNEL_GZIP": "n",
+            },
+            [],
+        ),
+        (
+            "old_config",
+            {
+                "EMBEDDED": "y",
+                "EXPERT": "y",
+            },
+            [
+                "--unwritten=DEFCONFIG_LIST",
+                "--type=DEFCONFIG_LIST=string",
+                "--make-string=CC_VERSION_TEXT=quoted",
+            ],
+        ),
+        (
+            "old_override_config",
+            {
+                "EMBEDDED": "n",
+                "EXPERT": "n",
+            },
+            [],
+        ),
+        (
+            "custom_config",
+            {
+                "HAVE_CUSTOM_INT128": "y",
+                "AUTOCONF_PROTOTYPE_CUSTOM": "y",
+                "AUTOCONF_PROTOTYPE_DEPENDENT": "y",
+            },
+            [],
+        ),
+        (
+            "hidden_choice_config",
+            {
+                "NATIVE_CHOICE_FORCE": "n",
+                "NATIVE_CHOICE_DEFAULT": "n",
+            },
+            [
+                "--unwritten=NATIVE_CHOICE_FORCE",
+                "--unwritten=NATIVE_CHOICE_DEFAULT",
+            ],
+        ),
+        (
+            "visible_choice_config",
+            {
+                "NATIVE_CHOICE_DEFAULT": "y",
+                "NATIVE_CHOICE_FORCE": "n",
+            },
+            [],
+        ),
+    ]
+]
+
+test_suite(
+    name = "config_tests",
+    tests = [":" + name + "_test" for name in [
+        "config",
+        "lz4_config",
+        "old_config",
+        "old_override_config",
+        "custom_config",
+        "hidden_choice_config",
+        "visible_choice_config",
+    ]],
+)
