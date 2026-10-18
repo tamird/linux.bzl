@@ -2,7 +2,7 @@
 
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
 load(":architecture.bzl", "KernelArchitectureInfo")
-load(":compiler_capabilities.bzl", "kernel_compiler_capabilities_check", "kernel_compiler_capabilities_test")
+load(":compiler_capabilities.bzl", "KernelCompilerCapabilityObjectsInfo", "kernel_compiler_capabilities_check")
 load(":expressions.bzl", "evaluate")
 load(":image.bzl", "kbuild_resolved_build")
 load(":multi_platform.bzl", "KernelPlatformsInfo", "SUPPORTED_KERNEL_CPUS", "kernel_multi_platform")
@@ -88,6 +88,7 @@ _x86_32_test = analysistest.make(_architecture_check_impl, config_settings = {"/
 # buildifier: disable=unnamed-macro
 def architecture_tests():
     kernel_compiler_capabilities_check(name = "compiler_capability_checks", tags = ["manual"])
+    kernel_compiler_capabilities_test(name = "selected_compiler_capabilities_test", checks = ":compiler_capability_checks")
     kernel_multi_platform(name = "all_compiler_capability_checks", target = ":compiler_capability_checks", tags = ["manual"])
     kernel_compiler_capabilities_test(name = "compiler_capabilities_test", checks = ":all_compiler_capability_checks")
     kernel_multi_platform(name = "all_configs", target = "//multi_platform:config")
@@ -122,3 +123,38 @@ def _multi_platform_impl(ctx):
     return analysistest.end(env)
 
 _multi_platform_test = analysistest.make(_multi_platform_impl)
+
+def _capability_test_impl(ctx):
+    targets = ctx.attr.checks[KernelPlatformsInfo].targets if KernelPlatformsInfo in ctx.attr.checks else {"selected": ctx.attr.checks}
+    aliases, files, commands = {}, [], []
+    for cpu, target in targets.items():
+        info = target[KernelCompilerCapabilityObjectsInfo]
+        nm = "compiler-capabilities/%s/nm" % cpu
+        aliases[nm] = info.nm
+        files.append(info.files)
+        for i, check in enumerate(info.checks):
+            path = "compiler-capabilities/%s/%d.o" % (cpu, i)
+            aliases[path] = check.object
+            commands.append('test -s "$root/%s"' % path)
+            if check.required or check.excluded:
+                commands.append('symbols=$("$root/%s" --undefined-only --just-symbol-name "$root/%s")' % (nm, path))
+                for symbol in check.required:
+                    commands.append('contains_symbol %s || { echo "Missing instrumentation symbol %s in %s" >&2; exit 1; }' % (symbol, symbol, path))
+                for symbol in check.excluded:
+                    commands.append('if contains_symbol %s; then echo "Unexpected instrumentation symbol %s in %s" >&2; exit 1; fi' % (symbol, symbol, path))
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(script, '''#!/bin/sh
+set -eu
+root="$TEST_SRCDIR/$TEST_WORKSPACE"
+contains_symbol() {
+    for symbol in $symbols; do
+        if [ "$symbol" = "$1" ]; then return 0; fi
+    done
+    return 1
+}
+''' + "\n".join(commands) + "\n", is_executable = True)
+    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(symlinks = aliases, transitive_files = depset(transitive = files)))]
+
+kernel_compiler_capabilities_test = rule(implementation = _capability_test_impl, test = True, attrs = {
+    "checks": attr.label(mandatory = True, providers = [[KernelPlatformsInfo], [KernelCompilerCapabilityObjectsInfo]]),
+})

@@ -8,6 +8,7 @@ load(":compiler_capabilities_data.bzl", "COMPILER_CAPABILITIES")
 load(":compiler_metadata.bzl", "KernelCompilerMetadataInfo")
 
 KernelCompilerCapabilitiesInfo = provider(doc = "Kernel Compiler Capabilities Info.", fields = ["inputs", "checks", "toolchain_id", "make"])
+KernelCompilerCapabilityObjectsInfo = provider(fields = ["checks", "nm", "files"])
 
 def _impl(ctx):
     cc = find_cc_toolchain(ctx)
@@ -38,13 +39,14 @@ kernel_compiler_capabilities = rule(implementation = _impl, fragments = ["cpp"],
 
 def _check_impl(ctx):
     info = ctx.attr._capabilities[KernelCompilerCapabilitiesInfo]
+    metadata = ctx.attr._metadata[KernelCompilerMetadataInfo]
     cc = find_cc_toolchain(ctx)
-    if cc.toolchain_id != info.toolchain_id:
+    if cc.toolchain_id != info.toolchain_id or cc.toolchain_id != metadata.toolchain_id:
         fail("Capability checks must use the same selected C++ toolchain")
     features = cc_common.configure_features(ctx = ctx, cc_toolchain = cc, requested_features = ctx.features, unsupported_features = ctx.disabled_features)
     variables = cc_common.create_compile_variables(cc_toolchain = cc, feature_configuration = features)
     flags = cc_common.get_memory_inefficient_command_line(feature_configuration = features, action_name = ACTION_NAMES.c_compile, variables = variables)
-    objects = []
+    objects, checks = [], []
     for i, fact in enumerate(info.checks):
         source = ctx.actions.declare_file(ctx.label.name + ".checks/%d.S" % i)
         out = ctx.actions.declare_file(ctx.label.name + ".checks/%d.o" % i)
@@ -57,19 +59,10 @@ def _check_impl(ctx):
             mnemonic = "KernelCapabilityCheck",
         )
         objects.append(out)
-    return [DefaultInfo(files = depset(objects))]
+        checks.append(struct(object = out, required = fact.get("undefined_symbols", []), excluded = fact.get("excluded_undefined_symbols", [])))
+    return [DefaultInfo(files = depset(objects)), KernelCompilerCapabilityObjectsInfo(checks = checks, nm = metadata.tool_files["NM"], files = metadata.files)]
 
 kernel_compiler_capabilities_check = rule(implementation = _check_impl, fragments = ["cpp"], toolchains = use_cc_toolchain(), attrs = {
     "_capabilities": attr.label(default = "//:compiler_capabilities", providers = [KernelCompilerCapabilitiesInfo]),
-})
-
-def _test_impl(ctx):
-    objects = [f for f in ctx.attr.checks[DefaultInfo].files.to_list() if f.extension == "o"]
-    aliases = {"compiler-capabilities/%d.o" % i: f for i, f in enumerate(objects)}
-    script = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(script, "#!/bin/sh\nset -eu\n" + "\n".join(['test -s "$TEST_SRCDIR/$TEST_WORKSPACE/%s"' % path for path in aliases]), is_executable = True)
-    return [DefaultInfo(executable = script, runfiles = ctx.runfiles(symlinks = aliases))]
-
-kernel_compiler_capabilities_test = rule(implementation = _test_impl, test = True, attrs = {
-    "checks": attr.label(mandatory = True),
+    "_metadata": attr.label(default = "//:compiler_metadata", providers = [KernelCompilerMetadataInfo]),
 })

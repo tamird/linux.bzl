@@ -24,6 +24,25 @@
   {
     "kbuild": true,
     "probe": "cc-option-yn",
+    "argument": "-mfentry",
+    "srcarch": "x86",
+    "compilers": [
+      "clang",
+      "llvm"
+    ],
+    "description": "LLVM x86 supports function entry instrumentation before the prologue",
+    "source": "int entry(int value) { return value + 1; }\n",
+    "language": "c",
+    "flags": [
+      "-pg",
+      "-mfentry"
+    ],
+    "undefined_symbols": ["__fentry__"],
+    "excluded_undefined_symbols": ["mcount", "_mcount", "__gnu_mcount_nc"]
+  },
+  {
+    "kbuild": true,
+    "probe": "cc-option-yn",
     "argument": "-m32",
     "srcarch": "powerpc",
     "compilers": [
