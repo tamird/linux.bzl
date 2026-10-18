@@ -48,10 +48,14 @@ def _impl(ctx):
     if runtime.interpreter == None:
         fail("Execution tools require a declared Python runtime, not interpreter_path")
     transitive.append(runtime.files)
+
+    # Keep runtime inputs immutable for both direct actions and recipe aliases.
+    # Exec the original interpreter so remote symlink materialization cannot
+    # change where Python locates its standard library.
+    python = ctx.actions.declare_file(ctx.label.name + "/python")
+    ctx.actions.write(python, "#!" + commands["sh"].path + '\nexec "${KBUILD_EXEC_ROOT:-$PWD}/' + runtime.interpreter.path + '" -B "$@"\n', is_executable = True)
     for name in ["python", "python3"]:
-        # Python locates its standard library relative to the interpreter.
-        # Remote execution may materialize symlinks as regular files.
-        _alias(ctx, name, runtime.interpreter, commands, files, wrapper = True)
+        _alias(ctx, name, python, commands, files)
     perl = ctx.toolchains["@rules_perl//perl:exec_toolchain_type"].perl_runtime
     if perl.perlopt:
         fail("Execution tools require a Perl executable wrapper when perlopt is nonempty")
@@ -103,7 +107,7 @@ def _impl(ctx):
         tools = tools,
         bin_dir = commands["sh"].dirname,
         shell = commands["sh"],
-        python = runtime.interpreter,
+        python = python,
         environment = environment,
         path_environment = path_environment,
     )
@@ -154,6 +158,16 @@ def _check_impl(ctx):
     parser = ctx.actions.declare_file(ctx.label.name + ".parser.c")
     scanner = ctx.actions.declare_file(ctx.label.name + ".scanner.c")
     report = ctx.actions.declare_file(ctx.label.name + ".txt")
+    python_report = ctx.actions.declare_file(ctx.label.name + ".python.txt")
+    ctx.actions.run(
+        executable = execution.python,
+        arguments = ["-I", "-c", "import json, pathlib, sys; assert sys.dont_write_bytecode; assert json.loads('[1]') == [1]; pathlib.Path(sys.argv[1]).write_text('PASS: direct Python runtime\\n')", python_report.path],
+        inputs = execution.files,
+        tools = execution.tools,
+        outputs = [python_report],
+        use_default_shell_env = False,
+        mnemonic = "KernelPythonRuntimeCheck",
+    )
     ctx.actions.write(grammar, "%token WORD\n%%\ninput: WORD;\n%%\n")
     ctx.actions.write(lexer, "%%\n[a-z]+ return 1;\n%%\n")
     run_recipe(
@@ -170,7 +184,8 @@ printf 'payload\\n' | bzip2 -c | bzip2 -dc | grep -qx payload
 printf 'payload\\n' | lzop -c | lzop -dc | grep -qx payload
 printf 'payload\\n' | lz4 -l -9 - - | lz4 -dc | grep -qx payload
 printf 'payload\\n' | zstd -q -c | zstd -q -dc | grep -qx payload
-python3 -I -c 'import json, pathlib; assert json.loads("[1]") == [1]'
+python -I -c 'import sys; assert sys.dont_write_bytecode'
+python3 -I -c 'import json, pathlib, sys; assert sys.dont_write_bytecode; assert json.loads("[1]") == [1]'
 perl -Mstrict -Mwarnings -e 'print "declared perl\\n"' | grep -qx 'declared perl'
 m4 %s | grep -qx m4-shell-ok
 bison -o %s %s
@@ -183,6 +198,6 @@ printf 'PASS: declared utilities, Python runtime, Bison/Flex runtime data\\n' > 
         outputs = [parser, scanner, report],
         mnemonic = "KernelExecutionToolsCheck",
     )
-    return [DefaultInfo(files = depset([report, parser, scanner]))]
+    return [DefaultInfo(files = depset([report, python_report, parser, scanner]))]
 
 kernel_execution_tools_check = rule(implementation = _check_impl, toolchains = [EXECUTION_TOOLS_TYPE])
