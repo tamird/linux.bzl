@@ -239,11 +239,30 @@ jobs:
           mkdir -p "$RUNNER_TEMP/linux-prototype-qualification" _tmp/kernel-repository
           tar -xzf _tmp/kernel-repository/consumer-support.tar.gz -C _tmp/kernel-repository
           python3 example.py --generated _tmp/kernel-repository/support
+      - name: Supply the original APE bootstrap downloads
+        if: inputs.checkpoint_run != ''
+        run: |
+          set -euo pipefail
+          distdir="$RUNNER_TEMP/linux-prototype-qualification/ape-distdir"
+          mkdir -p "$distdir"
+          curl --fail --location --connect-timeout 15 --max-time 90 \
+            --output "$distdir/assimilate" \
+            https://gitlab.arm.com/api/v4/projects/10212/packages/generic/cosmos.zip/4.0.2/assimilate
+          curl --fail --location --connect-timeout 15 --max-time 90 \
+            --output "$distdir/ape-x86_64.elf" \
+            https://gitlab.arm.com/api/v4/projects/10212/packages/generic/cosmos.zip/4.0.2/ape-x86_64.elf
+          # These are the original APE 1.0.1 Cosmos 4.0.2 lock hashes.
+          printf '%s  %s\n' \
+            93f63aac14046bc2530e4f98ff4dc7ade2e3a3aa3136ced3db598bf6b0026edc "$distdir/assimilate" \
+            7c1cf8b24e1b6dd6ad7da3817045d582ada146b4d6ec0c6a45bea830e3a65f4d "$distdir/ape-x86_64.elf" \
+            > "$RUNNER_TEMP/linux-prototype-qualification/ape-downloads.sha256"
+          sha256sum --check "$RUNNER_TEMP/linux-prototype-qualification/ape-downloads.sha256"
       - name: Configure Bazel
         uses: bazel-contrib/setup-bazel@0.19.0
         with:
           bazelrc: |
             startup --host_jvm_args=-Xmx8g
+            ${{ inputs.checkpoint_run != '' && format('common --distdir={0}/linux-prototype-qualification/ape-distdir', runner.temp) || '' }}
           bazelisk-cache: true
           disk-cache: prototype-qualification-${{ matrix.experiment }}
           repository-cache: true
