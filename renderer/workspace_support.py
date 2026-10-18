@@ -13,7 +13,6 @@ bazel_dep(name="elfutils", version="0.195")
 bazel_dep(name="libbpf", version="1.7.0")
 bazel_dep(name="pahole", version="1.31")
 bazel_dep(name="bazel_skylib", version="1.9.0")
-bazel_dep(name="rules_python", version="1.8.0")
 llvm = use_extension("@llvm//extensions:llvm.bzl", "llvm")
 '''
     if backends:

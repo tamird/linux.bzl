@@ -1,9 +1,9 @@
 """Build pristine native conf and compare its output with the prototype."""
 
+load("@linux.bzl//:config_parity_test.bzl", "config_comparison_test")
 load("@linux.bzl//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE", "execution_tools", "run_recipe")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
-load("@rules_python//python:defs.bzl", "py_test")
 load(":expressions.bzl", "evaluate", "make_words", "program")
 load(":flag_program.bzl", "FLAG_PROGRAM")
 load(":rules.bzl", "KernelConfigInfo")
@@ -174,11 +174,8 @@ def kernel_config_parity_test(name, config, platform):
     """Compare an existing requested config with pristine native conf."""
     reference = name + "_native"
     _native_config_reference(name = reference, config = config, platform = platform, tags = ["manual"])
-    py_test(
+    config_comparison_test(
         name = name,
-        srcs = [Label(":parity_test.py")],
-        main = Label(":parity_test.py"),
-        args = ["$(rootpath :" + reference + ")"],
-        data = [":" + reference],
-        env = {"PYTHONDONTWRITEBYTECODE": "1"},
+        checker = Label(":parity_test.py"),
+        reference = ":" + reference,
     )

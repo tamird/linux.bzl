@@ -23,6 +23,7 @@ kernel_pahole_test(
 
 exports_files([
     "build.py",
+    "config_parity_test.bzl",
     "linux.bzl",
     "repository.bzl",
     "launcher.c",
