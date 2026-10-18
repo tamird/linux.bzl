@@ -193,6 +193,8 @@ jobs:
             mapping+=(--platforms=@llvm//platforms:linux_x86_64)
             build_flags=("--output_groups=+kernel,+boot,+modules,+manifest,+ir_experiment"
               --sandbox_block_path=/bin --sandbox_block_path=/usr/bin --sandbox_block_path=/usr/local/bin)
+            # Apply backpressure when retiring sandboxes instead of accumulating deletion work.
+            build_flags+=(--experimental_sandbox_async_tree_delete_idle_threads=0)
             output_base=$(bazel info output_base)
             output_path=$(bazel info output_path)
             # Read the cache locations declared by setup-bazel for this job.
