@@ -1,8 +1,9 @@
 """Small real-compiler graph exercising generated headers and source pruning."""
 
 load("//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE")
-load(":commands.bzl", "native_argument")
+load(":commands.bzl", "compile_action", "native_argument")
 load(":compiler.bzl", "KernelCompilerInfo")
+load(":image.bzl", "compiler_prerequisites")
 load(":runtime.bzl", "context")
 load(":schedule.bzl", "schedule", "write_schedule")
 
@@ -54,6 +55,25 @@ def _plan(tctx, input_directories, output_directories, tools, additional_inputs,
         compilers[source + ".o"] = dict(kind = "c", source = originals[source].path, object = output.path, frontend = bitcode.path, bitcode = bitcode.path)
         inventory[source + ".o"] = dict(kind = "c", source = source, source_file = originals[source].path, directory = ".")
         artifacts[source + ".product"] = product.path
+
+    # Like the native DTB wrapper, the assembly text stays fixed when its
+    # producer's binary input changes. Exercise the actual compiler staging
+    # and measured-input pruning with that indirect native prerequisite.
+    embedded = ctx.actions.declare_file("embedded.bin")
+    assembly = ctx.actions.declare_file("embedded.S")
+    assembled = ctx.actions.declare_file("embedded.o")
+    ctx.actions.run(executable = tools["python"], arguments = [tools["runner"].path, "copy", originals["embedded.txt"].path, embedded.path], inputs = [originals["embedded.txt"], tools["runner"], tools["executor"], tools["payload"]], outputs = [embedded])
+    ctx.actions.run(executable = tools["python"], arguments = [tools["emit"].path, assembly.path, '#define PAYLOAD "embedded.bin"\n.section .rodata\n.incbin PAYLOAD\n'], inputs = [tools["emit"], embedded], outputs = [assembly])
+    generated = {"embedded.bin": embedded, "embedded.S": assembly, "unused.h": header}
+    mapping = ctx.actions.declare_file("embedded-inputs.json")
+    ctx.actions.write(mapping, json.encode({name: file.path for name, file in generated.items()}))
+    tree = ctx.actions.declare_directory("embedded.headers")
+    ctx.actions.run(executable = tools["python"], arguments = [tools["materialize"].path, mapping.path, tree.path], inputs = [tools["materialize"], mapping] + generated.values(), outputs = [tree])
+    prerequisites = compiler_prerequisites({"deps": ["embedded.S"]}, "assembly", {"deps": ["embedded.bin"]})
+    compile_action(ctx, "embedded.o", "single", assembly, assembled, json.decode(additional_params["flags"]), tree, generated, depset([tools["source_root"]]), struct(files = tools["compiler_files"], tools = {"CC": additional_params["cc"]}), "assembly", [generated[name] for name in prerequisites])
+    compilers["embedded.o"] = dict(kind = "assembly", source = assembly.path, object = assembled.path)
+    inventory["embedded.o"] = dict(kind = "assembly", source = "embedded.S", source_file = assembly.path, directory = ".")
+    artifacts["embedded.o"] = assembled.path
     manifest = ctx.actions.declare_file("kernel.json")
     ctx.actions.write(manifest, json.encode(dict(config = originals["main.c"].path, config_owner = tools["source_root"].path, setup = header.path, compilers = compilers, compiler_inventory = inventory, artifacts = artifacts, members = [])))
     write_schedule(tctx, tools["python"], tools["emit"], output_directories["schedule"], jobs, tools["python_files"])
@@ -75,7 +95,7 @@ def _impl(ctx):
     literals = ctx.actions.declare_directory(ctx.label.name + ".graph")
     metadata = ctx.actions.declare_directory(ctx.label.name + ".schedule")
     scratch = ctx.actions.declare_directory(ctx.label.name + ".scratch")
-    tools = dict(python = execution.python, python_files = execution.python_files, emit = ctx.file._emit, executor = ctx.file._executor, runner = ctx.file._runner, payload = ctx.file._payload, codegen = ctx.file._codegen)
+    tools = dict(python = execution.python, python_files = execution.python_files, emit = ctx.file._emit, executor = ctx.file._executor, runner = ctx.file._runner, payload = ctx.file._payload, codegen = ctx.file._codegen, materialize = ctx.file._materialize)
     tools.update({"cmd_" + n: file for n, file in commands.items()})
     tools.update({"compiler_tool_%d" % i: tool for i, tool in enumerate(compiler.tools)})
     tools.update({"execution_tool_%d" % i: tool for i, tool in enumerate(execution.bootstrap_tools)})
@@ -99,4 +119,5 @@ schedule_fixture = rule(implementation = _impl, toolchains = [EXECUTION_TOOLS_TY
     "_codegen": attr.label(default = "//tests:generate.py", allow_single_file = True),
     "_runner": attr.label(default = "//:scheduler.py", allow_single_file = True),
     "_payload": attr.label(default = "//:payload.py", allow_single_file = True),
+    "_materialize": attr.label(default = "//rules:materialize.py", allow_single_file = True),
 })

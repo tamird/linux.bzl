@@ -211,7 +211,7 @@ def native_argument(flag, anchors):
         parts = bound
     return {"parts": parts} if any([type(part) != "string" for part in parts]) else flag
 
-def _compile_action(ctx, target, phase, source_file, output, flags, tree, dependencies, files, setup, source_kind, mandatory):
+def compile_action(ctx, target, phase, source_file, output, flags, tree, dependencies, files, setup, source_kind, mandatory):
     execution = execution_tools(ctx)
     arguments = flags + (["-c"] if not any([flag in flags for flag in ["-S", "-E"]]) else []) + [source_file.path, "-o", output.path]
 
@@ -342,7 +342,7 @@ def _compile_target(ctx, target, directory, outputs, dependencies, files, source
     result = dict(kind = source_kind, source = source_file.path, object = raw.path, flags = flags)
     if split:
         bitcode = ctx.actions.declare_file("kernel.ir/" + target.removesuffix(".o") + ".bc")
-        _compile_action(ctx, target, "frontend", source_file, bitcode, flags + ["-emit-llvm", "-Xclang", "-disable-llvm-passes"], tree, dependencies, files, setup, source_kind, mandatory)
+        compile_action(ctx, target, "frontend", source_file, bitcode, flags + ["-emit-llvm", "-Xclang", "-disable-llvm-passes"], tree, dependencies, files, setup, source_kind, mandatory)
 
         # Bind native namespaces to Files; these anchors do not themselves add
         # header/config inputs to the backend. Only actual native prerequisites
@@ -381,14 +381,14 @@ def _compile_target(ctx, target, directory, outputs, dependencies, files, source
         result.update(frontend = bitcode.path, bitcode = bitcode.path)
         if ctx.attr.validate_native_objects:
             integrated = ctx.actions.declare_file("kernel.integrated/" + target)
-            _compile_action(ctx, target, "integrated", source_file, integrated, flags, tree, dependencies, files, setup, source_kind, mandatory)
+            compile_action(ctx, target, "integrated", source_file, integrated, flags, tree, dependencies, files, setup, source_kind, mandatory)
             result["integrated"] = integrated.path
             if target == "lib/ctype.o":
                 diagnostics, diagnostic_cases = _ir_diagnostics(ctx, flags, tree, dependencies, files, setup)
                 result["diagnostics"] = [file.path for file in diagnostics]
                 result["diagnostic_cases"] = diagnostic_cases
     else:
-        _compile_action(ctx, target, "single", source_file, raw, flags, tree, dependencies, files, setup, source_kind, mandatory)
+        compile_action(ctx, target, "single", source_file, raw, flags, tree, dependencies, files, setup, source_kind, mandatory)
     if post:
         _postprocess(ctx, target, raw, outputs[target], source_file, post_variables, post, dependencies, tree, files, source, setup)
     return result

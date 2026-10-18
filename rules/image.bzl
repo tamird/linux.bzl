@@ -4,6 +4,17 @@ load(":commands.bzl", "register", "shell_words")
 load(":expressions.bzl", "evaluate", "make_words", "match", "program", "source_index")
 load(":recipe_check.bzl", "native_recipe_check")
 
+def compiler_prerequisites(descriptor, kind, source_descriptor = None):
+    """Retain native data edges that preprocessing cannot discover."""
+    prerequisites = list(descriptor.get("compiler_prerequisites", descriptor["deps"]))
+    if kind == "assembly" and source_descriptor != None:
+        # Generated assembly can embed its producer's binary input with
+        # .incbin. Clang's preprocessor depfile cannot report assembler reads.
+        # Preserve only that direct native edge; C input discovery continues
+        # to depend on generated source bytes, not the generator's ancestry.
+        prerequisites.extend(source_descriptor["deps"])
+    return {path: True for path in prerequisites}.keys()
+
 def _value(name, variables, sources):
     return evaluate([{"op": "reference", "name": [{"op": "literal", "value": name}]}], variables, sources)
 
@@ -1072,6 +1083,7 @@ def build_image(ctx, config, setup, prepared, catalog, objtool, resolve_btfids =
                 graph_variables = _context(d["directory"], state).graph_variables
             object_members = d.get("members", [p for p in d["deps"] if p.endswith(".o")] if d["kind"] == "host" and not target.endswith(".o") else [])
             compiler_descriptor = d["kind"] == "compile" or (d.get("native") != None and d["native"].get("compile")) or (d["kind"] == "host" and not object_members)
+            native_prerequisites = d.get("compiler_prerequisites", d["deps"])
             if compiler_descriptor:
                 native_source = d["native"]["first"].removeprefix("__source__/") if d.get("native") != None and d["native"].get("first") else target[:-2] + ".c" if target.endswith((".o", ".s")) else target + ".c"
                 if native_source not in prepared.logical and native_source not in closure and target.endswith(".o"):
@@ -1081,6 +1093,7 @@ def build_image(ctx, config, setup, prepared, catalog, objtool, resolve_btfids =
                 if native_source_file == None:
                     fail("Native compiler descriptor has no declared source File: " + target + ": " + native_source)
                 compiler_inventory[target] = {"kind": native_kind, "directory": d["directory"], "source": native_source, "source_file": native_source_file.path}
+                native_prerequisites = compiler_prerequisites(d, native_kind, descriptors[producers[native_source]] if native_source in producers else None)
             compiled = register(
                 ctx,
                 target,
@@ -1099,7 +1112,7 @@ def build_image(ctx, config, setup, prepared, catalog, objtool, resolve_btfids =
                 graph_variables = graph_variables,
                 compiler_kind = compiler_inventory[target]["kind"] if compiler_descriptor else None,
                 original_sources = prepared.logical,
-                compiler_prerequisites = {p: closure[p] for p in d.get("compiler_prerequisites", d["deps"]) if p in closure},
+                compiler_prerequisites = {p: closure[p] for p in native_prerequisites if p in closure},
                 postprocess_dependencies = {p: closure[p] for p in d.get("postprocess_dependencies", [])},
                 invocation_environment = state["invocations"][d["directory"]].environment if d["directory"] in state["invocations"] else None,
             )
