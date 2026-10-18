@@ -74,7 +74,9 @@ def _impl(ctx):
             output = ctx.actions.declare_file(ctx.label.name + ".generated/" + target.removeprefix(prefix))
             local = dict(variables)
             local["@"] = {"value": output.path}
-            command = "\n".join([evaluate(expr, local, index) for expr in rule.get("recipes", [])])
+            # Make consumes recipe control prefixes after variable expansion;
+            # Q can expand to @ even when the parsed recipe starts with $(Q).
+            command = "\n".join([evaluate(expr, local, index).lstrip("@+") for expr in rule.get("recipes", [])])
             command = command.replace("../", source + "/tools/")
             command = command.replace(source, prepared.root.path)
             run_recipe(
