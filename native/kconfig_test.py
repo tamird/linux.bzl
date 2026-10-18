@@ -54,6 +54,20 @@ def main() -> None:
     operand = r"vpclmulqdq \$0x10,%ymm0,%ymm1,%ymm2"
     if "$(as-instr,vpclmulqdq" in (linux / "arch/x86/Kconfig.assembler").read_text():
         assert all(operand in command for command in commands["__KCONFIG_AS_VPCLMULQDQ"]), commands
+    for path, symbol, argument, slot in (
+        ("lib/Kconfig.kmsan", "HAVE_KMSAN_COMPILER", "-fsanitize=kernel-memory -mllvm -msan-disable-checks=1", "__KCONFIG_CC_KERNEL_MEMORY_DISABLE_CHECKS"),
+        ("arch/arm64/Kconfig", "CC_HAS_SIGN_RETURN_ADDRESS", "-msign-return-address=all", "__KCONFIG_CC_SIGN_RETURN_ADDRESS"),
+    ):
+        source = linux / path
+        if source.exists() and f"$(cc-option,{argument})" in source.read_text():
+            match commands[slot]:
+                case [command]:
+                    assert argument + " " in command and "-Werror" in command, command
+                case actual:
+                    raise AssertionError(f"Expected one native {argument} command, got {actual}")
+            entry = next(entry for entry in syntax[path] if entry["symbol"] == symbol)
+            defaults = [prop["value"] for prop in entry["properties"] if prop["kind"] == "default"]
+            assert any(token[0] in ("sym", "lit") and token[1] == slot for code in defaults for token in code), defaults
     for path, symbol in (
         ("init/Kconfig", "CC_VERSION_TEXT"),
         ("arch/x86/Kconfig", "X86_64"),

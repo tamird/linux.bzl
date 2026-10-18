@@ -320,6 +320,14 @@
     "argument_aliases": [" -fsanitize=kernel-memory"]
   },
   {
+    "input": "__KCONFIG_CC_KERNEL_MEMORY_DISABLE_CHECKS",
+    "probe": "cc-option",
+    "argument": "-fsanitize=kernel-memory -mllvm -msan-disable-checks=1",
+    "cpus": ["x86_64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-fsanitize=kernel-memory -mllvm -msan-disable-checks=1)"
+  },
+  {
     "input": "__KCONFIG_CC_SHADOW_STACK",
     "probe": "cc-option",
     "argument": "-fsanitize=shadow-call-stack -ffixed-x18",
@@ -336,6 +344,14 @@
     "compilers": ["clang", "llvm"],
     "description": "cc-option(-mbranch-protection=pac-ret+leaf)",
     "argument_aliases": [" -mbranch-protection=pac-ret+leaf"]
+  },
+  {
+    "input": "__KCONFIG_CC_SIGN_RETURN_ADDRESS",
+    "probe": "cc-option",
+    "argument": "-msign-return-address=all",
+    "cpus": ["aarch64"],
+    "compilers": ["clang", "llvm"],
+    "description": "cc-option(-msign-return-address=all)"
   },
   {
     "input": "__KCONFIG_CC_ARMV8_5",
