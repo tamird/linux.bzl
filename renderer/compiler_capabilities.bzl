@@ -8,7 +8,7 @@ load(":compiler_capabilities_data.bzl", "COMPILER_CAPABILITIES")
 load(":compiler_metadata.bzl", "KernelCompilerMetadataInfo")
 
 KernelCompilerCapabilitiesInfo = provider(doc = "Kernel Compiler Capabilities Info.", fields = ["inputs", "checks", "toolchain_id", "make"])
-KernelCompilerCapabilityObjectsInfo = provider(fields = ["checks", "nm", "files"])
+KernelCompilerCapabilityObjectsInfo = provider(doc = "Selected compiler verification objects and their matching symbol inspector.", fields = ["checks", "nm", "files"])
 
 def _impl(ctx):
     cc = find_cc_toolchain(ctx)
