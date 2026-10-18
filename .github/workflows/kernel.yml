@@ -109,7 +109,7 @@ jobs:
         with:
           bazelisk-cache: true
           disk-cache: autoconf-kernel
-          bazelrc: ${{ (inputs.scope || 'full') == 'full' && 'startup --host_jvm_args=-Xmx8g' || '' }}
+          bazelrc: startup --host_jvm_args=-Xmx8g
           repository-cache: |
             - MODULE.bazel
             - MODULE.bazel.lock
