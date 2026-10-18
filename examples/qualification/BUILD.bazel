@@ -92,6 +92,9 @@ py_test(
 kbuild_ir_experiment(
     name = "ir_core",
     catalog = "@kernel//:catalog",
+    ir_diagnostic_driver = "ir_diagnostics.py",
+    ir_diagnostic_source = "ir_diagnostics.c",
+    ir_diagnostic_target = "lib/ctype.o",
     roots = [
         "init/main.o",
         "kernel/fork.o",

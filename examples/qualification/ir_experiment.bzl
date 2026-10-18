@@ -37,6 +37,7 @@ def _variant_impl(ctx):
     ctx.actions.write(manifest, json.encode({
         "root": ctx.label.package + "/" + ctx.label.name,
         "report": reports[0].short_path,
+        "diagnostics": [file.short_path for file in files if file.basename.endswith(".ir-diagnostics.json")],
     }))
     return [
         DefaultInfo(files = depset([manifest]), runfiles = ctx.runfiles(files = aliases + [manifest])),

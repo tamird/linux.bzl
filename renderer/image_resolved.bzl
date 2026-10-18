@@ -966,7 +966,17 @@ def _impl(ctx):
         common["tools/objtool/objtool"] = objtool.executable
     finished = {}
     members = []
-    experiment = struct(enabled = getattr(ctx.attr, "ir_pipeline", False), records = {})
+    experiment_enabled = getattr(ctx.attr, "ir_pipeline", False)
+    experiment = struct(
+        enabled = experiment_enabled,
+        records = {},
+        diagnostic_target = ctx.attr.ir_diagnostic_target if experiment_enabled else "",
+        diagnostic_source = ctx.file.ir_diagnostic_source if experiment_enabled else None,
+        diagnostic_driver = ctx.file.ir_diagnostic_driver if experiment_enabled else None,
+        diagnostics = [],
+    )
+    if experiment.diagnostic_target and (experiment.diagnostic_source == None or experiment.diagnostic_driver == None):
+        fail("IR diagnostics require their declared source and capture driver")
     for _ in range(len(descriptors) + 1):
         progress = False
         for target, d in descriptors.items():
@@ -1076,6 +1086,9 @@ def _impl(ctx):
         experiment_files.append(report)
         for record in experiment.records.values():
             experiment_files.extend([record.bitcode, record.integrated, record.object])
+        if experiment.diagnostic_target and not experiment.diagnostics:
+            fail("IR diagnostic target was not compiled: " + experiment.diagnostic_target)
+        experiment_files.extend(experiment.diagnostics)
     return [
         KernelBuildInfo(
             artifacts = dict(artifacts, **{".config": config.config}),
@@ -1151,4 +1164,7 @@ kbuild_ir_experiment = rule(implementation = _impl, fragments = ["cpp"], toolcha
     _BUILD_ATTRS,
     config = attr.label(default = "//:active_config", providers = [KernelConfigInfo]),
     ir_pipeline = attr.bool(default = True),
+    ir_diagnostic_target = attr.string(),
+    ir_diagnostic_source = attr.label(allow_single_file = [".c"]),
+    ir_diagnostic_driver = attr.label(allow_single_file = [".py"], cfg = "exec"),
 ))
