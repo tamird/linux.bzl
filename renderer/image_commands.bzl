@@ -263,6 +263,12 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
         fail("Expected one compiler output for %s, got %s" % (target, compilation.objects))
     integrated = compilation.objects[0]
     if not split:
+        if compiler_inputs.experiment.enabled:
+            compiler_inputs.experiment.compilers[target] = {
+                "source": source_file.path,
+                "object": integrated.path,
+                "kind": "host" if host else ("codegen" if "-S" in flags or "-E" in flags else "assembly"),
+            }
         return integrated
 
     # Temporary qualification plumbing: let the selected Clang frontend own
@@ -292,6 +298,7 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
     if len(backend.objects) != 1:
         fail("Expected one LLVM backend output for " + target)
     result = backend.objects[0]
+    compiler_inputs.experiment.compilers[target] = {"source": source_file.path, "object": result.path, "kind": "c"}
     compiler_inputs.experiment.records[target] = struct(source = source_file, frontend = frontend.objects[0], bitcode = bitcode, integrated = integrated, object = result, flags = flags)
     if target == compiler_inputs.experiment.diagnostic_target:
         _ir_diagnostics(ctx, flags, features, [directory_marker] + dependencies.values() + direct_dependencies.values() + source_prerequisites.values(), context, setup, compiler_inputs.experiment)

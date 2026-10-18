@@ -81,3 +81,25 @@ its declared boot outputs and blocks host tool directories. A separate Linux
 matching generator to build the ARM64 BTF kernel, native boot image and ingress
 module, then runs `aarch64_modules_btf_test` to require an ELF `.BTF` section. The encoder-free
 analysis test remains a separate check of missing-capability handling.
+
+## Compiler sharing qualification
+
+Select `compiler-family` in the Prototype qualification workflow to build the
+maintained base, debug, declared-BTF and LZ4 kernels through their manual
+`_qualification` companions. Each companion uses its original build request
+and adds integrated reference objects and deferred-diagnostic checks. Ordinary
+kernel targets still use integrated compilation.
+
+The workflow enables native `CppCompile` path mapping with
+`--experimental_output_paths=strip` and
+`--modify_execution_info=CppCompile=+supports-path-mapping`, using its declared
+Bazel disk cache. It builds variants sequentially, records actual product
+ancestry after header discovery, and compares every eligible C object with its
+integrated reference. The base/LZ4 floor requires four real backend cache hits
+with equal bitcode and equal native action-cache digests. Reports include the
+full inventories, all configuration intersections and the fraction reused.
+An unchanged build and a bounded `PANIC_TIMEOUT=37` request provide controls.
+
+The separate `compiler-ir` selection retains the earlier seven-object trial.
+These compiler experiments remain separate from the source, header, generated
+input and compressed-payload mutation checks in `source-edit-reuse`.

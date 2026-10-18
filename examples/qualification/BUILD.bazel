@@ -1,5 +1,5 @@
 load("@kernel//rules:example_configs.bzl", "EXAMPLE_CONFIGS")
-load("@kernel//rules:image.bzl", "kbuild_ir_experiment", "kernel_build_qualification")
+load("@kernel//rules:image.bzl", "kbuild_ir_experiment", "kbuild_resolved_build", "kernel_build_qualification")
 load("@kernel//rules:rules.bzl", "kernel_config")
 load("@rules_python//python:defs.bzl", "py_binary", "py_test")
 load(":ir_experiment.bzl", "ir_variant")
@@ -84,6 +84,7 @@ py_binary(
 py_test(
     name = "reuse_report_test",
     srcs = [
+        "ir_compare.py",
         "ir_reuse_report.py",
         "reuse_report.py",
         "reuse_report_test.py",
@@ -143,7 +144,11 @@ kernel_config(
 
 py_test(
     name = "ir_compare_test",
-    srcs = ["ir_compare.py"],
+    srcs = [
+        "ir_compare.py",
+        "ir_reuse_report.py",
+        "reuse_report.py",
+    ],
     args = ["$(rootpath :ir_" + name + ")" for name in [
         "base",
         "lz4",
@@ -164,4 +169,27 @@ py_binary(
         "ir_reuse_report.py",
         "reuse_report.py",
     ],
+)
+
+kbuild_resolved_build(
+    name = "family_changed",
+    catalog = "@kernel//:catalog",
+    config = ":ir_changed_config",
+    qualification = ":compiler_parity",
+    required_options = {"PANIC_TIMEOUT": "37"},
+    roots = [
+        "kernel/panic.o",
+        "lib/ctype.o",
+    ],
+    tags = ["manual"],
+)
+
+py_binary(
+    name = "family_compare",
+    srcs = [
+        "ir_compare.py",
+        "ir_reuse_report.py",
+        "reuse_report.py",
+    ],
+    main = "ir_compare.py",
 )

@@ -980,6 +980,7 @@ def _build(ctx, request):
     experiment = struct(
         enabled = qualification != None,
         records = {},
+        compilers = {},
         diagnostic_target = qualification.diagnostic_target if qualification != None else "",
         diagnostic_source = qualification.diagnostic_source if qualification != None else None,
         diagnostic_driver = qualification.diagnostic_driver if qualification != None else None,
@@ -1080,6 +1081,8 @@ def _build(ctx, request):
         "members": members,
         "roots": list(request.roots) + request.architecture_roots.get(config.architecture.srcarch, []) + modules,
         "artifacts": {p: f.path for p, f in artifacts.items()},
+        "compilers": experiment.compilers,
+        "compiler_diagnostics": [file.path for file in experiment.diagnostics],
     }))
     experiment_files = []
     if experiment.enabled:
