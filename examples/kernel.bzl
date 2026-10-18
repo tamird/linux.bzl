@@ -28,7 +28,7 @@ _configured = rule(implementation = _configured_impl, attrs = {
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
 })
 
-def kernel_example(name, requested, platform, overrides = {}, required_options = {}, pahole = None, architecture_roots = {}, modules = [], tags = []):
+def kernel_example(name, requested, platform, overrides = {}, required_options = {}, pahole = None, architecture_roots = {}, modules = [], tags = [], qualification = None):
     kernel_config(
         name = name + "_requested",
         options = "@kernel//options:options",
@@ -46,9 +46,12 @@ def kernel_example(name, requested, platform, overrides = {}, required_options =
         architecture_roots = architecture_roots,
         modules = modules,
         required_options = required_options,
+        qualification = qualification,
         tags = ["manual"],
     )
     _configured(name = name, target = ":" + name + "_unconfigured", platform = platform, tags = tags)
+    if qualification != None:
+        _configured(name = name + "_qualification", target = ":" + name + "_unconfigured_qualification", platform = platform, tags = tags + ["manual"])
     _configured(name = name + "_config", target = ":" + name + "_requested", platform = platform)
     for suffix, path in {"system_map": "System.map", "config_file": ".config"}.items():
         kernel_artifact(name = name + "_" + suffix + "_unconfigured", build = ":" + name + "_unconfigured", path = path)

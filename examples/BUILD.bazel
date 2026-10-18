@@ -17,6 +17,7 @@ kernel_example(
     name = "x86_64_kernel",
     architecture_roots = {"x86": ["arch/x86/boot/bzImage"]},
     platform = "@llvm//platforms:linux_x86_64",
+    qualification = "//qualification:compiler_parity",
     requested = EXAMPLE_CONFIGS["x86_64"],
 )
 
@@ -24,6 +25,7 @@ kernel_example(
     name = "x86_64_debug_kernel",
     overrides = EXAMPLE_CONFIGS["debug"],
     platform = "@llvm//platforms:linux_x86_64",
+    qualification = "//qualification:compiler_parity",
     requested = EXAMPLE_CONFIGS["x86_64"],
 )
 
@@ -32,6 +34,7 @@ kernel_example(
     architecture_roots = {"x86": ["arch/x86/boot/bzImage"]},
     overrides = EXAMPLE_CONFIGS["lz4"],
     platform = "@llvm//platforms:linux_x86_64",
+    qualification = "//qualification:compiler_parity",
     requested = EXAMPLE_CONFIGS["x86_64"],
 )
 
@@ -50,6 +53,7 @@ kernel_example(
     overrides = EXAMPLE_CONFIGS["btf"],
     pahole = "@kernel//:pahole",
     platform = "@llvm//platforms:linux_x86_64",
+    qualification = "//qualification:compiler_parity",
     requested = EXAMPLE_CONFIGS["x86_64"],
     required_options = {"DEBUG_INFO_BTF": "y"},
     tags = ["manual"],

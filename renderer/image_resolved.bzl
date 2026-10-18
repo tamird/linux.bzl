@@ -19,7 +19,12 @@ KernelBuildInfo = provider(
 
 KernelBuildRequestInfo = provider(
     "Configured native products requested from the shared image action owner.",
-    fields = ["config", "catalog", "roots", "architecture_roots", "modules", "required_options"],
+    fields = ["config", "catalog", "roots", "architecture_roots", "modules", "required_options", "qualification"],
+)
+
+KernelBuildQualificationInfo = provider(
+    "Declared inputs for opt-in compiler parity and diagnostic qualification.",
+    fields = ["diagnostic_target", "diagnostic_source", "diagnostic_driver"],
 )
 
 def _catalog_impl(ctx):
@@ -971,13 +976,13 @@ def _build(ctx, request):
         common["tools/objtool/objtool"] = objtool.executable
     finished = {}
     members = []
-    experiment_enabled = getattr(ctx.attr, "ir_pipeline", False)
+    qualification = request.qualification
     experiment = struct(
-        enabled = experiment_enabled,
+        enabled = qualification != None,
         records = {},
-        diagnostic_target = ctx.attr.ir_diagnostic_target if experiment_enabled else "",
-        diagnostic_source = ctx.file.ir_diagnostic_source if experiment_enabled else None,
-        diagnostic_driver = ctx.file.ir_diagnostic_driver if experiment_enabled else None,
+        diagnostic_target = qualification.diagnostic_target if qualification != None else "",
+        diagnostic_source = qualification.diagnostic_source if qualification != None else None,
+        diagnostic_driver = qualification.diagnostic_driver if qualification != None else None,
         diagnostics = [],
     )
     if experiment.diagnostic_target and (experiment.diagnostic_source == None or experiment.diagnostic_driver == None):
@@ -1073,6 +1078,7 @@ def _build(ctx, request):
         "config_report": config.report.path,
         "setup": setup.file.path,
         "members": members,
+        "roots": list(request.roots) + request.architecture_roots.get(config.architecture.srcarch, []) + modules,
         "artifacts": {p: f.path for p, f in artifacts.items()},
     }))
     experiment_files = []
@@ -1080,17 +1086,18 @@ def _build(ctx, request):
         report = ctx.actions.declare_file(ctx.label.name + ".ir.json")
         ctx.actions.write(report, json.encode({
             target: {
-                "source": record.source.short_path,
-                "bitcode": record.bitcode.short_path,
-                "integrated": record.integrated.short_path,
-                "object": record.object.short_path,
+                "source": record.source.path,
+                "frontend": record.frontend.path,
+                "bitcode": record.bitcode.path,
+                "integrated": record.integrated.path,
+                "object": record.object.path,
                 "flags": record.flags,
             }
             for target, record in experiment.records.items()
         }))
         experiment_files.append(report)
         for record in experiment.records.values():
-            experiment_files.extend([record.bitcode, record.integrated, record.object])
+            experiment_files.extend([record.frontend, record.bitcode, record.integrated, record.object])
         if experiment.diagnostic_target and not experiment.diagnostics:
             fail("IR diagnostic target was not compiled: " + experiment.diagnostic_target)
         experiment_files.extend(experiment.diagnostics)
@@ -1161,7 +1168,7 @@ _CORE_ATTRS = {
     "_anchor": attr.label(default = "//:source/Makefile", allow_single_file = True),
 }
 
-def _request_info(ctx):
+def _request_info(ctx, qualification = None):
     return KernelBuildRequestInfo(
         config = ctx.attr.config[KernelConfigInfo],
         catalog = ctx.attr.catalog[KbuildCatalogInfo],
@@ -1169,6 +1176,7 @@ def _request_info(ctx):
         architecture_roots = ctx.attr.architecture_roots,
         modules = ctx.attr.modules,
         required_options = ctx.attr.required_options,
+        qualification = qualification,
     )
 
 def _request_impl(ctx):
@@ -1178,6 +1186,39 @@ def _request_impl(ctx):
     return [request, request.config, DefaultInfo()]
 
 _build_request = rule(implementation = _request_impl, attrs = _REQUEST_ATTRS)
+
+def _qualification_impl(ctx):
+    if not ctx.attr.diagnostic_target:
+        fail("Compiler qualification requires a native diagnostic target")
+    return [KernelBuildQualificationInfo(
+        diagnostic_target = ctx.attr.diagnostic_target,
+        diagnostic_source = ctx.file.diagnostic_source,
+        diagnostic_driver = ctx.file.diagnostic_driver,
+    )]
+
+kernel_build_qualification = rule(implementation = _qualification_impl, doc = "Declare compiler checks for a build's optional qualification view.", attrs = {
+    "diagnostic_target": attr.string(mandatory = True),
+    "diagnostic_source": attr.label(mandatory = True, allow_single_file = [".c"]),
+    "diagnostic_driver": attr.label(mandatory = True, allow_single_file = [".py"], cfg = "exec"),
+})
+
+def _qualification_request_impl(ctx):
+    base = ctx.attr.base[KernelBuildRequestInfo]
+    request = KernelBuildRequestInfo(
+        config = base.config,
+        catalog = base.catalog,
+        roots = base.roots,
+        architecture_roots = base.architecture_roots,
+        modules = base.modules,
+        required_options = base.required_options,
+        qualification = ctx.attr.qualification[KernelBuildQualificationInfo],
+    )
+    return [request, request.config, DefaultInfo()]
+
+_qualification_request = rule(implementation = _qualification_request_impl, attrs = {
+    "base": attr.label(mandatory = True, providers = [KernelBuildRequestInfo]),
+    "qualification": attr.label(mandatory = True, providers = [KernelBuildQualificationInfo]),
+})
 
 def _core_impl(ctx):
     return _build(ctx, ctx.attr._request[KernelBuildRequestInfo])
@@ -1204,8 +1245,12 @@ _build_view = rule(implementation = _view_impl, attrs = {
     "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
 })
 
-def kbuild_resolved_build(name, config, catalog, roots, architecture_roots = {}, modules = [], required_options = {}, tags = [], visibility = None):
-    """Request native products from this source repository's shared action owner."""
+def kbuild_resolved_build(name, config, catalog, roots, architecture_roots = {}, modules = [], required_options = {}, tags = [], visibility = None, qualification = None):
+    """Request native products from this source repository's shared action owner.
+
+    A qualification spec also declares a manual `<name>_qualification` view
+    of the same requested products with compiler parity and diagnostic checks.
+    """
     request = name + "_request"
     _build_request(
         name = request,
@@ -1219,9 +1264,24 @@ def kbuild_resolved_build(name, config, catalog, roots, architecture_roots = {},
         visibility = ["//visibility:private"],
     )
     _build_view(name = name, request = ":" + request, tags = tags, visibility = visibility)
+    if qualification != None:
+        qualified = name + "_qualification"
+        _qualification_request(
+            name = qualified + "_request",
+            base = ":" + request,
+            qualification = qualification,
+            tags = ["manual"],
+            visibility = ["//visibility:private"],
+        )
+        _build_view(name = qualified, request = ":" + qualified + "_request", tags = tags + ["manual"], visibility = visibility)
 
 def _experiment_impl(ctx):
-    return _build(ctx, _request_info(ctx))
+    qualification = KernelBuildQualificationInfo(
+        diagnostic_target = ctx.attr.ir_diagnostic_target,
+        diagnostic_source = ctx.file.ir_diagnostic_source,
+        diagnostic_driver = ctx.file.ir_diagnostic_driver,
+    ) if ctx.attr.ir_pipeline else None
+    return _build(ctx, _request_info(ctx, qualification))
 
 # Temporary qualification core: outgoing transitions can select several
 # configurations of this same label, preserving paths after Bazel mapping.

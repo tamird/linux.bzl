@@ -65,20 +65,26 @@ def mapped(path: str) -> str:
 
 
 def snapshot(directory: Path, name: str, workspace: Path) -> None:
+    actions = list(action_outputs(directory / f"{name}.aquery.json"))
     artifacts = {
-        output.partition("/bin/")[2]: output
-        for _, outputs in action_outputs(directory / f"{name}.aquery.json")
+        output
+        for _, outputs in actions
         for output in outputs
-        if "/bin/" in output
     }
-    report_path = artifacts["qualification/ir_core.ir.json"]
+    match [path for mnemonic, outputs in actions if mnemonic == "FileWrite" for path in outputs if path.endswith(".ir.json")]:
+        case [report_path]:
+            pass
+        case reports:
+            raise ValueError(f"Expected one native compiler report, got {reports}")
     report = json.loads((workspace / report_path).read_text())
     assert report, "No compiler IR artifacts were requested"
     result = {}
     for target, record in report.items():
         match record:
-            case {"bitcode": str(bitcode), "integrated": str(integrated), "object": str(obj)}:
-                paths = {role: artifacts[value] for role, value in {"bitcode": bitcode, "integrated": integrated, "object": obj}.items()}
+            case {"frontend": str(frontend), "bitcode": str(bitcode), "integrated": str(integrated), "object": str(obj)}:
+                paths = {"frontend": frontend, "bitcode": bitcode, "integrated": integrated, "object": obj}
+                missing = set(paths.values()) - artifacts
+                assert not missing, (target, missing)
             case _:
                 raise ValueError(f"Invalid compiler artifact record: {record}")
         result[target] = {
@@ -98,9 +104,10 @@ def execution(path: Path, targets: dict[str, ArtifactRecord]) -> Execution:
     selected = {
         mapped(values["paths"][role]): (target, role)
         for target, values in targets.items()
-        for role in ("integrated", "object")
+        for role in ("frontend", "integrated", "object")
     }
     paths: dict[int, str] = {}
+    seen: set[str] = set()
     outcomes: dict[str, Outcome] = {}
     frontend: list[FrontendOutcome] = []
     for record in entries:
@@ -136,15 +143,15 @@ def execution(path: Path, targets: dict[str, ArtifactRecord]) -> Execution:
             if identity is not None:
                 target, role = identity
                 key = role + ":" + target
-                if key in outcomes:
+                if key in seen:
                     raise ValueError(f"Duplicate selected compiler {key}")
+                seen.add(key)
                 if not action_hash or action_size <= 0:
                     raise ValueError(f"Selected compiler {key} has no action-cache digest")
-                outcomes[key] = {"cache_hit": hit, "runner": runner, "action_digest": digest}
-            if "/_objs/ir_core.frontend/" in output and output.endswith(".o"):
-                frontend.append({"output": output, "cache_hit": hit, "runner": runner, "action_digest": digest})
-            if "/_objs/ir_core.backend/" in output and output.endswith(".o") and identity is None:
-                raise ValueError(f"Unrecognized selected backend output {output}")
+                if role == "frontend":
+                    frontend.append({"output": output, "cache_hit": hit, "runner": runner, "action_digest": digest})
+                else:
+                    outcomes[key] = {"cache_hit": hit, "runner": runner, "action_digest": digest}
     return {"invocation": invocation, "hash_function": hash_function, "outcomes": outcomes, "frontend": frontend}
 
 

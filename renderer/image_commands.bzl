@@ -188,7 +188,7 @@ def _ir_diagnostics(ctx, flags, features, inputs, context, setup, experiment):
                 "argv": [compiler] + cc_common.get_memory_inefficient_command_line(feature_configuration = features, action_name = ACTION_NAMES.c_compile, variables = variables),
                 "environment": cc_common.get_environment_variables(feature_configuration = features, action_name = ACTION_NAMES.c_compile, variables = variables),
             })
-        cases.append({"name": name, "bitcode": bitcode.path, "bitcode_runfile": bitcode.short_path, "commands": commands})
+        cases.append({"name": name, "bitcode": bitcode.path, "bitcode_runfile": bitcode.path, "commands": commands})
     ctx.actions.write(spec, json.encode(cases))
     ctx.actions.run(
         executable = execution.python,
@@ -292,7 +292,7 @@ def _compile(ctx, target, source_file, flags, dependencies, direct_dependencies,
     if len(backend.objects) != 1:
         fail("Expected one LLVM backend output for " + target)
     result = backend.objects[0]
-    compiler_inputs.experiment.records[target] = struct(source = source_file, bitcode = bitcode, integrated = integrated, object = result, flags = flags)
+    compiler_inputs.experiment.records[target] = struct(source = source_file, frontend = frontend.objects[0], bitcode = bitcode, integrated = integrated, object = result, flags = flags)
     if target == compiler_inputs.experiment.diagnostic_target:
         _ir_diagnostics(ctx, flags, features, [directory_marker] + dependencies.values() + direct_dependencies.values() + source_prerequisites.values(), context, setup, compiler_inputs.experiment)
     return result
