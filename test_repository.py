@@ -89,6 +89,9 @@ def main() -> None:
                    (node['kind'] == 'directive' and node['directive'] in ('ifeq', 'ifneq', 'ifdef', 'ifndef', 'else'))
                    for node in version_nodes), version
         native_makefile = args.source_anchor.read_text()
+        exports = list(nodes(program['image_exports']))
+        assert all(any(branch['body'] for branch in node['branches'])
+                   for node in exports if node['kind'] == 'conditional'), 'Export slice retained an irrelevant conditional guard'
         if not re.search(r'^\s*(?:export\s+)?ARCH_CORE\s*[:+?]?=', native_makefile, re.MULTILINE):
             descent = list(nodes(program['image_root_descent']))
             assert any(node['kind'] == 'rule' and node['targets'] == 'descend' for node in descent), descent

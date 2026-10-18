@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from compiler_queries import lower_compiler_queries
 from export import native_events, parse_events
-from programs import lower_probes, slice_program
+from programs import export_directives, lower_probes, slice_program
 from syntax import runtime_program
 
 
@@ -74,6 +74,29 @@ class SymbolicExportTest(unittest.TestCase):
             self.assertEqual(measured['condition'], dict(original['condition'], operands=[[dict(query, name='kbuild_host_shell')], []]))
             self.assertEqual(measured['body'], original['body'])
             self.assertEqual(lowered[1], body[1], 'Unrelated shell expansion changed owners')
+
+    def test_export_slice_keeps_only_guards_with_exported_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / 'Makefile'
+            fixture.write_text(
+                'ifdef building_out_of_srctree\n'
+                'KBUILD_CPPFLAGS += -fmacro-prefix-map=$(srcroot)/=\n'
+                'ifeq ($(call rustc-option-yn, --remap-path-scope=macro),y)\n'
+                'KBUILD_RUSTFLAGS += --remap-path-prefix=$(srcroot)/= --remap-path-scope=macro\n'
+                'endif\nendif\n'
+                'ifdef SELECTED\nIGNORED := value\nelse\nexport RETAINED\nendif\n'
+                'export INLINE := $(error assignment belongs to another phase)\n'
+                'unexport REMOVED\n')
+            body = parse_events(native_events([MAKE], [fixture], expressions=True))['files'][0]['body']
+            selected = export_directives(body)
+            self.assertEqual(len(selected), 3, selected)
+            branches = selected[0]['branches']
+            self.assertEqual(branches[0]['condition'], body[1]['branches'][0]['condition'])
+            self.assertEqual(branches[0]['body'], [])
+            self.assertEqual(branches[1], body[1]['branches'][1])
+            self.assertEqual((selected[1]['directive'], selected[1]['arguments']), ('export', 'INLINE'))
+            self.assertEqual(selected[2], body[3])
+            self.assertNotIn('rustc-option-yn', json.dumps(selected))
 
     def test_native_condition_preserves_both_config_dependent_branches(self):
         events = [dict(kind='file_begin', file='Kbuild'),

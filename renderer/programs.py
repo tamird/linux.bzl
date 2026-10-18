@@ -74,6 +74,23 @@ def selected(body, wanted):
     return out
 
 
+def export_directives(body):
+    """Retain export ownership and only the guards that control it."""
+    result = []
+    for node in body:
+        if node['kind'] == 'conditional':
+            branches = [dict(branch, body=export_directives(branch['body']))
+                        for branch in node['branches']]
+            if any(branch['body'] for branch in branches):
+                result.append(dict(node, branches=branches))
+        elif node['kind'] == 'directive' and node.get('directive') in ('export', 'unexport'):
+            result.append(node)
+        elif node['kind'] in ('assignment', 'define') and node.get('export') in (1, 2):
+            result.append({'kind': 'directive', 'directive': 'export' if node['export'] == 1 else 'unexport',
+                           'arguments': node['name'], 'arguments_expression': node['name_expression']})
+    return result
+
+
 def slice_program(body, wanted):
     wanted = set(wanted)
     for _ in range(100):

@@ -423,17 +423,7 @@ def extract(tree, linux, make):
     data['image_roots'] = backend.slice_program(backend.bounded(top, root_first, root_last), root_names)
     root_nodes = {(n['file'], n['line']) for n, _ in walk(data['image_roots'])
                   if n['kind'] in ('assignment', 'define')}
-    def export_directives(body):
-        result = []
-        for node in body:
-            if node['kind'] == 'conditional':
-                result.append(dict(node, branches=[dict(b, body=export_directives(b['body'])) for b in node['branches']]))
-            elif node['kind'] == 'directive' and node.get('directive') in ('export', 'unexport'):
-                result.append(node)
-            elif node['kind'] in ('assignment', 'define') and node.get('export') in (1, 2):
-                result.append({'kind': 'directive', 'directive': 'export' if node['export'] == 1 else 'unexport', 'arguments': node['name'], 'arguments_expression': node['name_expression']})
-        return result
-    data['image_exports'] = export_directives(top)
+    data['image_exports'] = backend.export_directives(top)
     version_names = {'VERSION', 'PATCHLEVEL', 'SUBLEVEL', 'EXTRAVERSION'}
     versions = [(node, guards) for node, guards in walk(top)
                 if node['kind'] in ('assignment', 'define') and node.get('name') in version_names]
