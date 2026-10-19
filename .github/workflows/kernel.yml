@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      USE_BAZEL_VERSION: 9.3.0
+      BAZELISK_VERIFY_SHA256: 9fbe72d71ef5fbb3e9a03a08e0795219891c5d142e8e2e893d952c16175ab424
     steps:
       - uses: actions/checkout@v5
       - uses: bazel-contrib/setup-bazel@0.19.0
@@ -77,7 +77,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ (inputs.scope || 'full') == 'full' && 360 || 60 }}
     env:
-      USE_BAZEL_VERSION: 9.3.0
+      BAZELISK_VERIFY_SHA256: 9fbe72d71ef5fbb3e9a03a08e0795219891c5d142e8e2e893d952c16175ab424
     steps:
       - uses: actions/checkout@v5
 
@@ -160,7 +160,7 @@ jobs:
       - name: Capture executed scheduler and BTF tool action graphs
         if: ${{ inputs.scope == 'native-tools' }}
         run: |
-          bazel aquery 'deps(set(//tests:scheduler //:native_btf_tools //:native_btf_tools_5_10 //:native_btf_tools_6_18 //execution_tools:check))' \
+          bazel aquery --skyframe_state \
             --override_repository=kbuild_exporter="$KBUILD_EXPORTER" \
             --platforms=@llvm//platforms:linux_x86_64 \
             --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
@@ -194,7 +194,7 @@ jobs:
           for name in default 5_10; do
             target=//:native_compiler_checks
             if [[ "$name" == 5_10 ]]; then target+=_5_10; fi
-            bazel aquery "deps($target)" "${options[@]}" \
+            bazel aquery --skyframe_state "${options[@]}" \
               --output_groups=+qualification_manifest --noinclude_pruned_inputs --output=jsonproto > "$evidence/$name.aquery.json"
             bazel cquery "$target" "${options[@]}" \
               --output=files --output_groups=qualification_manifest > "$evidence/$name.manifest-path"
@@ -233,16 +233,7 @@ jobs:
             --platforms=@llvm//platforms:linux_x86_64 \
             --extra_execution_platforms=@llvm//platforms:linux_x86_64 --jobs=4 --test_output=errors
 
-          python3 check_reuse.py --family --decoder "$EXECUTION_LOG_DECODER" \
-            --bazel-option="--override_repository=linux_source=$GITHUB_WORKSPACE/_tmp/linux" \
-            --bazel-option="--override_repository=kbuild_exporter=$KBUILD_EXPORTER" \
-            --bazel-option=--platforms=@llvm//platforms:linux_x86_64 \
-            --bazel-option=--extra_execution_platforms=@llvm//platforms:linux_x86_64 \
-            --bazel-option=--experimental_output_paths=strip \
-            --bazel-option=--experimental_sandbox_async_tree_delete_idle_threads=0 \
-            --bazel-option=--jobs=4
-
-          python3 check_reuse.py --decoder "$EXECUTION_LOG_DECODER" --source _tmp/linux/init/main.c \
+          python3 check_reuse.py --family --decoder "$EXECUTION_LOG_DECODER" --source _tmp/linux/init/main.c \
             --bazel-option="--override_repository=linux_source=$GITHUB_WORKSPACE/_tmp/linux" \
             --bazel-option="--override_repository=kbuild_exporter=$KBUILD_EXPORTER" \
             --bazel-option=--platforms=@llvm//platforms:linux_x86_64 \

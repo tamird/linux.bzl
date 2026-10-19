@@ -7,6 +7,7 @@ from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from typing import TextIO
@@ -107,20 +108,22 @@ def append_edit(path: Path, original: bytes, suffix: bytes) -> Iterator[None]:
             path.write_bytes(current.replace(suffix, b"", 1))
 
 
-def measure(decoder: str, target: str, options: list[str], directory: Path, name: str, workspace: Path, *, family: bool = False) -> None:
+def measure(decoder: str, target: str, options: list[str], directory: Path, name: str, workspace: Path, *, family: bool = False) -> Path:
     options = [*options, "--//:validate_native_objects"]
+    capture_options = [
+        *options, "--output_groups=+boot,+qualification_manifest",
+        "--sandbox_block_path=/bin", "--sandbox_block_path=/usr/bin", "--sandbox_block_path=/usr/local/bin",
+    ]
     log = directory / f"{name}.execution.pb.zst"
     subprocess.run([
-        "bazel", "build", target, *options,
-        "--output_groups=+boot,+qualification_manifest",
-        "--sandbox_block_path=/bin", "--sandbox_block_path=/usr/bin", "--sandbox_block_path=/usr/local/bin",
+        "bazel", "build", target, *capture_options,
         "--execution_log_compact_file=" + str(log),
         "--profile=" + str(directory / f"{name}.profile.gz"),
     ], cwd=workspace, check=True)
     decode(decoder, log, directory / f"{name}.execution.jsonl")
     with (directory / f"{name}.aquery.json").open("w") as output:
         subprocess.run([
-            "bazel", "aquery", f"deps({target})", *options,
+            "bazel", "aquery", "--skyframe_state", *capture_options,
             "--noinclude_pruned_inputs", "--output=jsonproto",
         ], cwd=workspace, stdout=output, check=True)
     with (directory / f"{name}.manifest-path").open("w") as output:
@@ -128,14 +131,24 @@ def measure(decoder: str, target: str, options: list[str], directory: Path, name
             "bazel", "cquery", target, *options,
             "--output=files", "--output_groups=qualification_manifest",
         ], cwd=workspace, stdout=output, check=True)
-    execution_root = subprocess.check_output(["bazel", "info", "execution_root"], cwd=workspace, text=True).strip()
+    execution_root = Path(subprocess.check_output(["bazel", "info", "execution_root"], cwd=workspace, text=True).strip())
     snapshot = ir_reuse_report.snapshot if family else reuse_report.snapshot
-    snapshot(directory, name, Path(execution_root))
+    snapshot(directory, name, execution_root)
+    return execution_root
 
 
-def family(decoder: str, options: list[str], directory: Path, workspace: Path) -> None:
+def family(decoder: str, options: list[str], directory: Path, workspace: Path, mutation_directory: Path | None = None) -> None:
     for name in ir_reuse_report.FAMILY_PHASES:
-        measure(decoder, FAMILY_TARGETS[name], options, directory, name, workspace, family=True)
+        execution_root = measure(decoder, FAMILY_TARGETS[name], options, directory, name, workspace, family=True)
+        if mutation_directory is not None and name in ("base", "unchanged"):
+            mutation_name = "baseline" if name == "base" else name
+            # Both comparisons use this invocation's evidence. A second warm
+            # build can omit every local action-cache hit from the spawn log.
+            for suffix in ("execution.pb.zst", "execution.jsonl", "profile.gz", "aquery.json", "manifest-path"):
+                shutil.copyfile(directory / f"{name}.{suffix}", mutation_directory / f"{mutation_name}.{suffix}")
+            # Snapshot actual stage Files before another configuration can
+            # replace them; do not substitute the family reporter's schema.
+            reuse_report.snapshot(mutation_directory, mutation_name, execution_root)
     # Each comparator must run even when the other rejects the evidence.
     comparison = subprocess.run([
         sys.executable, "-m", "qualification.ir_compare", "--family-results", str(directory),
@@ -147,31 +160,7 @@ def family(decoder: str, options: list[str], directory: Path, workspace: Path) -
         raise SystemExit(f"Compiler-family qualification failed: parity={comparison.returncode}, reuse={reuse.returncode}; see {directory}")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--decoder", required=True)
-    parser.add_argument("--family", action="store_true", help="Qualify base/unchanged/LZ4/debug/BTF/changed configurations")
-    parser.add_argument("--source", type=Path, help="Editable native init/main.c, required for mutation qualification")
-    parser.add_argument("--target", help="Mutation target (default: //examples:x86_64_kernel)")
-    parser.add_argument("--out", type=Path, help="Empty evidence directory (default: validation/family or validation/reuse)")
-    parser.add_argument("--bazel-option", action="append", default=[])
-    args = parser.parse_args()
-    workspace = Path(os.environ.get("BUILD_WORKSPACE_DIRECTORY", os.getcwd()))
-    if args.family:
-        if args.source is not None or args.target is not None:
-            parser.error("--source and --target apply only to mutation qualification")
-    elif args.source is None:
-        parser.error("mutation qualification requires --source")
-    directory = (workspace / (args.out or Path("validation/family" if args.family else "validation/reuse"))).resolve()
-    directory.mkdir(parents=True, exist_ok=True)
-    if any(directory.iterdir()):
-        parser.error("--out already contains evidence; choose a separate empty directory")
-    if args.family:
-        family(args.decoder, args.bazel_option, directory, workspace)
-        return
-    source = (workspace / args.source).resolve()
-    if source.parts[-2:] != ("init", "main.c"):
-        parser.error("--source must identify native init/main.c for the fixed mutation controls")
+def mutations(decoder: str, target: str, options: list[str], directory: Path, workspace: Path, source: Path, *, baseline_captured: bool = False) -> None:
     root = source.parent.parent
     paths = [source, root / "init/do_mounts.h", root / "usr/default_cpio_list", root / "scripts/Makefile.lib"]
     originals = [path.read_bytes() for path in paths]
@@ -189,10 +178,12 @@ def main() -> None:
     # in the original trial. Restore only our additions on every normal exit.
     with ExitStack() as stack:
         for index, name in enumerate(reuse_report.PHASES):
+            if baseline_captured and index < 2:
+                continue
             if index >= 2:
                 edit = index - 2
                 stack.enter_context(append_edit(paths[edit], originals[edit], edits[edit]))
-            measure(args.decoder, args.target or "//examples:x86_64_kernel", args.bazel_option, directory, name, workspace)
+            measure(decoder, target, options, directory, name, workspace)
     result = reuse_report.report(directory)
     (directory / "reuse-report.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result["qualification"], indent=2))
@@ -201,6 +192,40 @@ def main() -> None:
         "incbin_edit_recompiled_only_consumer", "gzip_edit_recompiled_only_consumer",
     )):
         raise SystemExit("Kernel dependency reuse qualification failed; see reuse-report.json")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--decoder", required=True)
+    parser.add_argument("--family", action="store_true", help="Qualify base/unchanged/LZ4/debug/BTF/changed configurations")
+    parser.add_argument("--source", type=Path, help="Editable native init/main.c; combine with --family to share its baseline capture")
+    parser.add_argument("--target", help="Standalone mutation target (default: //examples:x86_64_kernel)")
+    parser.add_argument("--out", type=Path, help="Empty evidence directory (default: validation, validation/family, or validation/reuse)")
+    parser.add_argument("--bazel-option", action="append", default=[])
+    args = parser.parse_args()
+    workspace = Path(os.environ.get("BUILD_WORKSPACE_DIRECTORY", os.getcwd()))
+    if args.family and args.target is not None:
+        parser.error("--target applies only to standalone mutation qualification")
+    if not args.family and args.source is None:
+        parser.error("mutation qualification requires --source")
+    source = (workspace / args.source).resolve() if args.source is not None else None
+    if source is not None and (source.parts[-2:] != ("init", "main.c") or not source.is_file()):
+        parser.error("--source must identify native init/main.c for the fixed mutation controls")
+    combined = args.family and source is not None
+    default = "validation" if combined else "validation/family" if args.family else "validation/reuse"
+    directory = (workspace / (args.out or Path(default))).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    if any(directory.iterdir()):
+        parser.error("--out already contains evidence; choose a separate empty directory")
+    family_directory, mutation_directory = directory, directory
+    if combined:
+        family_directory, mutation_directory = directory / "family", directory / "reuse"
+        family_directory.mkdir()
+        mutation_directory.mkdir()
+    if args.family:
+        family(args.decoder, args.bazel_option, family_directory, workspace, mutation_directory if combined else None)
+    if source is not None:
+        mutations(args.decoder, args.target or FAMILY_TARGETS["base"], args.bazel_option, mutation_directory, workspace, source, baseline_captured=combined)
 
 
 if __name__ == "__main__":

@@ -33,15 +33,29 @@ def _plan(tctx, input_directories, output_directories, tools, additional_inputs,
         bitcode = ctx.actions.declare_file(source + ".bc")
         output = ctx.actions.declare_file(source + ".o")
         flags = json.decode(additional_params["flags"])
-        ctx.actions.run(
-            executable = additional_params["cc"],
-            arguments = flags + ["-I", header.dirname, "-emit-llvm", "-Xclang", "-disable-llvm-passes", "-c", originals[source].path, "-o", bitcode.path],
-            inputs = depset([tools["source_root"], header], transitive = [tools["compiler_files"]]),
-            outputs = [bitcode],
-            mnemonic = "FixtureCompile",
-            progress_message = "Frontend fixture " + source,
-            compiler = dict(phase = "frontend", target = source + ".o", kind = "c", source = originals[source].path),
-        )
+        frontend_flags = flags + ["-I", header.dirname, "-emit-llvm", "-Xclang", "-disable-llvm-passes"]
+        if source == "main.c":
+            # Native generated mappings can contain original source Files,
+            # including the mandatory source and an unused candidate.
+            wrapper = ctx.actions.declare_file("wrapper.h")
+            ctx.actions.write(wrapper, "#include <value.h>\n")
+            frontend_flags += ["-I", tools["source_root"].path, "-include", "wrapper.h"]
+            generated = {"main.c": originals[source], "unused.c": originals["other.c"], "generated.h": header, "wrapper.h": wrapper, "__source__/value.h": originals["value.h"]}
+            mapping = ctx.actions.declare_file("main-inputs.json")
+            ctx.actions.write(mapping, json.encode({name: file.path for name, file in generated.items()}))
+            tree = ctx.actions.declare_directory("main.headers")
+            ctx.actions.run(executable = tools["python"], arguments = [tools["materialize"].path, mapping.path, tree.path], inputs = [tools["materialize"], mapping] + generated.values(), outputs = [tree])
+            compile_action(ctx, source + ".o", "frontend", originals[source], bitcode, frontend_flags, tree, generated, depset([tools["source_root"], originals[source]]), struct(files = tools["compiler_files"], tools = {"CC": additional_params["cc"]}), "c", [originals[source]])
+        else:
+            ctx.actions.run(
+                executable = additional_params["cc"],
+                arguments = frontend_flags + ["-c", originals[source].path, "-o", bitcode.path],
+                inputs = depset([tools["source_root"], originals[source], header], transitive = [tools["compiler_files"]]),
+                outputs = [bitcode],
+                mnemonic = "FixtureCompile",
+                progress_message = "Frontend fixture " + source,
+                compiler = dict(phase = "frontend", target = source + ".o", kind = "c", source = originals[source].path),
+            )
         anchors = {}
         for file in tools["compiler_files"].to_list():
             anchors[file.path] = {"file": file.path, "parent": 0}
