@@ -1,12 +1,14 @@
 """Native syntax transport keeps conditions and compiler query context symbolic."""
 import argparse
+import copy
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from compiler_queries import lower_compiler_queries, lower_initramfs_inputs
 from export import native_events, parse_events
-from programs import lower_probes
+from programs import export_directives, lower_probes, slice_program
 from syntax import runtime_program
 
 
@@ -51,6 +53,74 @@ class SymbolicExportTest(unittest.TestCase):
         self.assertEqual(result['name'], 'kbuild_probe')
         self.assertEqual(result['probe_context'], {'compiler': compiler, 'flags': flags})
         self.assertEqual(result['arguments'], [literal('cc-option'), literal('-Werror'), literal('fallback')])
+
+    def test_native_ifdef_keeps_its_literal_variable_dependency(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / 'Makefile'
+            fixture.write_text('NATIVE_MODE := selected\nifdef NATIVE_MODE\nRESULT := selected\nelse\nRESULT := absent\nendif\nUNRELATED := omit\n')
+            body = parse_events(native_events([MAKE], [fixture], expressions=True))['files'][0]['body']
+            selected = slice_program(body, {'RESULT'})
+            self.assertEqual([node.get('name') for node in selected], ['NATIVE_MODE', None])
+            self.assertEqual([branch['body'][0]['value'] for branch in selected[1]['branches']], ['selected', 'absent'])
+
+    def test_native_compiler_banner_guard_remains_a_measured_command(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / 'Makefile'
+            fixture.write_text('ifneq ($(shell $(CC) --version 2>&1 | head -n 1 | grep clang),)\nCLANG_FLAGS += -fintegrated-as\nendif\nOTHER = $(shell printf recipe-output)\n')
+            body = parse_events(native_events([MAKE], [fixture], expressions=True))['files'][0]['body']
+            lowered = lower_compiler_queries(body)
+            original = body[0]['branches'][0]
+            measured = lowered[0]['branches'][0]
+            query = original['condition']['operands'][0][0]
+            self.assertEqual(measured['condition'], dict(original['condition'], operands=[[dict(query, name='kbuild_host_shell')], []]))
+            self.assertEqual(measured['body'], original['body'])
+            self.assertEqual(lowered[1], body[1], 'Unrelated shell expansion changed owners')
+
+    def test_initramfs_input_lowering_preserves_native_expression_and_guards(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / 'Makefile'
+            fixture.write_text(
+                'ifdef CONFIG_BLK_DEV_INITRD\n'
+                'ramfs-input := $(strip $(shell echo $(CONFIG_INITRAMFS_SOURCE)))\n'
+                'ifeq ($(ramfs-input),)\n'
+                'ramfs-input := $(srctree)/$(src)/default_cpio_list\n'
+                'endif\n'
+                'endif\n'
+                'OTHER := $(shell echo $(CONFIG_INITRAMFS_SOURCE))\n')
+            body = lower_probes(parse_events(native_events([MAKE], [fixture], expressions=True))['files'][0]['body'])
+            expected = copy.deepcopy(body)
+            original = body[0]['branches'][0]['body'][0]
+            selected = expected[0]['branches'][0]['body'][0]
+            shell = selected['value_expression'][0]['arguments'][0][0]
+            self.assertEqual((shell['op'], shell['name'], shell['arguments']), ('function', 'shell', [[
+                dict(op='literal', value='echo '), dict(op='config', name='CONFIG_INITRAMFS_SOURCE')]]))
+            shell['name'] = 'kbuild_host_shell'
+            lowered = lower_initramfs_inputs(body)
+            self.assertEqual(lowered, expected)
+            self.assertEqual(original['value_expression'][0]['arguments'][0][0]['name'], 'shell')
+
+    def test_export_slice_keeps_only_guards_with_exported_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / 'Makefile'
+            fixture.write_text(
+                'ifdef building_out_of_srctree\n'
+                'KBUILD_CPPFLAGS += -fmacro-prefix-map=$(srcroot)/=\n'
+                'ifeq ($(call rustc-option-yn, --remap-path-scope=macro),y)\n'
+                'KBUILD_RUSTFLAGS += --remap-path-prefix=$(srcroot)/= --remap-path-scope=macro\n'
+                'endif\nendif\n'
+                'ifdef SELECTED\nIGNORED := value\nelse\nexport RETAINED\nendif\n'
+                'export INLINE := $(error assignment belongs to another phase)\n'
+                'unexport REMOVED\n')
+            body = parse_events(native_events([MAKE], [fixture], expressions=True))['files'][0]['body']
+            selected = export_directives(body)
+            self.assertEqual(len(selected), 3, selected)
+            branches = selected[0]['branches']
+            self.assertEqual(branches[0]['condition'], body[1]['branches'][0]['condition'])
+            self.assertEqual(branches[0]['body'], [])
+            self.assertEqual(branches[1], body[1]['branches'][1])
+            self.assertEqual((selected[1]['directive'], selected[1]['arguments']), ('export', 'INLINE'))
+            self.assertEqual(selected[2], body[3])
+            self.assertNotIn('rustc-option-yn', json.dumps(selected))
 
     def test_native_condition_preserves_both_config_dependent_branches(self):
         events = [dict(kind='file_begin', file='Kbuild'),

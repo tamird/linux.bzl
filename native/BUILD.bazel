@@ -64,6 +64,7 @@ kernel_compiler(
     for name, repository in [
         ("source", "linux_source"),
         ("source_5_10", "linux_5_10"),
+        ("source_6_18", "linux_6_18"),
     ]
 ]
 
