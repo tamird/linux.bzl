@@ -158,6 +158,27 @@ def _impl(ctx):
     if ctx.attr.rounds < 0:
         fail("rounds must be nonnegative")
     final_output = ctx.actions.declare_directory(ctx.label.name + ".graph")
+    encoded_parameters = dict(
+        logical = json.encode(logical),
+        toolchain = json.encode(tc.spec),
+        architecture = json.encode(config.architecture),
+        roles = json.encode(dict(compiler.roles, PAHOLE = config.pahole.files_to_run.executable.path)),
+        host_roles = json.encode({"HOSTCC": host.roles["CC"], "HOSTCXX": host.roles["CXX"]}),
+        host_toolchain_roles = json.encode(host.roles),
+        host_toolchain = json.encode(host.context.spec),
+        library_cflags = json.encode(libraries.cflags),
+        library_flags = json.encode(libraries.libs),
+        host_compile_flags = json.encode(host.context.spec["compile_flags"]),
+        host_compile_env = json.encode(host.context.spec["compile_env"]),
+        host_link_env = json.encode(host.context.spec["link_env"]),
+        host_link_flags = json.encode(host.context.spec["link_flags"]),
+        execution_environment = json.encode(dict(execution.bootstrap_environment, PATH = execution.bin_dir, PYTHONDONTWRITEBYTECODE = "1")),
+        path_environment = json.encode(execution.bootstrap_path_environment),
+        builtin_include = compiler.builtin_include,
+        roots = json.encode(ctx.attr.roots),
+        required_options = json.encode(ctx.attr.required_options),
+        validate_native_objects = ctx.attr._validate_native_objects[BuildSettingInfo].value,
+    )
     output, metadata = None, None
     for round in range(ctx.attr.rounds + 1):
         final = round == ctx.attr.rounds
@@ -175,25 +196,7 @@ def _impl(ctx):
                 final = final,
                 output_prefix = final_output.path,
                 previous = answers.path,
-                logical = json.encode(logical),
-                toolchain = json.encode(tc.spec),
-                architecture = json.encode(config.architecture),
-                roles = json.encode(dict(compiler.roles, PAHOLE = config.pahole.files_to_run.executable.path)),
-                host_roles = json.encode({"HOSTCC": host.roles["CC"], "HOSTCXX": host.roles["CXX"]}),
-                host_toolchain_roles = json.encode(host.roles),
-                host_toolchain = json.encode(host.context.spec),
-                library_cflags = json.encode(libraries.cflags),
-                library_flags = json.encode(libraries.libs),
-                host_compile_flags = json.encode(host.context.spec["compile_flags"]),
-                host_compile_env = json.encode(host.context.spec["compile_env"]),
-                host_link_env = json.encode(host.context.spec["link_env"]),
-                host_link_flags = json.encode(host.context.spec["link_flags"]),
-                execution_environment = json.encode(dict(execution.bootstrap_environment, PATH = execution.bin_dir, PYTHONDONTWRITEBYTECODE = "1")),
-                path_environment = json.encode(execution.bootstrap_path_environment),
-                builtin_include = compiler.builtin_include,
-                roots = json.encode(ctx.attr.roots),
-                required_options = json.encode(ctx.attr.required_options),
-                validate_native_objects = ctx.attr._validate_native_objects[BuildSettingInfo].value,
+                **encoded_parameters
             ),
         )
         if not final:
