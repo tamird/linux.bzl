@@ -7,6 +7,18 @@ the downstream source/config/build/artifact interface.
 load("//execution_tools:defs.bzl", "EXECUTION_TOOLS_TYPE")
 load(":kernel.bzl", "KernelBuildInfo")
 
+def _execution_tool_impl(ctx):
+    return [DefaultInfo(
+        files = depset([ctx.executable.tool]),
+        runfiles = ctx.attr.tool[DefaultInfo].default_runfiles,
+    )]
+
+execution_tool = rule(
+    implementation = _execution_tool_impl,
+    attrs = {"tool": attr.label(mandatory = True, executable = True, cfg = "exec")},
+    doc = "Expose an execution-platform tool to a test's data and location arguments.",
+)
+
 def _impl(ctx):
     kernel = ctx.attr.kernel[KernelBuildInfo]
     config = kernel.config

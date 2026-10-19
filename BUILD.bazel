@@ -8,7 +8,7 @@ load("//rules:compiler_test.bzl", "action_built_compiler", "action_built_toolcha
 load("//rules:config.bzl", "kernel_config")
 load("//rules:configured.bzl", "configured_report")
 load("//rules:kernel.bzl", "kernel_build")
-load("//rules:validation.bzl", "kernel_validation")
+load("//rules:validation.bzl", "execution_tool", "kernel_validation")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -320,6 +320,12 @@ filegroup(
     srcs = glob(["renderer/*.py"]),
 )
 
+execution_tool(
+    name = "repository_test_make",
+    testonly = True,
+    tool = "@make",
+)
+
 [py_test(
     name = name,
     timeout = "long",
@@ -333,11 +339,11 @@ filegroup(
         "--source-anchor",
         "$(location @%s//:Makefile)" % source,
         "--make",
-        "$(location @make//:make)",
+        "$(location :repository_test_make)",
     ],
     data = [
+        ":repository_test_make",
         "//native:exporter",
-        "@make",
         "@%s//:Makefile" % source,
         "@%s//:sources" % source,
     ],
