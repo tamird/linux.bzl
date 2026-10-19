@@ -104,6 +104,7 @@ jobs:
         run: |
           git -C _tmp/linux apply "$GITHUB_WORKSPACE/native/linux_piggy_dependency.patch"
           cp native/linux_source.BUILD.bazel _tmp/linux/BUILD.bazel
+          touch _tmp/linux/REPO.bazel
 
       - uses: bazel-contrib/setup-bazel@0.19.0
         with:

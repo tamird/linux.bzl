@@ -15,8 +15,8 @@ load(":toolchain.bzl", "make_setup")
 
 KernelBuildInfo = provider("Measured products of one native configuration.", fields = ["directory", "config", "manifest"])
 
-# Fixed map_directory callback signature.
-# buildifier: disable=unused-variable
+# This generated-syntax callback registers actions, not BUILD targets.
+# buildifier: disable=unnamed-macro
 def expand_kernel(tctx, input_directories, output_directories, tools, additional_inputs, additional_params, kbuild):
     measured = read_payload(input_directories["answers"])
     if measured.get("converged", False) and not additional_params["final"]:

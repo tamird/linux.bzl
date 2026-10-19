@@ -18,6 +18,7 @@ bool_flag(
 )
 
 exports_files([
+    "MODULE.bazel",
     "test_config_values.py",
     "probe_runtime.py",
     "payload.py",

@@ -416,7 +416,7 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, files,
             mnemonic = "KbuildAR",
             progress_message = "Archive %s" % target,
         )
-        return
+        return None
 
     if kind == "compile" or (native != None and native.get("compile")):
         return _compile_target(ctx, target, directory, outputs, dependencies, files, source, config, setup, native, ancestry, graph_variables, original_sources, compiler_prerequisites, postprocess_dependencies, invocation_environment, compiler_kind)
@@ -448,8 +448,9 @@ def register(ctx, target, directory, kind, driver, outputs, dependencies, files,
         return result
     if driver == "asm_headers":
         ctx.actions.write(outputs[target], "#include <asm-generic/%s>\n" % target.rsplit("/", 1)[-1])
-        return
+        return None
     codegen(ctx, target, directory, outputs, dependencies, files, source, config, setup, native, ancestry)
+    return None
 
 # These helpers register actions through the callback adapter, rather than BUILD macros.
 # buildifier: disable=unnamed-macro

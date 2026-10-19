@@ -434,7 +434,6 @@ def _link_descriptor(path, state):
     variables = dict(_context(".", state).variables)
     for name, val in {"objtree": ".", "srctree": "__source__", "srcroot": "__source__"}.items():
         variables[name] = {"value": val}
-    libs = make_words(_value("KBUILD_VMLINUX_LIBS", variables, state["sources"]))
     symdump = "Module.symvers" if state["modules"] else "vmlinux.symvers"
     modpost_outputs = [symdump, ".vmlinux.export.c"] + [p[:-3] + ".mod.c" for p in state["modules"]]
     modpost_deps = ["vmlinux.o", "scripts/mod/modpost"]
