@@ -9,9 +9,10 @@ second Kconfig solver or declared compiler-capability table.
 One generic Make/Python exporter, built with Bazel and pinned by host artifact
 integrity, exports source-only Kbuild syntax at repository time. Execution-time
 callbacks measure native compiler and host-library queries and register separate
-compiler, generator, archive, and linker actions. Dependency scans select the
-source and generated header inputs for each compiler action. Target product
-actions do not run Make. The BTF resolver uses a host libbpf archive and installed
+compiler, generator, archive, and linker actions. Each dependency scan is a
+separate compiler action with declared candidate source and generated Files.
+Its measured reads select the inputs for both scan reuse and compilation.
+Target product actions do not run Make. The BTF resolver uses a host libbpf archive and installed
 headers built together by its selected kernel source's native Make rules.
 
 ## Consumer interface
@@ -66,10 +67,11 @@ still regenerates that header from its unchanged template and runs its own check
 Use Bazelisk with the version in [`.bazelversion`](.bazelversion) and the registered
 Linux execution toolchain. The temporary
 [Bazel fork](https://github.com/tamird/bazel/releases/tag/10.0.0-fc612527c2)
-includes expanded action-template children in `aquery --skyframe_state`.
-Concrete child producers are required to qualify native compiler ancestry.
-The release includes source, binary hashes, and native Linux x86-64, Linux
-ARM64, and macOS ARM64 test provenance. Stock Bazel 9.3.0 omits these children.
+provides input discovery for execution-time action templates and includes their
+expanded child actions in `aquery --skyframe_state`. Both are required for
+per-object preprocessing reuse and its qualification. The release includes source,
+binary hashes, and native Linux x86-64, Linux ARM64, and macOS ARM64 test provenance.
+Stock Bazel 9.3.0 does not provide these interfaces.
 
 ```sh
 bazel test //native:config_tests //:action_built_config_test \
@@ -108,7 +110,20 @@ first invocation's compiler observations, which a repeated local cache hit may
 omit from its execution log. Both retain actual execution logs and producer
 dependencies. The qualification reporters authenticate native
 compiler inventory, split C object ancestry, integrated reference parity, and
-cross-configuration backend action identity. Reference objects are enabled by
+cross-configuration backend action identity. They also authenticate every
+preprocessing scan, including host helpers and integrated references, against
+the expanded action graph and compact execution log. Unchanged builds must
+execute no scans; source and header mutations must execute the affected scans
+without repeating unrelated preprocessing. These scan counts are retained
+alongside the native compiler-role denominator and backend reuse checks.
+
+Earlier batched-scan reports omitted preprocessing from their compiler-work
+accounting. Backend cache-hit evidence from those reports remains specific to
+backend actions; it does not establish total compiler-work isolation. The
+current qualification requires expanded child actions in the post-build
+`aquery --skyframe_state` capture as well as the scan inventory.
+
+Reference objects are enabled by
 `--//:validate_native_objects`, which also records the source-selected LZ4 and
 Make recipe-ordering checks and the two deferred compiler diagnostic controls.
 The manual `native_compiler_checks` and `native_compiler_checks_5_10` targets
