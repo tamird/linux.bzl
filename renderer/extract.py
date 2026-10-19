@@ -9,7 +9,7 @@ import programs as backend
 from export import native_events, parse_events
 from syntax import walk, relative
 from text_transforms import lower_text_transforms
-from compiler_queries import lower_compiler_queries
+from compiler_queries import lower_compiler_queries, lower_host_queries, lower_initramfs_inputs
 from shell_outputs import output_redirections
 from execution_paths import lower_execution_paths
 
@@ -340,6 +340,7 @@ def extract(tree, linux, make):
         for i, (node, _) in enumerate(secondary):
             node['secondary_expression'] = expressions['x' + str(i)]
     bodies = {relative(f['file'], linux): lower_execution_paths(lower_compiler_queries(lower_text_transforms(backend.lower_probes(lower_body(f['body'], make))))) for f in tree['files']}
+    bodies['usr/Makefile'] = lower_initramfs_inputs(bodies['usr/Makefile'])
     data = backend.initial_program(tree, linux, make)
     for key in ['commands', 'target_assignments']:
         data[key] = {name: body for name, body in data[key].items() if name in setup_files}
@@ -521,14 +522,6 @@ def extract(tree, linux, make):
                                     'program': backend.slice_program(build, {'sub_cmd_record_mcount'})}
     data['image_timestamp_header'] = bool(target_rules(bodies['init/Makefile'], {'include/generated/utsversion.h'}))
     data['image_utilities'] = [n for n in top_nodes if n.get('name') in {'AWK', 'PERL', 'PYTHON3', 'BASH', 'KGZIP', 'KBZIP2', 'KLZMA', 'LZOP', 'LZ4', 'XZ', 'ZSTD', 'LEX', 'YACC', 'CONFIG_SHELL'}]
-    def host_fallback(value):
-        if isinstance(value, list):
-            return [host_fallback(v) for v in value]
-        if isinstance(value, dict):
-            if value.get('op') == 'function' and value.get('name') == 'shell':
-                return dict(value, name='kbuild_host_shell')
-            return {k: host_fallback(v) for k, v in value.items()}
-        return value
     objtool = bodies['tools/objtool/Makefile']
     subcmd_rule = target_rules(objtool, {'$(LIBSUBCMD)'})
     subcmd_calls = [n['value_expression'] for n, _ in walk(subcmd_rule)
@@ -552,11 +545,11 @@ def extract(tree, linux, make):
     data['image_host_build'] = backend.slice_program(bodies['tools/objtool/Build'], {'objtool-y', 'CFLAGS', 'CFLAGS_*'}) + [n for n in bodies['tools/objtool/Build'] if n['kind'] == 'rule']
     child_inputs = backend.refs(data['image_host_build']) | backend.refs([
         body for path, body in bodies.items() if path.startswith('tools/objtool/arch/') and path.endswith('/Build')])
-    data['image_host_objtool'] = host_fallback(backend.slice_program(host_setup, {'CFLAGS', 'LIBSUBCMD', 'OBJTOOL', 'OBJTOOL_IN', 'LDFLAGS', 'OBJTOOL_LDFLAGS'} | backend.refs(call) | backend.refs(build_call) | backend.refs(data['image_host_subcmd_directories']) | child_inputs))
+    data['image_host_objtool'] = lower_host_queries(backend.slice_program(host_setup, {'CFLAGS', 'LIBSUBCMD', 'OBJTOOL', 'OBJTOOL_IN', 'LDFLAGS', 'OBJTOOL_LDFLAGS'} | backend.refs(call) | backend.refs(build_call) | backend.refs(data['image_host_subcmd_directories']) | child_inputs))
     data['image_host_objtool_final'] = [node['value_expression']
         for node, _ in walk(target_rules(objtool, {'$(OBJTOOL)'})) if node['kind'] == 'recipe']
     subcmd = bodies['tools/scripts/Makefile.include'] + bodies['tools/lib/subcmd/Makefile'] + bodies['tools/lib/subcmd/Build']
-    data['image_host_subcmd'] = host_fallback(backend.slice_program(subcmd, {'libsubcmd-y', 'CFLAGS', 'LIBFILE', 'SUBCMD_IN', 'RM'}))
+    data['image_host_subcmd'] = lower_host_queries(backend.slice_program(subcmd, {'libsubcmd-y', 'CFLAGS', 'LIBFILE', 'SUBCMD_IN', 'RM'}))
     data['image_host_subcmd_final'] = [node['value_expression']
         for node, _ in walk(target_rules(bodies['tools/lib/subcmd/Makefile'], {'$(LIBFILE)'})) if node['kind'] == 'recipe']
     if not data['image_host_objtool_final'] or not data['image_host_subcmd_final']:
@@ -571,7 +564,7 @@ def extract(tree, linux, make):
             data['image_host_btfids_subcmd_call'] = call
         case _:
             raise ValueError(f'Expected one native resolver subcmd invocation, got {subcmd_calls}')
-    data['image_host_btfids'] = host_fallback(backend.slice_program(btfids, {'CFLAGS', 'HOSTCFLAGS_resolve_btfids', 'HOST_OVERRIDES', 'LDFLAGS', 'KBUILD_HOSTLDFLAGS', 'EXTRA_LDFLAGS', 'SUBCMDOBJ'} | backend.refs(call)))
+    data['image_host_btfids'] = lower_host_queries(backend.slice_program(btfids, {'CFLAGS', 'HOSTCFLAGS_resolve_btfids', 'HOST_OVERRIDES', 'LDFLAGS', 'KBUILD_HOSTLDFLAGS', 'EXTRA_LDFLAGS', 'SUBCMDOBJ'} | backend.refs(call)))
     data['image_host_btfids_final'] = [node['value_expression'] for node, _ in walk(target_rules(bodies['tools/bpf/resolve_btfids/Makefile'], {'$(BINARY)'})) if node['kind'] == 'recipe']
     if not data['image_host_btfids_final']:
         raise ValueError('Native resolver final link recipe is missing')

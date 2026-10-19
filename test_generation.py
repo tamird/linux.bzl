@@ -1,11 +1,12 @@
 """Native syntax transport keeps conditions and compiler query context symbolic."""
 import argparse
+import copy
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from compiler_queries import lower_compiler_queries
+from compiler_queries import lower_compiler_queries, lower_initramfs_inputs
 from export import native_events, parse_events
 from programs import export_directives, lower_probes, slice_program
 from syntax import runtime_program
@@ -74,6 +75,29 @@ class SymbolicExportTest(unittest.TestCase):
             self.assertEqual(measured['condition'], dict(original['condition'], operands=[[dict(query, name='kbuild_host_shell')], []]))
             self.assertEqual(measured['body'], original['body'])
             self.assertEqual(lowered[1], body[1], 'Unrelated shell expansion changed owners')
+
+    def test_initramfs_input_lowering_preserves_native_expression_and_guards(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / 'Makefile'
+            fixture.write_text(
+                'ifdef CONFIG_BLK_DEV_INITRD\n'
+                'ramfs-input := $(strip $(shell echo $(CONFIG_INITRAMFS_SOURCE)))\n'
+                'ifeq ($(ramfs-input),)\n'
+                'ramfs-input := $(srctree)/$(src)/default_cpio_list\n'
+                'endif\n'
+                'endif\n'
+                'OTHER := $(shell echo $(CONFIG_INITRAMFS_SOURCE))\n')
+            body = lower_probes(parse_events(native_events([MAKE], [fixture], expressions=True))['files'][0]['body'])
+            expected = copy.deepcopy(body)
+            original = body[0]['branches'][0]['body'][0]
+            selected = expected[0]['branches'][0]['body'][0]
+            shell = selected['value_expression'][0]['arguments'][0][0]
+            self.assertEqual((shell['op'], shell['name'], shell['arguments']), ('function', 'shell', [[
+                dict(op='literal', value='echo '), dict(op='config', name='CONFIG_INITRAMFS_SOURCE')]]))
+            shell['name'] = 'kbuild_host_shell'
+            lowered = lower_initramfs_inputs(body)
+            self.assertEqual(lowered, expected)
+            self.assertEqual(original['value_expression'][0]['arguments'][0][0]['name'], 'shell')
 
     def test_export_slice_keeps_only_guards_with_exported_names(self):
         with tempfile.TemporaryDirectory() as temporary:

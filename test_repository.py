@@ -68,6 +68,20 @@ def main() -> None:
         assert 'CONFIG_' in encoded and 'SRCARCH' in encoded
         assert '.generation-' not in encoded and str(linux) not in encoded
         assert data['actions'], 'Native producer catalogue is empty'
+        native_initramfs = (linux / 'usr/Makefile').read_text().splitlines()
+        for view in ('image_programs', 'image_flag_programs'):
+            assignments = [node for node in nodes(program[view]['usr/Makefile'])
+                           if node['kind'] in ('assignment', 'define') and node.get('name') == 'ramfs-input']
+            assert assignments, view
+            for node in assignments:
+                assert node['file'] == 'usr/Makefile', node
+                assert node['value'] in native_initramfs[node['line'] - 1], node
+                expression = json.dumps(node['value_expression'])
+                assert '"name": "shell"' not in expression, node
+                if '$(shell ' in node['value']:
+                    assert '"name": "kbuild_host_shell"' in expression, node
+                    assert '"name": "strip"' in expression, node
+                    assert '"op": "config", "name": "CONFIG_INITRAMFS_SOURCE"' in expression, node
         original_link = (linux / 'scripts/link-vmlinux.sh').read_text()
         init_goal = 'need-builtin=1' if program['image_script_link'] else 'init/version-timestamp.o'
         init_call = '${MAKE} -f "${srctree}/scripts/Makefile.build" obj=init ' + init_goal

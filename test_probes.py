@@ -137,6 +137,29 @@ class ProbeTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'infrastructure failed: unsupported'):
                 probes(dict(previous=str(previous), requests={json.dumps(request): request}), root / 'answers', consumer_final=False)
 
+    def test_native_initramfs_input_shell_preserves_quoted_values(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = root / 'previous'
+            publish_answers(previous, dict(capabilities={}, history=[]))
+            for index, (configured, expected) in enumerate([
+                ('""', ''),
+                ('"archive.cpio"', 'archive.cpio'),
+                ('"first.list  second.list"', 'first.list  second.list'),
+            ]):
+                with self.subTest(configured=configured):
+                    request = self.request(kind='host-shell')
+                    request['command'] = 'echo ' + configured
+                    key = json.dumps(request)
+                    output = root / str(index)
+                    probes(dict(previous=str(previous), requests={key: request}), output, consumer_final=False)
+                    report = json.loads((output / 'report.json').read_text())
+                    self.assertEqual(report['capabilities'][key], expected)
+                    self.assertEqual(report['history'], [[dict(
+                        key=key, argv=[SHELL, '-c', request['command']], status=0,
+                        stdout=expected + '\n', stderr='',
+                    )]])
+
     def test_host_shell_resolves_native_output_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

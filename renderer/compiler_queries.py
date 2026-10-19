@@ -1,6 +1,30 @@
-"""Preserve compiler queries for the selected toolchain."""
+"""Preserve selected native queries for declared execution tools."""
 import json
 from text_transforms import compile_ere
+
+def lower_host_queries(value):
+    """Measure shell expressions in explicitly selected native query scopes."""
+    if isinstance(value, list):
+        return [lower_host_queries(v) for v in value]
+    if isinstance(value, dict):
+        if value.get('op') == 'function' and value.get('name') == 'shell':
+            return dict(value, name='kbuild_host_shell')
+        return {k: lower_host_queries(v) for k, v in value.items()}
+    return value
+
+
+def lower_initramfs_inputs(body):
+    """Retain native initramfs input normalization as a measured expression."""
+    result = []
+    for node in body:
+        if node['kind'] == 'conditional':
+            node = dict(node, branches=[dict(branch, body=lower_initramfs_inputs(branch['body']))
+                                       for branch in node['branches']])
+        elif node['kind'] in ('assignment', 'define') and node.get('name') == 'ramfs-input':
+            node = dict(node, value_expression=lower_host_queries(node['value_expression']))
+        result.append(node)
+    return result
+
 
 def lower_compiler_queries(value):
     if isinstance(value, list):
