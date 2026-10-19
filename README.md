@@ -10,7 +10,9 @@ One generic Make/Python exporter, built with Bazel and pinned by host artifact
 integrity, exports source-only Kbuild syntax at repository time. Execution-time
 callbacks measure native compiler and host-library queries and register separate
 compiler, generator, archive, and linker actions. Dependency scans select the
-source/header inputs for each compiler action. Product actions do not run Make.
+source and generated header inputs for each compiler action. Target product
+actions do not run Make. The BTF resolver uses a host libbpf archive and installed
+headers built together by its selected kernel source's native Make rules.
 
 ## Consumer interface
 
@@ -61,7 +63,13 @@ still regenerates that header from its unchanged template and runs its own check
 
 ## Build and test
 
-Use Bazel 9.3.0 and the registered Linux execution toolchain:
+Use Bazelisk with the version in [`.bazelversion`](.bazelversion) and the registered
+Linux execution toolchain. The temporary
+[Bazel fork](https://github.com/tamird/bazel/releases/tag/10.0.0-fc612527c2)
+includes expanded action-template children in `aquery --skyframe_state`.
+Concrete child producers are required to qualify native compiler ancestry.
+The release includes source, binary hashes, and native Linux x86-64, Linux
+ARM64, and macOS ARM64 test provenance. Stock Bazel 9.3.0 omits these children.
 
 ```sh
 bazel test //native:config_tests //:action_built_config_test \
@@ -91,9 +99,23 @@ not a bootstrap of LLVM itself.
 `//:kernel_acceptance_test` checks the existing minimal vmlinux, its ELF/entry
 symbols, and six ordered flag groups against native GNU Make. It uses the
 already-produced native configuration, without configuring the kernel again.
-`check_reuse.py` retains the baseline/unchanged/source-edit experiment using actual
-execution logs and producer dependencies. Expensive build/configuration targets
-are explicitly tagged `manual`.
+`check_reuse.py --family` runs base, unchanged, LZ4, debug, BTF, and the bounded
+`PANIC_TIMEOUT=37` control, then runs both object/diagnostic and reuse comparisons.
+The default mode runs the six source-mutation phases. Combine `--family` with
+`--source /path/to/linux/init/main.c` to capture base and unchanged once for both comparisons,
+before the remaining family configurations and source edits. This retains the
+first invocation's compiler observations, which a repeated local cache hit may
+omit from its execution log. Both retain actual execution logs and producer
+dependencies. The qualification reporters authenticate native
+compiler inventory, split C object ancestry, integrated reference parity, and
+cross-configuration backend action identity. Reference objects are enabled by
+`--//:validate_native_objects`, which also records the source-selected LZ4 and
+Make recipe-ordering checks and the two deferred compiler diagnostic controls.
+The manual `native_compiler_checks` and `native_compiler_checks_5_10` targets
+request only `lib/ctype.o` for focused execution of these controls. Production
+builds omit the validation actions. Example variants
+transition one build label so corresponding backend paths share an action owner.
+Expensive build/configuration targets are explicitly tagged `manual`.
 
 The native-config checkpoint is qualified. The migrated product path still needs
 runtime qualification. Complete boot/module support across all six source lines,
