@@ -27,9 +27,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tool', type=Path, required=True)
     parser.add_argument('--source-anchor', type=Path, required=True)
+    parser.add_argument('--make', type=Path, required=True)
     parser.add_argument('--strace', action='store_true', help='Require Linux exec tracing for the standalone tool')
     args = parser.parse_args()
     tool = args.tool.resolve()
+    make = args.make.resolve()
     assert_self_contained(tool)
     # The launcher ignores ambient Python/compiler settings and runs only its
     # embedded native syntax parser; Make evaluation and recipes are forbidden.
@@ -155,6 +157,43 @@ def main() -> None:
         result = subprocess.run([str(tool), '_make', '-f', str(fixture)], env=environment,
                                 capture_output=True, text=True)
         assert result.returncode != 0 and 'Only GNU Make syntax export' in result.stderr
+
+        # Exercise the actual parent's recursive producer under parallel Make.
+        # Its child owns both files; the parent must dispatch that child once
+        # and expose both inputs to rmpiggy.o, even if only relocs is missing.
+        realmode = Path(temporary) / 'arch/x86/realmode/rm'
+        realmode.mkdir(parents=True)
+        child = Path(temporary) / 'child.mk'
+        child.write_text(
+            'invoked := $(file >>invocations,child)\n'
+            '$(directory)/realmode.bin: $(directory)/realmode.relocs\n'
+            '\t$(file >$@,binary)\n'
+            '$(directory)/realmode.relocs:\n'
+            '\t$(file >$@,relocations)\n')
+        fixture.write_text(
+            'obj := arch/x86/realmode\n'
+            'build := directory\n'
+            f'MAKE := {make} -rR -f {child}\n'
+            f'include {linux}/arch/x86/realmode/Makefile\n'
+            '.PHONY: FORCE\nFORCE:\n'
+            '$(obj)/rmpiggy.o:\n\t$(file >$@,$^)\n')
+        for state in ['missing-both', 'missing-relocations']:
+            if state == 'missing-relocations':
+                (realmode / 'realmode.relocs').unlink()
+                (realmode.parent / 'rmpiggy.o').unlink()
+            invocations = Path(temporary) / 'invocations'
+            invocations.write_text('')
+            result = subprocess.run([str(make), '-rR', '-j8', '-f', str(fixture),
+                                     'arch/x86/realmode/rmpiggy.o'], cwd=temporary,
+                                    env={'PATH': '', 'SHELL': '/absent/shell'},
+                                    capture_output=True, text=True)
+            assert result.returncode == 0, (state, result.stdout, result.stderr)
+            assert invocations.read_text() == 'child\n', (state, invocations.read_text())
+            assert (realmode / 'realmode.bin').read_text() == 'binary\n'
+            assert (realmode / 'realmode.relocs').read_text() == 'relocations\n'
+            prerequisites = (realmode.parent / 'rmpiggy.o').read_text().split()
+            assert prerequisites == ['arch/x86/realmode/rm/realmode.bin',
+                                     'arch/x86/realmode/rm/realmode.relocs'], prerequisites
     print('PASS: declared Make, symbolic inputs, host helpers, and source/output guards')
 
 

@@ -88,6 +88,23 @@ def _plan(tctx, input_directories, output_directories, tools, additional_inputs,
     compilers["embedded.o"] = dict(kind = "assembly", source = assembly.path, object = assembled.path)
     inventory["embedded.o"] = dict(kind = "assembly", source = "embedded.S", source_file = assembly.path, directory = ".")
     artifacts["embedded.o"] = assembled.path
+
+    # The checked-in realmode wrapper reads two products of a native child.
+    # Its first binary can stay byte-identical when the relocation data changes.
+    relocations = ctx.actions.declare_file("direct.relocs")
+    binary = ctx.actions.declare_file("direct.bin")
+    direct = ctx.actions.declare_file("direct.o")
+    ctx.actions.run(executable = tools["python"], arguments = [tools["runner"].path, "copy", originals["embedded.txt"].path, relocations.path], inputs = [originals["embedded.txt"], tools["runner"], tools["executor"], tools["payload"]], outputs = [relocations])
+    ctx.actions.run(executable = tools["python"], arguments = [tools["emit"].path, binary.path, "fixed binary\n"], inputs = [tools["emit"], relocations], outputs = [binary])
+    generated = {"direct.bin": binary, "direct.relocs": relocations, "unused.h": header}
+    mapping = ctx.actions.declare_file("direct-inputs.json")
+    ctx.actions.write(mapping, json.encode({name: file.path for name, file in generated.items()}))
+    tree = ctx.actions.declare_directory("direct.headers")
+    ctx.actions.run(executable = tools["python"], arguments = [tools["materialize"].path, mapping.path, tree.path], inputs = [tools["materialize"], mapping] + generated.values(), outputs = [tree])
+    compile_action(ctx, "direct.o", "single", originals["direct.S"], direct, json.decode(additional_params["flags"]), tree, generated, depset([tools["source_root"], originals["direct.S"]]), struct(files = tools["compiler_files"], tools = {"CC": additional_params["cc"]}), "assembly", [originals["direct.S"], binary, relocations])
+    compilers["direct.o"] = dict(kind = "assembly", source = originals["direct.S"].path, object = direct.path)
+    inventory["direct.o"] = dict(kind = "assembly", source = "direct.S", source_file = originals["direct.S"].path, directory = ".")
+    artifacts["direct.o"] = direct.path
     manifest = ctx.actions.declare_file("kernel.json")
     ctx.actions.write(manifest, json.encode(dict(config = originals["main.c"].path, config_owner = tools["source_root"].path, setup = header.path, compilers = compilers, compiler_inventory = inventory, artifacts = artifacts, members = [])))
     write_schedule(tctx, tools["python"], tools["emit"], output_directories["schedule"], jobs, tools["python_files"])

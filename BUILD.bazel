@@ -332,9 +332,12 @@ filegroup(
         "$(location //native:exporter)",
         "--source-anchor",
         "$(location @%s//:Makefile)" % source,
+        "--make",
+        "$(location @make//:make)",
     ],
     data = [
         "//native:exporter",
+        "@make",
         "@%s//:Makefile" % source,
         "@%s//:sources" % source,
     ],
