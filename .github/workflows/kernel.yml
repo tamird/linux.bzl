@@ -110,7 +110,9 @@ jobs:
         with:
           bazelisk-cache: true
           disk-cache: autoconf-kernel
-          bazelrc: startup --host_jvm_args=-Xmx8g
+          bazelrc: |
+            startup --host_jvm_args=-Xmx8g
+            build --experimental_sandbox_async_tree_delete_idle_threads=0
           repository-cache: |
             - MODULE.bazel
             - MODULE.bazel.lock
@@ -219,6 +221,9 @@ jobs:
         # caches; setup time and service limits still affect available headroom.
         timeout-minutes: 330
         run: |
+          trap 'qualification_status=$?; df -h . "$RUNNER_TEMP" || :; df -i . "$RUNNER_TEMP" || :; exit "$qualification_status"' EXIT
+          df -h . "$RUNNER_TEMP"
+          df -i . "$RUNNER_TEMP"
           bazel test //... //native:config_tests //:action_built_config_test \
             //examples:x86_64_config_test //examples:aarch64_config_test \
             //examples:debug_config_test //examples:lz4_config_test //examples:btf_capability_test \
@@ -240,7 +245,6 @@ jobs:
             --bazel-option=--platforms=@llvm//platforms:linux_x86_64 \
             --bazel-option=--extra_execution_platforms=@llvm//platforms:linux_x86_64 \
             --bazel-option=--experimental_output_paths=strip \
-            --bazel-option=--experimental_sandbox_async_tree_delete_idle_threads=0 \
             --bazel-option=--jobs=4
 
       - name: Upload comparison reports
