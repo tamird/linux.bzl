@@ -1,5 +1,10 @@
 """Adapt the artifact-oriented kernel backend to action-template callbacks."""
 _ASCII = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+_HEX_BYTES = {
+    digits[(i + 32) // 16] + digits[(i + 32) % 16]: character
+    for digits in ["0123456789abcdef", "0123456789ABCDEF"]
+    for i, character in enumerate(_ASCII.elems())
+}
 
 def action_tools(tools):
     """Keep provider-owned runfiles on ordinary native actions."""
@@ -12,7 +17,7 @@ def read_payload(expanded):
         # Both publishers split at 180 hex characters, so each chunk ends
         # on a byte boundary. Keep the character list local to that chunk.
         encoded = chunk.split("=", 1)[1]
-        decoded.append("".join([_ASCII[int(encoded[i:i + 2], 16) - 32] for i in range(0, len(encoded), 2)]))
+        decoded.append("".join([_HEX_BYTES[encoded[i:i + 2]] for i in range(0, len(encoded), 2)]))
     return json.decode("".join(decoded))
 
 def writer(tctx, python, script, root, python_files):

@@ -42,6 +42,15 @@ def _payload_test(ctx):
     asserts.equals(env, chunks, runs[1]["outputs"])
     asserts.equals(env, value, read_payload(struct(children = files[::-1])))
 
+    # Both publishers emit printable ASCII JSON, including escapes for
+    # control characters. Hexadecimal letter case does not change a byte.
+    files.clear()
+    runs.clear()
+    value = [" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~", "\n\r\t", [], {}]
+    write_payload(struct(declare_file = declare_file, run = run), "python", struct(path = "emit"), struct(path = "payload"), value, depset())
+    asserts.equals(env, value, read_payload(struct(children = files[::-1])))
+    asserts.equals(env, value, read_payload(struct(children = [struct(basename = file.basename.upper()) for file in files[::-1]])))
+
     # Unequal input lists share strings without losing order or duplicates.
     jobs = [
         dict(inputs = ["source.c", "generated.h", "source.c"], outputs = ["object.o"], scan = {"generated": {"header.h": "generated.h"}}, compiler = {"phase": "single"}),
