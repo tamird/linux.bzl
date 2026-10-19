@@ -3,6 +3,7 @@
 load("@bazel_skylib//lib:unittest.bzl", "asserts", "unittest")
 load("//rules:expressions.bzl", "evaluate", "program")
 load("//rules:host_tools.bzl", "resolve_subcmd_archive", "target_exports")
+load("//rules:image.bzl", "rule_prerequisites")
 
 def _literal(value):
     return [dict(op = "literal", value = value)]
@@ -15,6 +16,25 @@ def _probe():
 
 def _context_test(ctx):
     env = unittest.begin(ctx)
+
+    # GNU Make's first prerequisite expansion freezes ordinary operands;
+    # escaped references are evaluated later in the selected target scope.
+    first = [dict(op = "reference", name = _literal("FIRST"))]
+    secondary = program([
+        _assignment("FIRST", _literal("original.c")),
+        dict(
+            kind = "rule",
+            targets_expression = _literal("%.o"),
+            tail_expression = first + _literal(" $(objtool_dep) $@"),
+            separator = ":",
+            secondary_inputs = {"__first": first},
+            secondary_expression = [dict(op = "reference", name = _literal("__first"))] + _literal(" ") + [dict(op = "reference", name = _literal("objtool_dep"))] + _literal(" ") + [dict(op = "reference", name = _literal("@"))],
+        ),
+        _assignment("FIRST", _literal("changed.c")),
+        _assignment("objtool_dep", _literal("tools/objtool/objtool")),
+    ], {}, {}, cells = True)
+    asserts.equals(env, "original.c tools/objtool/objtool lib/ctype.o", rule_prerequisites(secondary.rules[0], "lib/ctype.o", "lib/ctype", secondary.variables, {}))
+    asserts.equals(env, "plain.h", rule_prerequisites({"prerequisites": "plain.h"}, "lib/ctype.o", "lib/ctype", {}, {}))
     requests = {}
     sources = {"__requests__": requests, "__probe_environment__": {"SELECTED": "yes"}}
     initial = {"__command_line__": {"CC": "compiler"}, "CC": "compiler", "KBUILD_CPPFLAGS": "-D__KERNEL__", "KBUILD_CFLAGS": "", "objtree": ".", "srctree": "source"}

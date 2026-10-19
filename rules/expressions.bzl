@@ -512,6 +512,11 @@ def program(statements, initial, sources, cells = False):
                 "recipe": False,
                 "implicit": node.get("implicit", False),
             }
+            if "secondary_expression" in node:
+                current.update(
+                    secondary_expression = node["secondary_expression"],
+                    secondary_inputs = {name: {"value": evaluate(expression, variables, sources)} for name, expression in node["secondary_inputs"].items()},
+                )
             rules.append(current)
         elif kind == "recipe" and current != None:
             current["recipe"] = True

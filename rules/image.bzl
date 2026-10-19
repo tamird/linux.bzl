@@ -227,7 +227,7 @@ def _target_scope(path, directory, state):
                         descendants["__exports__"] = variables["__exports__"]
     return struct(variables = variables, inherited = inherited, descendants = descendants)
 
-def _prerequisites(rule, path, stem, variables, sources):
+def rule_prerequisites(rule, path, stem, variables, sources):
     if "secondary_expression" not in rule:
         return rule["prerequisites"]
     scope = dict(variables)
@@ -245,7 +245,7 @@ def _local_recipe(path, directory, state):
             stem = match(_normalize(pattern), path)
             if stem == None or not _valid_rule(rule, stem, context, state):
                 continue
-            tail = _prerequisites(rule, path, stem, scope.variables, state["sources"]).split(";", 1)[0]
+            tail = rule_prerequisites(rule, path, stem, scope.variables, state["sources"]).split(";", 1)[0]
             if ":" in tail:
                 target_pattern, tail = tail.split(":", 1)
                 stem = match(_normalize(target_pattern.strip()), path)
@@ -264,7 +264,7 @@ def _local_recipe(path, directory, state):
                         continue
                     function = evaluate(term["arguments"][0], context.variables, state["sources"]).strip()
                     if function in ("if_changed", "if_changed_dep", "if_changed_rule", "if_changed_except", "cmd", "filechk"):
-                        tail = _prerequisites(rule, path, stem, scope.variables, state["sources"]).split(";", 1)[0]
+                        tail = rule_prerequisites(rule, path, stem, scope.variables, state["sources"]).split(";", 1)[0]
                         if ":" in tail:
                             target_pattern, tail = tail.split(":", 1)
                             stem = match(_normalize(target_pattern.strip()), path)
@@ -809,7 +809,7 @@ def _describe(path, state, owner = None):
             has_recipe = has_recipe or rule["recipe"]
             if rule["grouped"]:
                 outs = [_normalize(p.replace("%", stem, 1)) for p in rule["targets"]]
-            tail = _prerequisites(rule, path, stem, _target_scope(path, directory, state).variables, state["sources"]).split(";", 1)[0]
+            tail = rule_prerequisites(rule, path, stem, _target_scope(path, directory, state).variables, state["sources"]).split(";", 1)[0]
             if ":" in tail:
                 target_pattern, tail = tail.split(":", 1)
                 stem = match(_normalize(target_pattern.strip()), path)
