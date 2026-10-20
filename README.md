@@ -72,7 +72,9 @@ templates and includes their expanded child actions in action graph exports.
 These interfaces support per-object preprocessing reuse, metadata generation,
 and their qualification. The release includes source,
 binary hashes, and native Linux x86-64, Linux ARM64, and macOS ARM64 test provenance.
-The fork also repairs modified inputs during in-memory sandbox reuse.
+The fork also repairs modified inputs during in-memory sandbox reuse. The
+qualification workflow enables in-memory stashes with synchronous stash updates
+and deletion.
 Stock Bazel 9.3.0 does not provide these interfaces.
 
 ```sh
