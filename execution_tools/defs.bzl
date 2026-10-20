@@ -17,6 +17,8 @@ def _alias(ctx, name, executable, commands, files, arguments = None):
 
 def _impl(ctx):
     commands, files, tools, transitive = {}, [], [], []
+    writer_tools = {}
+    shell_files = []
     for target, names in ctx.attr.commands.items():
         info = target[DefaultInfo]
         executable = info.files_to_run.executable
@@ -35,6 +37,10 @@ def _impl(ctx):
             ctx.actions.symlink(output = alias, target_file = executable, is_executable = True)
             commands[name] = alias
             files.append(alias)
+            if name == "sh":
+                shell_files = [info.files, info.default_runfiles.files]
+                if info.files_to_run.executable != None:
+                    writer_tools["writer_tool_shell"] = info.files_to_run
     coreutils = ctx.toolchains["@bazel_lib//lib:coreutils_toolchain_type"].coreutils_info.bin
     files.append(coreutils)
     for name in ctx.attr.coreutils:
@@ -44,6 +50,15 @@ def _impl(ctx):
         ctx.actions.symlink(output = alias, target_file = coreutils, is_executable = True)
         commands[name] = alias
         files.append(alias)
+
+    # Literal metadata needs only the declared shell and mkdir/touch. Retain
+    # the shell provider's complete closure without the Python/native tools.
+    writer_tools.update(
+        writer_shell = commands["sh"],
+        writer_mkdir = commands["mkdir"],
+        writer_touch = commands["touch"],
+        writer_files = depset([commands["sh"], commands["mkdir"], commands["touch"], coreutils], transitive = shell_files),
+    )
     runtime_commands, runtime_files = dict(commands), list(files)
     runtime_tools, runtime_transitive = list(tools), list(transitive)
     environment, path_environment = {}, {}
@@ -119,6 +134,7 @@ def _impl(ctx):
         shell = commands["sh"],
         python = runtime.interpreter,
         python_files = python_files,
+        writer_tools = writer_tools,
         environment = {},
         path_environment = {},
         bootstrap_commands = bootstrap_commands,
@@ -150,4 +166,67 @@ kernel_execution_tools = rule(
         "@rules_bison//bison:toolchain_type",
         "@rules_flex//flex:toolchain_type",
     ],
+)
+
+def _check_impl(ctx):
+    execution = ctx.toolchains[EXECUTION_TOOLS_TYPE].execution
+    payload = ctx.actions.declare_file(ctx.label.name + ".payload")
+    modern = ctx.actions.declare_file(ctx.label.name + ".lz4.decoded")
+    legacy = ctx.actions.declare_file(ctx.label.name + ".lz4c.decoded")
+    report = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(payload, "declared LZ4 input\nsecond line\n")
+    ctx.actions.run(
+        executable = execution.shell,
+        arguments = [
+            "-e",
+            "-u",
+            "-o",
+            "pipefail",
+            "-c",
+            '''export KBUILD_EXEC_ROOT="$PWD"
+export PATH="$PWD/%s"
+(cd "$PATH"; "$KBUILD_EXEC_ROOT/$5" -B -c 'import encodings, json, pathlib, subprocess')
+test "$(printf abc | sha1sum)" = 'a9993e364706816aba3e25717850c26c9cd0d89d  -'
+cat "$1" | lz4 -l -9 - - | lz4 -dc > "$2"
+cmp "$1" "$2"
+cat "$1" | lz4c -l -c1 stdin stdout | lz4 -dc > "$3"
+cmp "$1" "$3"
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+(
+    cd "$scratch"
+    mkdir -p tree/nested
+    printf 'nested file\\n' > tree/nested/file
+    chmod 750 tree
+    chmod 700 tree/nested
+    chmod 640 tree/nested/file
+    owner=$(stat -c '%%u %%g' tree)
+    printf 'tree 750 %%s\\ntree/nested 700 %%s\\ntree/nested/file 640 %%s\\n' "$owner" "$owner" "$owner" > expected
+    find tree -printf '%%p %%m %%U %%G\\n' | LC_ALL=C sort > actual
+    cmp expected actual
+    touch -d @1 tree tree/nested tree/nested/file
+    mtime=$(find tree -printf '%%T@\\n' | sort -r | head -n 1)
+    test "${mtime%%%%.*}" = 1
+)
+printf 'PASS: declared Python runtime and native sha1sum/find/lz4/lz4c command forms\\n' > "$4"
+''' % execution.bin_dir,
+            "execution-tools-check",
+            payload.path,
+            modern.path,
+            legacy.path,
+            report.path,
+            execution.commands["python3"].path,
+        ],
+        inputs = depset([payload], transitive = [execution.build_files]),
+        tools = execution.build_tools,
+        outputs = [modern, legacy, report],
+        env = {"LC_ALL": "C", "LANG": "C", "TZ": "UTC"},
+        use_default_shell_env = False,
+        mnemonic = "KernelExecutionToolsCheck",
+    )
+    return [DefaultInfo(files = depset([report]))]
+
+kernel_execution_tools_check = rule(
+    implementation = _check_impl,
+    toolchains = [EXECUTION_TOOLS_TYPE],
 )
