@@ -1,0 +1,22 @@
+load("@rules_python//python:defs.bzl", "py_test")
+
+py_test(
+    name = "diagnostic_test",
+    srcs = ["diagnostic_test.py"],
+    args = [
+        "$(location @llvm//tools:clang)",
+        "$(location attribute.bc)",
+        "$(location report.json)",
+        "$(location minimal.c)",
+        "$(location dontcall-ir.ll)",
+    ],
+    data = [
+        "attribute.bc",
+        "report.json",
+        "minimal.c",
+        "dontcall-ir.ll",
+        "@llvm//tools:clang",
+        "@llvm//:builtin_resource_dir",
+    ],
+    tags = ["manual"],
+)

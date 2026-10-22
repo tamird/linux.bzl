@@ -1,0 +1,70 @@
+name: Native compiler packages
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compiler-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compiler:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: linux_x86_64
+            runner: ubuntu-24.04
+            bazel_sha256: b26de3a188b2f2e2fb333d1ab7697ca385f2d1c785d80e07203014c5d254cc33
+          - host: linux_aarch64
+            runner: ubuntu-24.04-arm
+            bazel_sha256: e60b516ed45df5e472b52bbc4df837fb20132076c4e57997e3390f1c9a7e74a9
+          - host: macos_aarch64
+            runner: macos-15
+            bazel_sha256: d63ba87b46893dd7b5d0f22d92bc5020f76f0c11c73149928189251b00ff1c69
+          - host: macos_x86_64
+            runner: macos-15-intel
+            bazel_sha256: 8073fb3a7eb15a1b42216ca6cc7769ed58ba9db6e6c0941b7df7c5efb89b60d7
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      BAZELISK_VERIFY_SHA256: ${{ matrix.bazel_sha256 }}
+      COMPILER_HOST: ${{ matrix.host }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: compiler-${{ matrix.host }}
+          bazelrc: |
+            startup --host_jvm_args=-Xmx8g
+          repository-cache: |
+            - MODULE.bazel
+            - MODULE.bazel.lock
+      - name: Exercise the selected native compiler package
+        run: |
+          bazel test //native:compiler //tests/btf_diagnostic:diagnostic_test \
+            --platforms="@llvm//platforms:$COMPILER_HOST" \
+            --extra_execution_platforms="@llvm//platforms:$COMPILER_HOST" \
+            --jobs=4 --test_output=errors --nocache_test_results --test_arg="$COMPILER_HOST" \
+            --profile="$RUNNER_TEMP/compiler.profile.gz" \
+            --execution_log_compact_file="$RUNNER_TEMP/compiler.execution.compact"
+      - name: Retain native compiler evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: compiler-${{ matrix.host }}
+          path: |
+            ${{ runner.temp }}/compiler.profile.gz
+            ${{ runner.temp }}/compiler.execution.compact
+            bazel-testlogs/tests/btf_diagnostic/diagnostic_test/test.log
+            bazel-testlogs/tests/btf_diagnostic/diagnostic_test/test.xml
+            bazel-testlogs/tests/btf_diagnostic/diagnostic_test/test.outputs/**
+          if-no-files-found: error
+          retention-days: 7
