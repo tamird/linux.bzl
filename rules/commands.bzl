@@ -244,14 +244,12 @@ def compile_action(ctx, target, phase, source_file, output, flags, tree, depende
     execution = execution_tools(ctx)
     arguments = flags + (["-c"] if not any([flag in flags for flag in ["-S", "-E"]]) else []) + [source_file.path, "-o", output.path]
 
-    # Native inline assembly consumes build-root-relative .incbin paths. The
-    # integrated and frontend invocations share this exact working namespace.
+    # The scheduler constructs this header namespace in execute.py's private
+    # working directory. Keep native build-root-relative .incbin paths there;
+    # the executor owns its lifetime and the compiler only reads its aliases.
     command = """set -eu
 exec_root="$PWD"
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-cp -a %s/. "$work/"
-cd "$work"
+cd %s
 %s
 %s "$@"
 """ % (shell_quote(tree.path), _stage_links(files.to_list() + setup.files.to_list()), '"$exec_root/"' + shell_quote(setup.tools["CC"]))
