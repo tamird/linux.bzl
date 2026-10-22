@@ -63,7 +63,7 @@ def _tool_impl(ctx):
     os = {"linux": "linux", "mac os x": "macos"}.get(ctx.os.name.lower())
     cpu = {"amd64": "x86_64", "x86_64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}.get(ctx.os.arch)
     platform = str(os) + "_" + str(cpu)
-    if platform not in ["linux_x86_64", "macos_aarch64"]:
+    if platform not in ["linux_aarch64", "linux_x86_64", "macos_aarch64", "macos_x86_64"]:
         fail("Unsupported exporter host: %s/%s" % (ctx.os.name, ctx.os.arch))
     artifact = manifest["platforms"].get(platform)
     if type(artifact) != "dict" or not artifact.get("url") or not artifact.get("integrity"):

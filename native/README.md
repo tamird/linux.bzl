@@ -25,8 +25,8 @@ patches are distributed separately and must remain paired with their intended
 source versions.
 
 `bootstrap.bzl`, `repositories.bzl`, `../build.py` and `../launcher.c` package one
-source-independent Make/Python tool. Supported artifacts are a static Linux
-x86-64 ELF and a macOS ARM64 executable whose embedded ZIP is inside its signed
+source-independent Make/Python tool for x86-64 and ARM64 hosts. Linux artifacts
+are static ELF executables; macOS artifacts embed their ZIP inside the signed
 Mach-O image. Python, Make, their native objects, standard library and licenses
 are declared inputs. The launcher isolates Python and permits only Make syntax
 export; it cannot evaluate a kernel configuration or execute a Make recipe.

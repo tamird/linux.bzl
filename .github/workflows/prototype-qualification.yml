@@ -6,7 +6,7 @@ on:
       scope:
         description: Validation scope
         type: choice
-        options: [native-config, syntax, native-tools, full]
+        options: [native-config, syntax, native-tools, full, exporter]
         default: native-config
 
 permissions:
@@ -18,6 +18,10 @@ concurrency:
 
 jobs:
   qualification:
+    if: ${{ inputs.scope != 'exporter' }}
     uses: ./.github/workflows/kernel.yml
     with:
       scope: ${{ inputs.scope }}
+  exporter:
+    if: ${{ inputs.scope == 'exporter' }}
+    uses: ./.github/workflows/exporter.yml

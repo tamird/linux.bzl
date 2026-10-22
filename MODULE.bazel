@@ -98,6 +98,7 @@ register_toolchains(
     "@llvm//toolchain:all",
     "//execution_tools:linux_x86_64",
     "//native:static_musl_tests",
+    "//native:static_musl_aarch64_tests",
     dev_dependency = True,
 )
 
@@ -201,6 +202,18 @@ python_runtime(
     name = "bootstrap_python_macos",
     dev_dependency = True,
     platform = "macos_aarch64",
+)
+
+python_runtime(
+    name = "bootstrap_python_linux_aarch64",
+    dev_dependency = True,
+    platform = "linux_aarch64_musl",
+)
+
+python_runtime(
+    name = "bootstrap_python_macos_x86_64",
+    dev_dependency = True,
+    platform = "macos_x86_64",
 )
 
 kernel_syntax_tool = use_repo_rule("//:repository.bzl", "kernel_syntax_tool")

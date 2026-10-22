@@ -37,9 +37,9 @@ A build also takes `syntax = "@source_syntax//:program"`. Create that repository
 with `kernel_syntax_repository(source = "@raw_source//:Makefile", tool =
 "@exporter//:kbuild-exporter")` from `//:repository.bzl`; use
 `kernel_syntax_tool(manifest = "//:exporter.json")` to download the generic host
-tool. Manifest format 1 maps `platforms` keys `linux_x86_64` and
-`macos_aarch64` to pinned `url` and `integrity` entries. The build rejects a
-syntax anchor that differs from its native configuration source.
+tool. Manifest format 1 maps `platforms` keys `linux_aarch64`, `linux_x86_64`,
+`macos_aarch64`, and `macos_x86_64` to pinned `url` and `integrity` entries. The
+build rejects a syntax anchor that differs from its native configuration source.
 
 Only kernel builds depend on that syntax target. Raw sources and configurations
 remain independent, so configuration-only requests do not fetch or run the
@@ -82,7 +82,8 @@ bazel test //native:config_tests //:action_built_config_test \
   --platforms=@llvm//platforms:linux_x86_64 \
   --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
   --extra_toolchains=//:driver_toolchain --test_output=errors
-# Bootstrap one generic host tool (use macos_aarch64 on a Mac host).
+# Bootstrap one generic host tool; select the matching host CPU and OS.
+# Linux uses linux_{aarch64,x86_64}_musl; macOS uses macos_{aarch64,x86_64}.
 bazel test //native:exporter_archive //:repository_test //:generation_test \
   --platforms=@llvm//platforms:linux_x86_64_musl \
   --extra_execution_platforms=@llvm//platforms:linux_x86_64

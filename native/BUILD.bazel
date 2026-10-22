@@ -22,6 +22,7 @@ exports_files(glob([
 make_ast(
     name = "make_ast",
     glob_inputs = select({
+        ":linux_aarch64_musl": ["@make//:gnu_glob_inputs"],
         ":linux_x86_64_musl": ["@make//:gnu_glob_inputs"],
         "//conditions:default": [],
     }),
@@ -232,6 +233,15 @@ test_suite(
 )
 
 config_setting(
+    name = "linux_aarch64_musl",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:aarch64",
+        "@llvm//constraints/libc:musl",
+    ],
+)
+
+config_setting(
     name = "linux_x86_64_musl",
     constraint_values = [
         "@platforms//os:linux",
@@ -248,6 +258,14 @@ config_setting(
     ],
 )
 
+config_setting(
+    name = "macos_x86_64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
 make_parser(
     name = "make_parser",
     tags = ["manual"],
@@ -256,8 +274,10 @@ make_parser(
 syntax_exporter(
     name = "exporter",
     license_files = ["@make_ast_sources//:COPYING"] + select({
+        ":linux_aarch64_musl": ["@bootstrap_python_linux_aarch64//:licenses"],
         ":linux_x86_64_musl": ["@bootstrap_python//:licenses"],
         ":macos_aarch64": ["@bootstrap_python_macos//:licenses"],
+        ":macos_x86_64": ["@bootstrap_python_macos_x86_64//:licenses"],
     }),
     make = ":make_parser",
     python = python_input("runtime"),
@@ -273,18 +293,24 @@ syntax_exporter_archive(
     tags = ["manual"],
 )
 
-# The static-musl artifact executes on the ordinary Linux x86-64 CI host.
-toolchain(
-    name = "static_musl_tests",
-    exec_compatible_with = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-    ],
-    target_compatible_with = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-        "@llvm//constraints/libc:musl",
-    ],
-    toolchain = "@bazel_tools//tools/test:empty_toolchain",
-    toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
-)
+# Static-musl artifacts execute on the ordinary Linux host of the same CPU.
+[
+    toolchain(
+        name = name,
+        exec_compatible_with = [
+            "@platforms//os:linux",
+            "@platforms//cpu:" + cpu,
+        ],
+        target_compatible_with = [
+            "@platforms//os:linux",
+            "@platforms//cpu:" + cpu,
+            "@llvm//constraints/libc:musl",
+        ],
+        toolchain = "@bazel_tools//tools/test:empty_toolchain",
+        toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
+    )
+    for name, cpu in [
+        ("static_musl_tests", "x86_64"),
+        ("static_musl_aarch64_tests", "aarch64"),
+    ]
+]

@@ -1,6 +1,16 @@
 """Pinned embedded Python inputs for the generic syntax exporter."""
 
 _PYTHON_RUNTIMES = {
+    "linux_aarch64_musl": struct(
+        # The archive's Python executable is dynamic; the exporter relinks its
+        # native objects with the selected static-musl toolchain.
+        archive = "aarch64-unknown-linux-musl-noopt",
+        sha256 = "34814a93d830a56668a48c2f51e9c75d8917074d9059b252348c9f389e2faebc",
+        target = "aarch64-unknown-linux-musl",
+        format = "elf",
+        crt = ["musl-dynamic", "musl-version:1.2.2"],
+        constraints = ["@platforms//os:linux", "@platforms//cpu:aarch64", "@llvm//constraints/libc:musl"],
+    ),
     "linux_x86_64_musl": struct(
         archive = "x86_64-unknown-linux-musl-noopt%2Bstatic",
         sha256 = "4523333b3f83997216fe873cdb69b1e183a58cd66da4fe2cfdf22a4f257e61af",
@@ -18,6 +28,14 @@ _PYTHON_RUNTIMES = {
         format = "mach-o",
         crt = ["libSystem"],
         constraints = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+    ),
+    "macos_x86_64": struct(
+        archive = "x86_64-apple-darwin-debug",
+        sha256 = "2fcb11ca3fe26a6481fb63855d37f64a68d37fe3cf420b5a5401541c8635dbab",
+        target = "x86_64-apple-darwin",
+        format = "mach-o",
+        crt = ["libSystem"],
+        constraints = ["@platforms//os:macos", "@platforms//cpu:x86_64"],
     ),
 }
 

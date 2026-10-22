@@ -109,6 +109,8 @@ def _exporter_impl(ctx):
         # final link would invalidate the executable's code-signing envelope.
         user_link_flags = [
             "-Wl,-sectcreate,__TEXT,__pythonzip," + payload.path,
+            # ARM64 defaults to signing; require the same envelope on x86-64.
+            "-Wl,-adhoc_codesign",
             # The C++ toolchain adds Foundation and libc++; this C executable
             # must retain only libraries referenced by the embedded runtime.
             "-Wl,-dead_strip_dylibs",
@@ -121,12 +123,13 @@ def _exporter_impl(ctx):
         "binary": linked.executable.path,
         "output": output.path,
         "payload": payload.path,
+        "python_metadata": ctx.file.python_metadata.path,
     }))
     ctx.actions.run(
         executable = ctx.executable._builder,
         arguments = ["bundle", specification.path],
         env = ctx.attr._builder[RunEnvironmentInfo].environment,
-        inputs = [specification, linked.executable, payload],
+        inputs = [specification, linked.executable, payload, ctx.file.python_metadata],
         tools = [ctx.attr._builder[DefaultInfo].files_to_run],
         outputs = [output],
         mnemonic = "BundleKernelRepository",
@@ -182,6 +185,8 @@ syntax_exporter_archive = rule(
 
 def python_input(name):
     return select({
+        Label("//native:linux_aarch64_musl"): "@bootstrap_python_linux_aarch64//:" + name,
         Label("//native:linux_x86_64_musl"): "@bootstrap_python//:" + name,
         Label("//native:macos_aarch64"): "@bootstrap_python_macos//:" + name,
-    }, no_match_error = "Exporter builds require Linux x86_64 musl or macOS aarch64")
+        Label("//native:macos_x86_64"): "@bootstrap_python_macos_x86_64//:" + name,
+    }, no_match_error = "Exporter builds require Linux musl or macOS on aarch64 or x86_64")

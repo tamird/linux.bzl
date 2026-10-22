@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -32,7 +33,10 @@ def main() -> None:
     args = parser.parse_args()
     tool = args.tool.resolve()
     make = args.make.resolve()
-    assert_self_contained(tool)
+    architecture = platform.machine()
+    if architecture == 'arm64':
+        architecture = 'aarch64'
+    assert_self_contained(tool, architecture)
     # The launcher ignores ambient Python/compiler settings and runs only its
     # embedded native syntax parser; Make evaluation and recipes are forbidden.
     environment = {'PATH': '', 'CC': '/absent/cc', 'MAKEFLAGS': '--invalid',

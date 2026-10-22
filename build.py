@@ -37,6 +37,7 @@ class BundleSpec(TypedDict):
     binary: str
     output: str
     payload: str
+    python_metadata: str
 
 
 class ArchiveSpec(TypedDict):
@@ -65,14 +66,18 @@ def namespace(spec: NamespaceSpec) -> None:
             subprocess.run([spec['objcopy'], '--redefine-syms=' + stream.name, source, output], check=True)
 
 
-def assert_self_contained(binary: Path) -> Literal['elf', 'mach-o']:
+def assert_self_contained(binary: Path, architecture: str) -> Literal['elf', 'mach-o']:
     """Reject external runtimes, allowing only the macOS system libraries."""
+    machines = {'x86_64': (62, 0x01000007), 'aarch64': (183, 0x0100000c)}
+    if architecture not in machines:
+        raise ValueError(f'Unsupported generator architecture: {architecture}')
+    elf_machine, macho_cpu = machines[architecture]
     with binary.open('rb') as stream:
         header = stream.read(64)
         if header[:4] == b'\xcf\xfa\xed\xfe':
             _, cpu, _, kind, count, command_size, _, _ = struct.unpack('<8I', header[:32])
-            if cpu != 0x0100000c or kind != 2:
-                raise ValueError('Generator must be an ARM64 Mach-O executable')
+            if cpu != macho_cpu or kind != 2:
+                raise ValueError(f'Generator must be an {architecture} Mach-O executable')
             stream.seek(32)
             end = 32 + command_size
             libraries = set()
@@ -99,6 +104,8 @@ def assert_self_contained(binary: Path) -> Literal['elf', 'mach-o']:
             return 'mach-o'
         if header[:6] != b'\x7fELF\x02\x01':
             raise ValueError('Generator must be a supported ELF or Mach-O executable')
+        if struct.unpack_from('<H', header, 18)[0] != elf_machine:
+            raise ValueError(f'Generator must be an {architecture} ELF executable')
         program_offset = struct.unpack_from('<Q', header, 32)[0]
         entry_size, count = struct.unpack_from('<HH', header, 54)
         for index in range(count):
@@ -136,7 +143,9 @@ def payload(spec: PayloadSpec) -> None:
 
 def bundle(spec: BundleSpec) -> None:
     source, output = Path(spec['binary']), Path(spec['output'])
-    binary_format = assert_self_contained(source)
+    metadata = json.loads(Path(spec['python_metadata']).read_text())
+    architecture = metadata['target_triple'].split('-', 1)[0]
+    binary_format = assert_self_contained(source, architecture)
     shutil.copyfile(source, output)
     if binary_format == 'elf':
         with output.open('ab') as destination, Path(spec['payload']).open('rb') as archive:
