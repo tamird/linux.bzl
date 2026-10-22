@@ -231,7 +231,7 @@ jobs:
               --override_repository=kbuild_exporter="$KBUILD_EXPORTER" \
               --platforms=@llvm//platforms:linux_x86_64 \
               --extra_execution_platforms=@llvm//platforms:linux_x86_64 \
-              --extra_toolchains=//:driver_toolchain --jobs=4 --test_output=errors --keep_going
+              --extra_toolchains=//:driver_toolchain --config=remote --test_output=errors --keep_going
             qualification_phase initial-tests completed
 
             qualification_phase native-acceptance started
@@ -239,7 +239,7 @@ jobs:
               --override_repository=linux_source="$GITHUB_WORKSPACE/_tmp/linux" \
               --override_repository=kbuild_exporter="$KBUILD_EXPORTER" \
               --platforms=@llvm//platforms:linux_x86_64 \
-              --extra_execution_platforms=@llvm//platforms:linux_x86_64 --jobs=4 --test_output=errors
+              --extra_execution_platforms=@llvm//platforms:linux_x86_64 --config=remote --test_output=errors
             qualification_phase native-acceptance completed
 
             qualification_phase family-and-mutations started
@@ -249,7 +249,7 @@ jobs:
               --bazel-option=--platforms=@llvm//platforms:linux_x86_64 \
               --bazel-option=--extra_execution_platforms=@llvm//platforms:linux_x86_64 \
               --bazel-option=--experimental_output_paths=strip \
-              --bazel-option=--jobs=4
+              --bazel-option=--config=remote
             qualification_phase family-and-mutations completed
           } 2>&1 | tee "$RUNNER_TEMP/qualification.log"
 
