@@ -19,6 +19,7 @@ bool_flag(
 
 exports_files([
     "MODULE.bazel",
+    "llvm_toolchain_index.json",
     "test_config_values.py",
     "probe_runtime.py",
     "payload.py",
