@@ -9,7 +9,7 @@ on:
       scope:
         description: Validation scope
         type: choice
-        options: [full, native-config, syntax, native-tools]
+        options: [full, native-config, syntax, native-tools, planner-diagnostic]
         default: full
   workflow_call:
     inputs:
@@ -86,12 +86,12 @@ jobs:
           VALIDATION_SCOPE: ${{ inputs.scope || 'full' }}
         run: |
           case "$VALIDATION_SCOPE" in
-            full|syntax|native-tools) ;;
+            full|syntax|native-tools|planner-diagnostic) ;;
             *) echo "Unknown validation scope: $VALIDATION_SCOPE" >&2; exit 1 ;;
           esac
 
       - name: Checkout pinned Linux source
-        if: ${{ (inputs.scope || 'full') == 'full' }}
+        if: ${{ (inputs.scope || 'full') == 'full' || inputs.scope == 'planner-diagnostic' }}
         uses: actions/checkout@v5
         with:
           repository: torvalds/linux
@@ -100,7 +100,7 @@ jobs:
           persist-credentials: false
 
       - name: Expose the editable source through the declared source interface
-        if: ${{ (inputs.scope || 'full') == 'full' }}
+        if: ${{ (inputs.scope || 'full') == 'full' || inputs.scope == 'planner-diagnostic' }}
         run: |
           git -C _tmp/linux apply "$GITHUB_WORKSPACE/native/linux_piggy_dependency.patch"
           cp native/linux_source.BUILD.bazel _tmp/linux/BUILD.bazel
@@ -201,13 +201,82 @@ jobs:
             --controls-results "$evidence" --execution-root "$execution_root"
 
       - name: Fetch the compact execution log decoder
-        if: ${{ (inputs.scope || 'full') == 'full' }}
+        if: ${{ (inputs.scope || 'full') == 'full' || inputs.scope == 'planner-diagnostic' }}
         run: |
           decoder="$RUNNER_TEMP/autoconf-execution-log-decoder"
           curl --fail --location --output "$decoder" https://github.com/buildbuddy-io/bazel/releases/download/5.0.492/bazel-5.0.492-linux-x86_64
           echo "e9e996a1a01555e45433acf9432f9d40d5bda437812a830d6701fe9b09853df9  $decoder" | sha256sum --check
           chmod +x "$decoder"
           echo "EXECUTION_LOG_DECODER=$decoder" >> "$GITHUB_ENV"
+
+      - name: Diagnose unchanged native planner evaluation
+        if: ${{ inputs.scope == 'planner-diagnostic' }}
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          evidence="$RUNNER_TEMP/planner-diagnostic"
+          mkdir -p "$evidence"
+          run() {
+            local name="$1" status=0
+            shift
+            printf '%q ' "$@" > "$evidence/$name.argv"
+            printf '\n' >> "$evidence/$name.argv"
+            printf '%s %s started\n' "$(date -u +%FT%TZ)" "$name"
+            "$@" > "$evidence/$name.stdout" 2> "$evidence/$name.stderr" || status=$?
+            printf '%s\n' "$status" > "$evidence/$name.status"
+            printf '%s %s exit %s\n' "$(date -u +%FT%TZ)" "$name" "$status"
+            if [[ "$status" != 0 ]]; then tail -n 80 "$evidence/$name.stderr" || :; fi
+            return "$status"
+          }
+          observe() {
+            run "$1.changed" bazel dump --skyframe=changed \
+              '--skykey_filter=ACTION_TEMPLATE_EXPANSION|CONFIGURED_TARGET|ARTIFACT|ACTION_EXECUTION'
+            run "$1.dependencies" bazel dump --skyframe=deps \
+              --skykey_filter=ACTION_TEMPLATE_EXPANSION
+          }
+          options=(
+            --override_repository=linux_source="$GITHUB_WORKSPACE/_tmp/linux"
+            --override_repository=kbuild_exporter="$KBUILD_EXPORTER"
+            --platforms=@llvm//platforms:linux_x86_64
+            --extra_execution_platforms=@llvm//platforms:linux_x86_64
+            --experimental_output_paths=strip --jobs=4 --//:validate_native_objects
+          )
+          capture_options=(
+            "${options[@]}" --remote_download_outputs=all
+            '--output_groups=+boot,+qualification_manifest'
+            --sandbox_block_path=/bin --sandbox_block_path=/usr/bin --sandbox_block_path=/usr/local/bin
+          )
+          for name in base unchanged; do
+            run "$name.build" bazel build //:native_compiler_checks "${capture_options[@]}" \
+              --execution_log_compact_file="$evidence/$name.execution.pb.zst" \
+              --profile="$evidence/$name.profile.gz" \
+              --experimental_aquery_dump_after_build_format=jsonproto \
+              --experimental_aquery_dump_after_build_output_file="$evidence/$name.aquery.json"
+            observe "$name.after-build"
+            run "$name.decode" python3 -c \
+              'import sys; from pathlib import Path; from check_reuse import decode; decode(sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]))' \
+              "$EXECUTION_LOG_DECODER" "$evidence/$name.execution.pb.zst" "$evidence/$name.execution.jsonl"
+            run "$name.manifest" bazel cquery //:native_compiler_checks "${options[@]}" \
+              --output=files --output_groups=qualification_manifest
+            cp "$evidence/$name.manifest.stdout" "$evidence/$name.manifest-path"
+            observe "$name.after-cquery"
+            run "$name.execution-root" bazel info execution_root
+            # info and dump do not evaluate; these retain the last evaluation.
+            observe "$name.after-info"
+            run "$name.snapshot" python3 -c \
+              'import sys; from pathlib import Path; from qualification.ir_reuse_report import snapshot; snapshot(Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]))' \
+              "$evidence" "$name" "$(cat "$evidence/$name.execution-root.stdout")"
+          done
+
+      - name: Retain planner diagnostic evidence
+        if: ${{ always() && inputs.scope == 'planner-diagnostic' }}
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v7
+        with:
+          name: planner-diagnostic
+          path: ${{ runner.temp }}/planner-diagnostic/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Qualify native configuration, products, compiler family, and source edits
         if: ${{ (inputs.scope || 'full') == 'full' }}
@@ -307,7 +376,7 @@ jobs:
           retention-days: 7
 
       - name: Upload comparison reports
-        if: ${{ always() }}
+        if: ${{ always() && inputs.scope != 'planner-diagnostic' }}
         uses: actions/upload-artifact@v7
         with:
           name: kernel-acceptance
